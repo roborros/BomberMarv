@@ -722,8 +722,8 @@ while True:
                     if event.key == player.controls['bomb']:
                         player.drop_bomb(bombs, current_time)
 
+    game_surface.fill(COLOR_BG)
     if game_state == "startup":
-        game_surface.fill(COLOR_BG)
         elapsed = current_time - startup_start_time
         if elapsed < 2000:
             alpha = 255
@@ -742,15 +742,6 @@ while True:
             game_surface.blit(start_text, start_rect)
         
         draw_logo(game_surface, alpha)
-        factor = min(window_size[0] / BASE_WIDTH, window_size[1] / BASE_HEIGHT)
-        new_width = int(BASE_WIDTH * factor)
-        new_height = int(BASE_HEIGHT * factor)
-        scaled_surface = pygame.transform.smoothscale(game_surface, (new_width, new_height))
-        window.fill((0,0,0))
-        x_offset = (window_size[0] - new_width) // 2
-        y_offset = (window_size[1] - new_height) // 2
-        window.blit(scaled_surface, (x_offset, y_offset))
-        pygame.display.flip()
 
     elif game_state == "playing":
         for player in players:
@@ -803,45 +794,25 @@ while True:
                     game_state = "win"
             else:
                 game_state = "win"
-        game_surface.fill(COLOR_BG)
         draw_board(game_surface)
         draw_powerups(game_surface)
         draw_bombs(game_surface, current_time)
         draw_explosions(game_surface, current_time)
         draw_players(game_surface)
-        factor = min(window_size[0] / BASE_WIDTH, window_size[1] / BASE_HEIGHT)
-        new_width = int(BASE_WIDTH * factor)
-        new_height = int(BASE_HEIGHT * factor)
-        scaled_surface = pygame.transform.smoothscale(game_surface, (new_width, new_height))
-        window.fill((0,0,0))
-        x_offset = (window_size[0] - new_width) // 2
-        y_offset = (window_size[1] - new_height) // 2
-        window.blit(scaled_surface, (x_offset, y_offset))
-        pygame.display.flip()
 
     elif game_state == "win":
-        game_surface.fill(COLOR_BG)
         draw_logo(game_surface, alpha=255)
         draw_stat_screen(game_surface, alive_players[0] if alive_players else None)
-        factor = min(window_size[0] / BASE_WIDTH, window_size[1] / BASE_HEIGHT)
-        new_width = int(BASE_WIDTH * factor)
-        new_height = int(BASE_HEIGHT * factor)
-        scaled_surface = pygame.transform.smoothscale(game_surface, (new_width, new_height))
-        window.fill((0,0,0))
-        x_offset = (window_size[0] - new_width) // 2
-        y_offset = (window_size[1] - new_height) // 2
-        window.blit(scaled_surface, (x_offset, y_offset))
-        pygame.display.flip()
 
     elif game_state == "champion":
-        game_surface.fill(COLOR_BG)
         draw_champion_screen(game_surface, alive_players[0] if alive_players else None)
-        factor = min(window_size[0] / BASE_WIDTH, window_size[1] / BASE_HEIGHT)
-        new_width = int(BASE_WIDTH * factor)
-        new_height = int(BASE_HEIGHT * factor)
-        scaled_surface = pygame.transform.smoothscale(game_surface, (new_width, new_height))
-        window.fill((0,0,0))
-        x_offset = (window_size[0] - new_width) // 2
-        y_offset = (window_size[1] - new_height) // 2
-        window.blit(scaled_surface, (x_offset, y_offset))
-        pygame.display.flip()
+    
+    factor = min(window_size[0] / BASE_WIDTH, window_size[1] / BASE_HEIGHT)
+    new_width = int(BASE_WIDTH * factor)
+    new_height = int(BASE_HEIGHT * factor)
+    scaled_surface = pygame.transform.smoothscale(game_surface, (new_width, new_height))
+    window.fill((0,0,0))
+    x_offset = (window_size[0] - new_width) // 2
+    y_offset = (window_size[1] - new_height) // 2
+    window.blit(scaled_surface, (x_offset, y_offset))
+    pygame.display.flip()
