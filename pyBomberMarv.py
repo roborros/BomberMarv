@@ -617,24 +617,22 @@ def draw_stat_screen(surface, winner):
     font = pygame.font.SysFont("arial", 48, bold=True)
     draw_logo(surface, alpha=255)
     if winner:
-        x_start = BASE_WIDTH//2 + 100
+        x_start = BASE_WIDTH//2 + 150
         icon_size = 24
         for i in range(winner.trophies):
-            trophy_pos = (x_start + i * (icon_size + 5), BASE_HEIGHT//2 + 30)
+            trophy_pos = (x_start + i * (icon_size + 5), BASE_HEIGHT//2 + 70)
             draw_trophy_icon(surface, trophy_pos, icon_size)
         text = font.render(f"Player {players.index(winner)+1} wins!", True, winner.color)
-    elif game_state == "startup":
-        text = font.render("Get Ready!", True, (255,255,255))
     else:
         text = font.render("No one wins!", True, (255,255,255))
-    rect = text.get_rect(center=(BASE_WIDTH//2, BASE_HEIGHT//2 + 50))
+    rect = text.get_rect(center=(BASE_WIDTH//2, BASE_HEIGHT//2 + 80))
     surface.blit(text, rect)
     font_small = pygame.font.SysFont("arial", 32)
     y_offset = BASE_HEIGHT//2 + 110
     for i, player in enumerate(players):
         trophy_surface = pygame.Surface((150, 40), pygame.SRCALPHA)
         for j in range(player.trophies):
-            draw_trophy_icon(trophy_surface, (j * 30, 0), 24)
+            draw_trophy_icon(trophy_surface, (j * 30, 0), 24+10)
         win_text = font_small.render(f"Player {i+1}:", True, player.color)
         surface.blit(win_text, (50, y_offset))
         surface.blit(trophy_surface, (200, y_offset))
@@ -649,9 +647,9 @@ def draw_champion_screen(surface, champion):
     for j in range(champion.trophies):
         draw_trophy_icon(trophy_surface, (j * 30, 0), 24)
     text = font.render(f"Champion: Player {players.index(champion)+1}", True, champion.color)
-    rect = text.get_rect(center=(BASE_WIDTH//2, BASE_HEIGHT//2 - 50))
+    rect = text.get_rect(center=(BASE_WIDTH//2, BASE_HEIGHT//2 - 100))
     surface.blit(text, rect)
-    surface.blit(trophy_surface, (BASE_WIDTH//2 - 100, BASE_HEIGHT//2 + 10))
+    surface.blit(trophy_surface, (BASE_WIDTH//2 - 100, BASE_HEIGHT//2 + 100))
 
 # --- Global State for Screens ---
 game_state = "startup"  # "startup", "playing", "win", "champion"
