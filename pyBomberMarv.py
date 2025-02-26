@@ -148,6 +148,7 @@ logo_image = pygame.image.load('C:\WORK\pyMan\logo.png')
 pygame.display.set_icon(logo_image)
 
 arcade_font = pygame.font.SysFont('Comic Sans MS', 72)  # Using a common font
+font_small = pygame.font.SysFont("arial", 32)
 
 # --- Logo Drawing ---
 def draw_logo(surface, alpha=255):
@@ -612,7 +613,7 @@ def draw_controls(surface):
         surface.blit(text, rect)
         y_offset += 30
 
-def draw_win_screen(surface, winner):
+def draw_stat_screen(surface, winner):
     font = pygame.font.SysFont("arial", 48, bold=True)
     draw_logo(surface, alpha=255)
     if winner:
@@ -622,6 +623,8 @@ def draw_win_screen(surface, winner):
             trophy_pos = (x_start + i * (icon_size + 5), BASE_HEIGHT//2 + 30)
             draw_trophy_icon(surface, trophy_pos, icon_size)
         text = font.render(f"Player {players.index(winner)+1} wins!", True, winner.color)
+    elif game_state == "startup":
+        text = font.render("Get Ready!", True, (255,255,255))
     else:
         text = font.render("No one wins!", True, (255,255,255))
     rect = text.get_rect(center=(BASE_WIDTH//2, BASE_HEIGHT//2 + 50))
@@ -713,7 +716,7 @@ while True:
                     window = pygame.display.set_mode(INITIAL_WINDOW_SIZE, pygame.RESIZABLE)
                     window_size = INITIAL_WINDOW_SIZE
             elif event.key == pygame.K_RETURN:
-                if game_state in ["win", "champion"]:
+                if game_state in ["win", "champion", "startup"]:
                     init_game()
                     game_state = "playing"
             elif game_state == "playing":
@@ -729,8 +732,17 @@ while True:
         elif elapsed < 2500:
             alpha = int(255 * (2500 - elapsed) / 500)
         else:
-            game_state = "playing"
+            #game_state = "playing"
             continue
+        
+        if int(elapsed) >= 2200:
+            draw_controls(game_surface)
+
+            # Display "Press Enter to start the game" message
+            start_text = font_small.render("Press Enter to start the game", True, (255, 255, 255))
+            start_rect = start_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT - 50))
+            game_surface.blit(start_text, start_rect)
+        
         draw_logo(game_surface, alpha)
         factor = min(window_size[0] / BASE_WIDTH, window_size[1] / BASE_HEIGHT)
         new_width = int(BASE_WIDTH * factor)
@@ -812,7 +824,7 @@ while True:
     elif game_state == "win":
         game_surface.fill(COLOR_BG)
         draw_logo(game_surface, alpha=255)
-        draw_win_screen(game_surface, alive_players[0] if alive_players else None)
+        draw_stat_screen(game_surface, alive_players[0] if alive_players else None)
         factor = min(window_size[0] / BASE_WIDTH, window_size[1] / BASE_HEIGHT)
         new_width = int(BASE_WIDTH * factor)
         new_height = int(BASE_HEIGHT * factor)
