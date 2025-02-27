@@ -11,15 +11,17 @@ pygame.mixer.init()
 bonus_sound = pygame.mixer.Sound('sounds/pick-bonus.wav')
 explosion_sound = pygame.mixer.Sound('sounds/explosion_short.wav')
 death_sound = pygame.mixer.Sound('sounds/death.wav')
+qd_sound = pygame.mixer.Sound('sounds/quad_damage.mp3')
+
 
 # --- Configurable Constants ---
-NUM_PLAYERS = 2  # Default players (min 2, max 6)
+NUM_PLAYERS = 4  # Default players (min 2, max 6)
 NUM_PLAYERS = max(2, min(NUM_PLAYERS, 6))
 
 GAME_CELL_SIZE = 80  # Cell size (overall resolution)
 CELL_SIZE = GAME_CELL_SIZE
 
-PLAYER_SPEED = 200  # Default player speed (pixels per second)
+PLAYER_SPEED = 220  # Default player speed (pixels per second)
 
 PLAYER_DRAW_SCALE = 0.85      # Drawn sprite diameter = 85% of cell edge
 PLAYER_COLLISION_SCALE = 0.75 # Collision circle = 75% of cell edge
@@ -34,6 +36,10 @@ POWERUP_PROBABILITY = 0.3  # Chance to spawn a powerup when a block is destroyed
 
 TROPHY_WIN_THRESHOLD = 5   # Number of trophies needed to become Champion
 
+QUAD_DAMAGE_PROBABILITY = 0.001*500 # Chance to spawn a Quad Damage powerup
+QUAD_DAMAGE_TIME = 20 # Duration of Quad Damage effect (s)
+QUAD_DAMAGE_POWER = 10    # Powerup bonus to bomb capacity and fire power
+QUAD_DAMAGE_DELAY = 0*120  # Delay before Quad Damage powerup spawns (s)
 # --- Grid & Base Resolution Settings ---
 
 GRID_SIZE = 15
@@ -70,7 +76,14 @@ COLOR_FUSE = (255, 200, 150)
 # Explosion colors are computed dynamically.
 
 BOMB_TIMER = 3000
-EXPLOSION_DURATION = 500
+EXPLOSION_DURATION = 400
+
+quad_damage_image = pygame.image.load('qd.png')
+fire_powerup_image = pygame.image.load('fireup.png')
+blast_image = pygame.image.load('blast.png')
+blast_image_qd = pygame.image.load('blast_qd.png')
+blast_centre_image = pygame.image.load('blast_centre.png')
+blast_centre_image_qd = pygame.image.load('blast_centre_qd.png')
 
 # --- Helper Functions ---
 def clamp(value, min_value, max_value):
@@ -154,7 +167,7 @@ logo_image = pygame.image.load('C:\WORK\pyMan\logo.png')
 # Set the window icon to the logo image
 pygame.display.set_icon(logo_image)
 
-arcade_font = pygame.font.SysFont('Comic Sans MS', 72)  # Using a common font
+arcade_font = pygame.font.SysFont('Comic Sans MS', 90)  # Using a common font
 font_small = pygame.font.SysFont("arial", 32)
 
 VERSION = "v1.0.0"
@@ -191,7 +204,7 @@ def draw_logo(surface, alpha=255):
     # Render the version tag
     version_font = pygame.font.SysFont("arial", 24)
     version_text = version_font.render(VERSION, True, (255, 255, 255))
-    version_rect = version_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT // 2 + 40))
+    version_rect = version_text.get_rect(bottomright=(BASE_WIDTH - 10, BASE_HEIGHT - 10))
     surface.blit(version_text, version_rect)
 
 
@@ -230,6 +243,8 @@ class Player:
         self.draw_radius = int(CELL_SIZE * PLAYER_DRAW_SCALE / 2)
         self.collision_radius = int(CELL_SIZE * PLAYER_COLLISION_SCALE / 2)
         self.animation_time = 0
+        self.quad_damage = False  # Add this line
+        self.quad_damage_start_time = 0  # Add this line
 
     def get_circle(self):
         return (self.pos, self.draw_radius)
@@ -264,6 +279,12 @@ class Player:
                     bomb.owner_left = True
         if self.collides_with_walls(board) or self.collides_with_bombs(bombs):
             self.pos = original_pos
+            
+        # Handle quad damage duration
+        if self.quad_damage and pygame.time.get_ticks() - self.quad_damage_start_time > QUAD_DAMAGE_TIME*1000:
+            self.quad_damage = False
+            self.bomb_capacity -= QUAD_DAMAGE_POWER
+            self.fire_power -= QUAD_DAMAGE_POWER
 
     def collides_with_walls(self, board):
         for y in range(GRID_HEIGHT):
@@ -297,8 +318,12 @@ class Player:
             if bomb.x == grid_x and bomb.y == grid_y:
                 return
         new_bomb = Bomb(grid_x, grid_y, current_time, self.fire_power, self)
+        if self.quad_damage:
+            new_bomb.quad_damage = True
+        
         bombs.append(new_bomb)
         self.active_bombs += 1
+        
 
     def reset(self):
         self.pos = pygame.math.Vector2(self.start_grid_x * CELL_SIZE + CELL_SIZE // 2,
@@ -308,6 +333,8 @@ class Player:
         self.fire_power = 1
         self.active_bombs = 0
         self.animation_time = 0
+        self.quad_damage = False  # Add this line
+        self.quad_damage_start_time = 0  # Add this lines
 
 class Bomb:
     def __init__(self, x, y, start_time, fire_power, owner):
@@ -318,14 +345,16 @@ class Bomb:
         self.owner = owner
         self.exploded = False
         self.owner_left = False
-
+        self.quad_damage = False
+        
     def update(self, current_time):
         return current_time - self.start_time >= BOMB_TIMER
 
 class Explosion:
-    def __init__(self, cells, start_time):
+    def __init__(self, cells, start_time, quad_damage=False):
         self.cells = cells
         self.start_time = start_time
+        self.quad_damage = quad_damage
 
     def is_active(self, current_time):
         return current_time - self.start_time < EXPLOSION_DURATION
@@ -345,22 +374,6 @@ def init_game():
     bombs = []
     explosions = []
     powerups = []
-    chosen_positions = []
-
-    def is_valid_starting_position(x, y):
-        # Check if the position and its perpendicular neighbors are free
-        if board[y][x] != INDESTRUCTIBLE:
-            free_cells = 0
-            if x > 0 and board[y][x - 1] != INDESTRUCTIBLE:
-                free_cells += 1
-            if x < GRID_WIDTH - 1 and board[y][x + 1] != INDESTRUCTIBLE:
-                free_cells += 1
-            if y > 0 and board[y - 1][x] != INDESTRUCTIBLE:
-                free_cells += 1
-            if y < GRID_HEIGHT - 1 and board[y + 1][x] != INDESTRUCTIBLE:
-                free_cells += 1
-            return free_cells >= 2
-        return False
 
     fixed_positions = [(1, 1), (GRID_WIDTH - 2, 1), (1, GRID_HEIGHT - 2), (GRID_WIDTH - 2, GRID_HEIGHT - 2)]
     corner_patterns = {
@@ -370,7 +383,6 @@ def init_game():
         (GRID_WIDTH - 2, GRID_HEIGHT - 2): [(0,0), (-1,0), (0,-1)]
     }
     
-    # Shuffle the players list
     random.shuffle(players)
 
     for i, player in enumerate(players):
@@ -431,39 +443,57 @@ def draw_powerup_icon(surface, center, size, powerup_type):
         draw_bomb_powerup_icon(surface, center, size)
     elif powerup_type == "fire":
         draw_fire_powerup_icon(surface, center, size)
+    elif powerup_type == "quad_damage":
+        draw_quad_damage_powerup_icon(surface, center, size)
 
 def draw_bomb_powerup_icon(surface, center, size):
+    size = int(size * 1.3)
     rect = pygame.Rect(center[0] - size//2, center[1] - size//2, size, size)
-    blue_fill = (50, 50, 255)
-    blue_border = (30, 30, 200)
-    pygame.draw.rect(surface, blue_fill, rect)
-    pygame.draw.rect(surface, blue_border, rect, 2)
-    bomb_r = size // 4
-    pygame.gfxdraw.filled_circle(surface, center[0], center[1], bomb_r, (80,80,80))
-    pygame.gfxdraw.aacircle(surface, center[0], center[1], bomb_r, (0,0,0))
-
+    blue_border = (0, 255, 255)
+    pygame.draw.rect(surface, blue_border, rect, 4)
+    bomb_r = size // 3
+    cell_center = center
+    bomb_radius = bomb_r
+    pygame.gfxdraw.filled_circle(surface, cell_center[0], cell_center[1], bomb_radius, COLOR_BOMB_FILL)
+    pygame.gfxdraw.aacircle(surface, cell_center[0], cell_center[1], bomb_radius, COLOR_BOMB_OUTLINE)
+    fuse_radius = max(2, bomb_radius // 3)
+    fuse_offset = int(bomb_radius * 0.6)
+    fuse_center = (cell_center[0], cell_center[1] - fuse_offset)
+    pygame.gfxdraw.filled_circle(surface, fuse_center[0], fuse_center[1], fuse_radius, COLOR_FUSE)
+    pygame.gfxdraw.aacircle(surface, fuse_center[0], fuse_center[1], fuse_radius, COLOR_FUSE)   
 def draw_fire_powerup_icon(surface, center, size):
-    w = size
-    h = size
-    cx, cy = center
-    points = [
-        (cx, cy - h * 0.5),
-        (cx + w * 0.35, cy - h * 0.1),
-        (cx + w * 0.2, cy + h * 0.4),
-        (cx, cy + h * 0.2),
-        (cx - w * 0.2, cy + h * 0.4),
-        (cx - w * 0.35, cy - h * 0.1)
-    ]
-    flame_color = (255,180,0)
-    pygame.draw.polygon(surface, flame_color, points)
-    pygame.draw.polygon(surface, (0,0,0), points, 2)
-    eye_r = max(1, size // 10)
-    offset_x = size // 8
-    offset_y = size // 8
-    pygame.gfxdraw.filled_circle(surface, int(cx - offset_x), int(cy - offset_y), eye_r, (0,0,0))
-    pygame.gfxdraw.filled_circle(surface, int(cx + offset_x), int(cy - offset_y), eye_r, (0,0,0))
-    smile_rect = pygame.Rect(int(cx - size*0.2), int(cy), int(size*0.4), int(size*0.2))
-    pygame.draw.arc(surface, (0,0,0), smile_rect, math.radians(20), math.radians(160), 2)
+    size2 = int(size * 1.3)
+    rect = pygame.Rect(center[0] - size2//2, center[1] - size2//2, size2, size2)
+    blue_border = (0, 255, 255)
+    pygame.draw.rect(surface, blue_border, rect, 4)
+    
+     # Scale the fire powerup image to fit the size
+    scaled_image = pygame.transform.smoothscale(fire_powerup_image, (size, size))
+    
+    # Get the rectangle for the scaled image and center it
+    image_rect = scaled_image.get_rect(center=center)
+    
+    # Blit the scaled image onto the surface
+    surface.blit(scaled_image, image_rect)
+    
+def draw_quad_damage_powerup_icon(surface, center, size):
+    # Scale the quad damage image to fit the size
+    scaled_image = pygame.transform.smoothscale(quad_damage_image, (size, size))
+    
+    # Get the rectangle for the scaled image and center it
+    image_rect = scaled_image.get_rect(center=center)
+    
+    # Blit the scaled image onto the surface
+    surface.blit(scaled_image, image_rect)
+
+
+def place_quad_damage_powerup():
+    if (pygame.time.get_ticks() - game_start_time) >= QUAD_DAMAGE_DELAY*1000:  # 2 minutes
+        if not any(pu.type == "quad_damage" for pu in powerups):
+            empty_cells = [(x, y) for y in range(GRID_HEIGHT) for x in range(GRID_WIDTH) if board[y][x] == EMPTY]
+            if empty_cells and random.random() < QUAD_DAMAGE_PROBABILITY:
+                x, y = random.choice(empty_cells)
+                powerups.append(PowerUp(x, y, "quad_damage"))
 
 def draw_trophy_icon(surface, pos, size):
     trophy_color = (212, 175, 55)
@@ -501,6 +531,13 @@ def draw_players(surface):
         leg_color = (player.color[0]//2, player.color[1]//2, player.color[2]//2)
         pygame.draw.rect(surface, leg_color, left_leg)
         pygame.draw.rect(surface, leg_color, right_leg)
+        
+        if player.quad_damage:
+            elapsed = pygame.time.get_ticks() - player.quad_damage_start_time
+            pulse = 1 + 0.1 * math.sin(2 * math.pi * (elapsed / 500.0))
+            rect_size = int((2 * r + 10) * pulse)
+            rect = pygame.Rect(pos[0] - rect_size // 2, pos[1] - rect_size // 2, rect_size, rect_size)
+            pygame.draw.rect(surface, (0, 255, 255), rect, 4)
 
 def draw_bombs(surface, current_time):
     for bomb in bombs:
@@ -527,15 +564,6 @@ def draw_explosions(surface, current_time):
         else:
             arm_factor = (1 - (norm - 0.7) / 0.3)
         
-        if norm <= 0.7:
-            base_color = (255, 140, 0)  # Bright orange
-        else:
-            f = (norm - 0.7) / 0.3
-            base_color = (255, int(140 * (1 - f) + 60 * f), int(0 * (1 - f) + 0 * f))  # Transition to darker orange
-        
-        final_color = (int(base_color[0] * arm_factor), int(base_color[1] * arm_factor), int(base_color[2] * arm_factor))
-        end_color = darken_color(final_color, 0.5)
-        
         cx, cy = explosion.cells[0]
         center_pixel = (cx * CELL_SIZE + CELL_SIZE // 2, cy * CELL_SIZE + CELL_SIZE // 2)
         
@@ -549,56 +577,64 @@ def draw_explosions(surface, current_time):
         left_length = arm_factor * left_max * CELL_SIZE
         right_length = arm_factor * right_max * CELL_SIZE
         
-        arm_thickness = int(CELL_SIZE * FLAME_ARM_THICKNESS_RATIO)
+        if explosion.quad_damage:
+            img = blast_image_qd
+            center_img = blast_centre_image_qd
+        else:
+            img = blast_image
+            center_img = blast_centre_image
         
-        # Draw the center of the explosion
-        pygame.gfxdraw.filled_circle(surface, int(center_pixel[0]), int(center_pixel[1]), arm_thickness // 2, final_color)
-        pygame.gfxdraw.aacircle(surface, int(center_pixel[0]), int(center_pixel[1]), arm_thickness // 2, final_color)
+        # Draw the center of the explosion using the center image
+        center_rect = center_img.get_rect(center=center_pixel)
+        surface.blit(center_img, center_rect)
         
-        # Draw the arms of the explosion with gradient effect
+        # Draw the arms of the explosion using the blast image
         if up_length > 0:
-            up_rect = pygame.Rect(int(center_pixel[0] - arm_thickness / 2), int(center_pixel[1] - up_length), arm_thickness, int(up_length))
-            draw_gradient_arm(surface, up_rect, final_color, end_color, horizontal=False)
-            tip = (int(center_pixel[0]), int(center_pixel[1] - up_length))
-            pygame.gfxdraw.filled_circle(surface, tip[0], tip[1], arm_thickness // 2, end_color)
+            draw_blast_arm(surface, center_pixel, (0, -up_length), img)
         
         if down_length > 0:
-            down_rect = pygame.Rect(int(center_pixel[0] - arm_thickness / 2), int(center_pixel[1]), arm_thickness, int(down_length))
-            draw_gradient_arm(surface, down_rect, final_color, end_color, horizontal=False)
-            tip = (int(center_pixel[0]), int(center_pixel[1] + down_length))
-            pygame.gfxdraw.filled_circle(surface, tip[0], tip[1], arm_thickness // 2, end_color)
+            draw_blast_arm(surface, center_pixel, (0, down_length), img)
         
         if left_length > 0:
-            left_rect = pygame.Rect(int(center_pixel[0] - left_length), int(center_pixel[1] - arm_thickness / 2), int(left_length), arm_thickness)
-            draw_gradient_arm(surface, left_rect, final_color, end_color, horizontal=True)
-            tip = (int(center_pixel[0] - left_length), int(center_pixel[1]))
-            pygame.gfxdraw.filled_circle(surface, tip[0], tip[1], arm_thickness // 2, end_color)
+            draw_blast_arm(surface, center_pixel, (-left_length, 0), img)
         
         if right_length > 0:
-            right_rect = pygame.Rect(int(center_pixel[0]), int(center_pixel[1] - arm_thickness / 2), int(right_length), arm_thickness)
-            draw_gradient_arm(surface, right_rect, final_color, end_color, horizontal=True)
-            tip = (int(center_pixel[0] + right_length), int(center_pixel[1]))
-            pygame.gfxdraw.filled_circle(surface, tip[0], tip[1], arm_thickness // 2, end_color)
+            draw_blast_arm(surface, center_pixel, (right_length, 0), img)
 
-def draw_gradient_arm(surface, rect, start_color, end_color, horizontal):
-    if horizontal:
-        for x in range(rect.left, rect.right):
-            t = (x - rect.left) / rect.width
-            col = lerp_color(start_color, end_color, t)
-            pygame.draw.line(surface, col, (x, rect.top), (x, rect.bottom))
+def draw_blast_arm(surface, start_pos, end_offset, image):
+    x1, y1 = start_pos
+    x2, y2 = x1 + end_offset[0], y1 + end_offset[1]
+    length = math.hypot(x2 - x1, y2 - y1)
+    
+    # Calculate the angle for rotation
+    angle = math.degrees(math.atan2(y2 - y1, x2 - x1))
+    
+    # Scale the image to the length of the arm
+    scaled_image = pygame.transform.smoothscale(image, (int(length), image.get_height()))
+    
+    # Rotate the image
+    if angle == 0:
+        rotated_image = pygame.transform.rotate(scaled_image, 180)
+    elif angle == 180:
+        rotated_image = scaled_image
     else:
-        for y in range(rect.top, rect.bottom):
-            t = (y - rect.top) / rect.height
-            col = lerp_color(start_color, end_color, t)
-            pygame.draw.line(surface, col, (rect.left, y), (rect.right, y))
-
-def lerp_color(color1, color2, t):
-    return (int(color1[0] + (color2[0] - color1[0]) * t),
-            int(color1[1] + (color2[1] - color1[1]) * t),
-            int(color1[2] + (color2[2] - color1[2]) * t))
-
-def darken_color(color, factor):
-    return (int(color[0] * factor), int(color[1] * factor), int(color[2] * factor))
+        rotated_image = pygame.transform.rotate(scaled_image, angle)
+    
+     # Get the rectangle for the rotated image and place its right edge at the center of the starting cell
+    image_rect = rotated_image.get_rect()
+    image_rect.center = (x1, y1)
+    if angle == -90:
+        image_rect.bottom = y1
+    elif angle == 0:
+        image_rect.left = x1
+    elif angle == 90:
+        image_rect.top = y1
+    else:
+        image_rect.right = x1
+    
+    # Blit the rotated image onto the surface
+    surface.blit(rotated_image, image_rect)
+    
 
 def handle_explosion(explosion):
     explosion_sound.play()
@@ -621,15 +657,15 @@ def handle_explosion(explosion):
                     break
 
 def draw_controls(surface):
-    font = pygame.font.SysFont("arial", 24)
-    y_offset = BASE_HEIGHT - 150
+    font = pygame.font.SysFont("arial", 40)
+    y_offset = BASE_HEIGHT - BASE_HEIGHT // 3
     for i, player in enumerate(players):
         controls = player.controls
         control_text = f"Player {i+1} Controls: Up: {pygame.key.name(controls['up'])}, Down: {pygame.key.name(controls['down'])}, Left: {pygame.key.name(controls['left'])}, Right: {pygame.key.name(controls['right'])}, Bomb: {pygame.key.name(controls['bomb'])}"
         text = font.render(control_text, True, player.color)
         rect = text.get_rect(center=(BASE_WIDTH // 2, y_offset))
         surface.blit(text, rect)
-        y_offset += 30
+        y_offset += 50
 
 def draw_stat_screen(surface, winner):
     font = pygame.font.SysFont("arial", 48, bold=True)
@@ -656,7 +692,7 @@ def draw_stat_screen(surface, winner):
         surface.blit(trophy_surface, (200, y_offset))
         y_offset += 40
         
-    draw_controls(surface)
+    #draw_controls(surface)
 
 def draw_champion_screen(surface, champion):
     font = pygame.font.SysFont("arial", 60, bold=True)
@@ -745,11 +781,9 @@ while True:
         elapsed = current_time - startup_start_time
         if elapsed < 2000:
             alpha = 255
-        elif elapsed < 2500:
+        elif elapsed < 2800:
             alpha = int(255 * (2500 - elapsed) / 500)
-        else:
-            #game_state = "playing"
-            continue
+       
         
         if int(elapsed) >= 2200:
             draw_controls(game_surface)
@@ -777,7 +811,7 @@ while True:
             triggered_explosions = []
             for bomb in bombs[:]:
                 if bomb.update(current_time):
-                    exp = Explosion(get_explosion_cells(bomb), current_time)
+                    exp = Explosion(get_explosion_cells(bomb), current_time, bomb.quad_damage)
                     triggered_explosions.append(exp)
                     bomb.owner.active_bombs -= 1
                     bombs.remove(bomb)
@@ -790,7 +824,7 @@ while True:
                 chain_triggered = False
                 for bomb in bombs[:]:
                     if (bomb.x, bomb.y) in chain_cells:
-                        exp = Explosion(get_explosion_cells(bomb), current_time)
+                        exp = Explosion(get_explosion_cells(bomb), current_time,bomb.quad_damage)
                         triggered_explosions.append(exp)
                         for cell in exp.cells:
                             chain_cells.add(cell)
@@ -809,10 +843,19 @@ while True:
                     if player.get_grid_pos() == (pu.x, pu.y):
                         if pu.type == "bomb":
                             player.bomb_capacity += 1
+                            bonus_sound.play()
                         elif pu.type == "fire":
                             player.fire_power += 1
+                            bonus_sound.play()
+                        elif pu.type == "quad_damage":
+                            player.quad_damage = True
+                            player.quad_damage_start_time = current_time
+                            player.bomb_capacity += QUAD_DAMAGE_POWER
+                            player.fire_power += QUAD_DAMAGE_POWER
+                            qd_sound.play()
                         powerups.remove(pu)
-                        bonus_sound.play()
+                        
+            place_quad_damage_powerup()  # Call the function to place the quad damage powerup
             alive_players = [p for p in players if p.alive]
             if len(alive_players) <= 1:
                 if alive_players:
