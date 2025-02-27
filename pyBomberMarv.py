@@ -76,10 +76,14 @@ COLOR_FUSE = (255, 200, 150)
 # Explosion colors are computed dynamically.
 
 BOMB_TIMER = 3000
-EXPLOSION_DURATION = 500
+EXPLOSION_DURATION = 400
 
 quad_damage_image = pygame.image.load('qd.png')
 fire_powerup_image = pygame.image.load('fireup.png')
+blast_image = pygame.image.load('blast.png')
+blast_image_qd = pygame.image.load('blast_qd.png')
+blast_centre_image = pygame.image.load('blast_centre.png')
+blast_centre_image_qd = pygame.image.load('blast_centre_qd.png')
 
 # --- Helper Functions ---
 def clamp(value, min_value, max_value):
@@ -560,19 +564,6 @@ def draw_explosions(surface, current_time):
         else:
             arm_factor = (1 - (norm - 0.7) / 0.3)
         
-        if norm <= 0.7:
-            if explosion.quad_damage:
-                base_color = (0, 255, 255)
-            else:
-                base_color = (255, 140, 0) # Bright orange
-            
-        else:
-            f = (norm - 0.7) / 0.3
-            base_color = (255, int(140 * (1 - f) + 60 * f), int(0 * (1 - f) + 0 * f))  # Transition to darker orange
-        
-        final_color = (int(base_color[0] * arm_factor), int(base_color[1] * arm_factor), int(base_color[2] * arm_factor))
-        end_color = darken_color(final_color, 0.5)
-        
         cx, cy = explosion.cells[0]
         center_pixel = (cx * CELL_SIZE + CELL_SIZE // 2, cy * CELL_SIZE + CELL_SIZE // 2)
         
@@ -586,56 +577,64 @@ def draw_explosions(surface, current_time):
         left_length = arm_factor * left_max * CELL_SIZE
         right_length = arm_factor * right_max * CELL_SIZE
         
-        arm_thickness = int(CELL_SIZE * FLAME_ARM_THICKNESS_RATIO)
+        if explosion.quad_damage:
+            img = blast_image_qd
+            center_img = blast_centre_image_qd
+        else:
+            img = blast_image
+            center_img = blast_centre_image
         
-        # Draw the center of the explosion
-        pygame.gfxdraw.filled_circle(surface, int(center_pixel[0]), int(center_pixel[1]), arm_thickness // 2, final_color)
-        pygame.gfxdraw.aacircle(surface, int(center_pixel[0]), int(center_pixel[1]), arm_thickness // 2, final_color)
+        # Draw the center of the explosion using the center image
+        center_rect = center_img.get_rect(center=center_pixel)
+        surface.blit(center_img, center_rect)
         
-        # Draw the arms of the explosion with gradient effect
+        # Draw the arms of the explosion using the blast image
         if up_length > 0:
-            up_rect = pygame.Rect(int(center_pixel[0] - arm_thickness / 2), int(center_pixel[1] - up_length), arm_thickness, int(up_length))
-            draw_gradient_arm(surface, up_rect, final_color, end_color, horizontal=False)
-            tip = (int(center_pixel[0]), int(center_pixel[1] - up_length))
-            pygame.gfxdraw.filled_circle(surface, tip[0], tip[1], arm_thickness // 2, end_color)
+            draw_blast_arm(surface, center_pixel, (0, -up_length), img)
         
         if down_length > 0:
-            down_rect = pygame.Rect(int(center_pixel[0] - arm_thickness / 2), int(center_pixel[1]), arm_thickness, int(down_length))
-            draw_gradient_arm(surface, down_rect, final_color, end_color, horizontal=False)
-            tip = (int(center_pixel[0]), int(center_pixel[1] + down_length))
-            pygame.gfxdraw.filled_circle(surface, tip[0], tip[1], arm_thickness // 2, end_color)
+            draw_blast_arm(surface, center_pixel, (0, down_length), img)
         
         if left_length > 0:
-            left_rect = pygame.Rect(int(center_pixel[0] - left_length), int(center_pixel[1] - arm_thickness / 2), int(left_length), arm_thickness)
-            draw_gradient_arm(surface, left_rect, final_color, end_color, horizontal=True)
-            tip = (int(center_pixel[0] - left_length), int(center_pixel[1]))
-            pygame.gfxdraw.filled_circle(surface, tip[0], tip[1], arm_thickness // 2, end_color)
+            draw_blast_arm(surface, center_pixel, (-left_length, 0), img)
         
         if right_length > 0:
-            right_rect = pygame.Rect(int(center_pixel[0]), int(center_pixel[1] - arm_thickness / 2), int(right_length), arm_thickness)
-            draw_gradient_arm(surface, right_rect, final_color, end_color, horizontal=True)
-            tip = (int(center_pixel[0] + right_length), int(center_pixel[1]))
-            pygame.gfxdraw.filled_circle(surface, tip[0], tip[1], arm_thickness // 2, end_color)
+            draw_blast_arm(surface, center_pixel, (right_length, 0), img)
 
-def draw_gradient_arm(surface, rect, start_color, end_color, horizontal):
-    if horizontal:
-        for x in range(rect.left, rect.right):
-            t = (x - rect.left) / rect.width
-            col = lerp_color(start_color, end_color, t)
-            pygame.draw.line(surface, col, (x, rect.top), (x, rect.bottom))
+def draw_blast_arm(surface, start_pos, end_offset, image):
+    x1, y1 = start_pos
+    x2, y2 = x1 + end_offset[0], y1 + end_offset[1]
+    length = math.hypot(x2 - x1, y2 - y1)
+    
+    # Calculate the angle for rotation
+    angle = math.degrees(math.atan2(y2 - y1, x2 - x1))
+    
+    # Scale the image to the length of the arm
+    scaled_image = pygame.transform.smoothscale(image, (int(length), image.get_height()))
+    
+    # Rotate the image
+    if angle == 0:
+        rotated_image = pygame.transform.rotate(scaled_image, 180)
+    elif angle == 180:
+        rotated_image = scaled_image
     else:
-        for y in range(rect.top, rect.bottom):
-            t = (y - rect.top) / rect.height
-            col = lerp_color(start_color, end_color, t)
-            pygame.draw.line(surface, col, (rect.left, y), (rect.right, y))
-
-def lerp_color(color1, color2, t):
-    return (int(color1[0] + (color2[0] - color1[0]) * t),
-            int(color1[1] + (color2[1] - color1[1]) * t),
-            int(color1[2] + (color2[2] - color1[2]) * t))
-
-def darken_color(color, factor):
-    return (int(color[0] * factor), int(color[1] * factor), int(color[2] * factor))
+        rotated_image = pygame.transform.rotate(scaled_image, angle)
+    
+     # Get the rectangle for the rotated image and place its right edge at the center of the starting cell
+    image_rect = rotated_image.get_rect()
+    image_rect.center = (x1, y1)
+    if angle == -90:
+        image_rect.bottom = y1
+    elif angle == 0:
+        image_rect.left = x1
+    elif angle == 90:
+        image_rect.top = y1
+    else:
+        image_rect.right = x1
+    
+    # Blit the rotated image onto the surface
+    surface.blit(rotated_image, image_rect)
+    
 
 def handle_explosion(explosion):
     explosion_sound.play()
