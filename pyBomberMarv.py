@@ -31,7 +31,7 @@ BOMB_PULSE_SPEED = 300.0      # Bomb pulse period (ms)
 
 FLAME_ARM_THICKNESS_RATIO = 0.75
 
-POWERUP_PROBABILITY = 0.3  # Chance to spawn a powerup when a block is destroyed
+POWERUP_PROBABILITY = 1#0.3  # Chance to spawn a powerup when a block is destroyed
 
 TROPHY_WIN_THRESHOLD = 5   # Number of trophies needed to become Champion
 
@@ -434,14 +434,22 @@ def draw_powerup_icon(surface, center, size, powerup_type):
         draw_fire_powerup_icon(surface, center, size)
 
 def draw_bomb_powerup_icon(surface, center, size):
+    size = int(size * 1.3)
     rect = pygame.Rect(center[0] - size//2, center[1] - size//2, size, size)
     blue_fill = (50, 50, 255)
-    blue_border = (30, 30, 200)
-    pygame.draw.rect(surface, blue_fill, rect)
-    pygame.draw.rect(surface, blue_border, rect, 2)
-    bomb_r = size // 4
-    pygame.gfxdraw.filled_circle(surface, center[0], center[1], bomb_r, (80,80,80))
-    pygame.gfxdraw.aacircle(surface, center[0], center[1], bomb_r, (0,0,0))
+    blue_border = (0, 255, 255)
+    pygame.draw.rect(surface, blue_border, rect, 4)
+    bomb_r = size // 3
+    cell_center = center
+    bomb_radius = bomb_r
+    pygame.gfxdraw.filled_circle(surface, cell_center[0], cell_center[1], bomb_radius, COLOR_BOMB_FILL)
+    pygame.gfxdraw.aacircle(surface, cell_center[0], cell_center[1], bomb_radius, COLOR_BOMB_OUTLINE)
+    fuse_radius = max(2, bomb_radius // 3)
+    fuse_offset = int(bomb_radius * 0.6)
+    fuse_center = (cell_center[0], cell_center[1] - fuse_offset)
+    pygame.gfxdraw.filled_circle(surface, fuse_center[0], fuse_center[1], fuse_radius, COLOR_FUSE)
+    pygame.gfxdraw.aacircle(surface, fuse_center[0], fuse_center[1], fuse_radius, COLOR_FUSE)
+    
 
 def draw_fire_powerup_icon(surface, center, size):
     w = size
