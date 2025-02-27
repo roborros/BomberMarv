@@ -36,10 +36,10 @@ POWERUP_PROBABILITY = 0.3  # Chance to spawn a powerup when a block is destroyed
 
 TROPHY_WIN_THRESHOLD = 5   # Number of trophies needed to become Champion
 
-QUAD_DAMAGE_PROBABILITY = 0.001*100  # Chance to spawn a Quad Damage powerup
-QUAD_DAMAGE_TIME = 10 # Duration of Quad Damage effect (s)
+QUAD_DAMAGE_PROBABILITY = 0.001*500 # Chance to spawn a Quad Damage powerup
+QUAD_DAMAGE_TIME = 20 # Duration of Quad Damage effect (s)
 QUAD_DAMAGE_POWER = 10    # Powerup bonus to bomb capacity and fire power
-QUAD_DAMAGE_DELAY = 120  # Delay before Quad Damage powerup spawns (s)
+QUAD_DAMAGE_DELAY = 0*120  # Delay before Quad Damage powerup spawns (s)
 # --- Grid & Base Resolution Settings ---
 
 GRID_SIZE = 15
@@ -313,8 +313,12 @@ class Player:
             if bomb.x == grid_x and bomb.y == grid_y:
                 return
         new_bomb = Bomb(grid_x, grid_y, current_time, self.fire_power, self)
+        if self.quad_damage:
+            new_bomb.quad_damage = True
+        
         bombs.append(new_bomb)
         self.active_bombs += 1
+        
 
     def reset(self):
         self.pos = pygame.math.Vector2(self.start_grid_x * CELL_SIZE + CELL_SIZE // 2,
@@ -336,14 +340,16 @@ class Bomb:
         self.owner = owner
         self.exploded = False
         self.owner_left = False
-
+        self.quad_damage = False
+        
     def update(self, current_time):
         return current_time - self.start_time >= BOMB_TIMER
 
 class Explosion:
-    def __init__(self, cells, start_time):
+    def __init__(self, cells, start_time, quad_damage=False):
         self.cells = cells
         self.start_time = start_time
+        self.quad_damage = quad_damage
 
     def is_active(self, current_time):
         return current_time - self.start_time < EXPLOSION_DURATION
@@ -566,7 +572,11 @@ def draw_explosions(surface, current_time):
             arm_factor = (1 - (norm - 0.7) / 0.3)
         
         if norm <= 0.7:
-            base_color = (255, 140, 0)  # Bright orange
+            if explosion.quad_damage:
+                base_color = (0, 255, 255)
+            else:
+                base_color = (255, 140, 0) # Bright orange
+            
         else:
             f = (norm - 0.7) / 0.3
             base_color = (255, int(140 * (1 - f) + 60 * f), int(0 * (1 - f) + 0 * f))  # Transition to darker orange
@@ -815,7 +825,7 @@ while True:
             triggered_explosions = []
             for bomb in bombs[:]:
                 if bomb.update(current_time):
-                    exp = Explosion(get_explosion_cells(bomb), current_time)
+                    exp = Explosion(get_explosion_cells(bomb), current_time, bomb.quad_damage)
                     triggered_explosions.append(exp)
                     bomb.owner.active_bombs -= 1
                     bombs.remove(bomb)
@@ -828,7 +838,7 @@ while True:
                 chain_triggered = False
                 for bomb in bombs[:]:
                     if (bomb.x, bomb.y) in chain_cells:
-                        exp = Explosion(get_explosion_cells(bomb), current_time)
+                        exp = Explosion(get_explosion_cells(bomb), current_time,bomb.quad_damage)
                         triggered_explosions.append(exp)
                         for cell in exp.cells:
                             chain_cells.add(cell)
