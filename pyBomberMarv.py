@@ -4,6 +4,12 @@ import random
 import sys
 import math
 
+# Initialize the mixer module
+pygame.mixer.init()
+
+# Load the sound file
+bonus_sound = pygame.mixer.Sound('sounds/pick-bonus.wav')
+
 # --- Configurable Constants ---
 NUM_PLAYERS = 2  # Default players (min 2, max 6)
 NUM_PLAYERS = max(2, min(NUM_PLAYERS, 6))
@@ -792,6 +798,7 @@ while True:
                     elif pu.type == "fire":
                         player.fire_power += 1
                     powerups.remove(pu)
+                    bonus_sound.play()
         alive_players = [p for p in players if p.alive]
         if len(alive_players) <= 1:
             if alive_players:
