@@ -150,6 +150,8 @@ pygame.display.set_icon(logo_image)
 arcade_font = pygame.font.SysFont('Comic Sans MS', 72)  # Using a common font
 font_small = pygame.font.SysFont("arial", 32)
 
+VERSION = "v1.0.0"
+
 # --- Logo Drawing ---
 def draw_logo(surface, alpha=255):
     # Get the original dimensions of the logo
@@ -178,6 +180,12 @@ def draw_logo(surface, alpha=255):
     game_name_text = arcade_font.render("BomberMarv", True, (255, 255, 255))
     game_name_rect = game_name_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT // 2))
     surface.blit(game_name_text, game_name_rect)
+    
+    # Render the version tag
+    version_font = pygame.font.SysFont("arial", 24)
+    version_text = version_font.render(VERSION, True, (255, 255, 255))
+    version_rect = version_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT // 2 + 40))
+    surface.blit(version_text, version_rect)
 
 
 # --- Trophy Drawing ---
