@@ -11,16 +11,17 @@ pygame.mixer.init()
 bonus_sound = pygame.mixer.Sound('sounds/pick-bonus.wav')
 explosion_sound = pygame.mixer.Sound('sounds/explosion_short.wav')
 death_sound = pygame.mixer.Sound('sounds/death.wav')
+qd_sound = pygame.mixer.Sound('sounds/quad_damage.mp3')
 
 
 # --- Configurable Constants ---
-NUM_PLAYERS = 2  # Default players (min 2, max 6)
+NUM_PLAYERS = 4  # Default players (min 2, max 6)
 NUM_PLAYERS = max(2, min(NUM_PLAYERS, 6))
 
 GAME_CELL_SIZE = 80  # Cell size (overall resolution)
 CELL_SIZE = GAME_CELL_SIZE
 
-PLAYER_SPEED = 200  # Default player speed (pixels per second)
+PLAYER_SPEED = 220  # Default player speed (pixels per second)
 
 PLAYER_DRAW_SCALE = 0.85      # Drawn sprite diameter = 85% of cell edge
 PLAYER_COLLISION_SCALE = 0.75 # Collision circle = 75% of cell edge
@@ -31,10 +32,14 @@ BOMB_PULSE_SPEED = 300.0      # Bomb pulse period (ms)
 
 FLAME_ARM_THICKNESS_RATIO = 0.75
 
-POWERUP_PROBABILITY = 1#0.3  # Chance to spawn a powerup when a block is destroyed
+POWERUP_PROBABILITY = 0.3  # Chance to spawn a powerup when a block is destroyed
 
 TROPHY_WIN_THRESHOLD = 5   # Number of trophies needed to become Champion
 
+QUAD_DAMAGE_PROBABILITY = 0.001*100  # Chance to spawn a Quad Damage powerup
+QUAD_DAMAGE_TIME = 10 # Duration of Quad Damage effect (s)
+QUAD_DAMAGE_POWER = 10    # Powerup bonus to bomb capacity and fire power
+QUAD_DAMAGE_DELAY = 120  # Delay before Quad Damage powerup spawns (s)
 # --- Grid & Base Resolution Settings ---
 
 GRID_SIZE = 15
@@ -72,6 +77,8 @@ COLOR_FUSE = (255, 200, 150)
 
 BOMB_TIMER = 3000
 EXPLOSION_DURATION = 500
+
+quad_damage_image = pygame.image.load('qd.png')
 
 # --- Helper Functions ---
 def clamp(value, min_value, max_value):
@@ -231,6 +238,8 @@ class Player:
         self.draw_radius = int(CELL_SIZE * PLAYER_DRAW_SCALE / 2)
         self.collision_radius = int(CELL_SIZE * PLAYER_COLLISION_SCALE / 2)
         self.animation_time = 0
+        self.quad_damage = False  # Add this line
+        self.quad_damage_start_time = 0  # Add this line
 
     def get_circle(self):
         return (self.pos, self.draw_radius)
@@ -265,6 +274,12 @@ class Player:
                     bomb.owner_left = True
         if self.collides_with_walls(board) or self.collides_with_bombs(bombs):
             self.pos = original_pos
+            
+        # Handle quad damage duration
+        if self.quad_damage and pygame.time.get_ticks() - self.quad_damage_start_time > QUAD_DAMAGE_TIME*1000:
+            self.quad_damage = False
+            self.bomb_capacity -= QUAD_DAMAGE_POWER
+            self.fire_power -= QUAD_DAMAGE_POWER
 
     def collides_with_walls(self, board):
         for y in range(GRID_HEIGHT):
@@ -309,6 +324,8 @@ class Player:
         self.fire_power = 1
         self.active_bombs = 0
         self.animation_time = 0
+        self.quad_damage = False  # Add this line
+        self.quad_damage_start_time = 0  # Add this lines
 
 class Bomb:
     def __init__(self, x, y, start_time, fire_power, owner):
@@ -415,6 +432,8 @@ def draw_powerup_icon(surface, center, size, powerup_type):
         draw_bomb_powerup_icon(surface, center, size)
     elif powerup_type == "fire":
         draw_fire_powerup_icon(surface, center, size)
+    elif powerup_type == "quad_damage":
+        draw_quad_damage_powerup_icon(surface, center, size)
 
 def draw_bomb_powerup_icon(surface, center, size):
     size = int(size * 1.3)
@@ -430,9 +449,7 @@ def draw_bomb_powerup_icon(surface, center, size):
     fuse_offset = int(bomb_radius * 0.6)
     fuse_center = (cell_center[0], cell_center[1] - fuse_offset)
     pygame.gfxdraw.filled_circle(surface, fuse_center[0], fuse_center[1], fuse_radius, COLOR_FUSE)
-    pygame.gfxdraw.aacircle(surface, fuse_center[0], fuse_center[1], fuse_radius, COLOR_FUSE)
-    
-
+    pygame.gfxdraw.aacircle(surface, fuse_center[0], fuse_center[1], fuse_radius, COLOR_FUSE)   
 def draw_fire_powerup_icon(surface, center, size):
     size2 = int(size * 1.3)
     rect = pygame.Rect(center[0] - size2//2, center[1] - size2//2, size2, size2)
@@ -460,6 +477,24 @@ def draw_fire_powerup_icon(surface, center, size):
     pygame.gfxdraw.filled_circle(surface, int(cx + offset_x), int(cy - offset_y), eye_r, (0,0,0))
     smile_rect = pygame.Rect(int(cx - size*0.2), int(cy), int(size*0.4), int(size*0.2))
     pygame.draw.arc(surface, (0,0,0), smile_rect, math.radians(20), math.radians(160), 2)
+def draw_quad_damage_powerup_icon(surface, center, size):
+    # Scale the quad damage image to fit the size
+    scaled_image = pygame.transform.smoothscale(quad_damage_image, (size, size))
+    
+    # Get the rectangle for the scaled image and center it
+    image_rect = scaled_image.get_rect(center=center)
+    
+    # Blit the scaled image onto the surface
+    surface.blit(scaled_image, image_rect)
+
+
+def place_quad_damage_powerup():
+    if (pygame.time.get_ticks() - game_start_time) >= QUAD_DAMAGE_DELAY*1000:  # 2 minutes
+        if not any(pu.type == "quad_damage" for pu in powerups):
+            empty_cells = [(x, y) for y in range(GRID_HEIGHT) for x in range(GRID_WIDTH) if board[y][x] == EMPTY]
+            if empty_cells and random.random() < QUAD_DAMAGE_PROBABILITY:
+                x, y = random.choice(empty_cells)
+                powerups.append(PowerUp(x, y, "quad_damage"))
 
 def draw_trophy_icon(surface, pos, size):
     trophy_color = (212, 175, 55)
@@ -497,6 +532,13 @@ def draw_players(surface):
         leg_color = (player.color[0]//2, player.color[1]//2, player.color[2]//2)
         pygame.draw.rect(surface, leg_color, left_leg)
         pygame.draw.rect(surface, leg_color, right_leg)
+        
+        if player.quad_damage:
+            elapsed = pygame.time.get_ticks() - player.quad_damage_start_time
+            pulse = 1 + 0.1 * math.sin(2 * math.pi * (elapsed / 500.0))
+            rect_size = int((2 * r + 10) * pulse)
+            rect = pygame.Rect(pos[0] - rect_size // 2, pos[1] - rect_size // 2, rect_size, rect_size)
+            pygame.draw.rect(surface, (0, 255, 255), rect, 4)
 
 def draw_bombs(surface, current_time):
     for bomb in bombs:
@@ -805,10 +847,19 @@ while True:
                     if player.get_grid_pos() == (pu.x, pu.y):
                         if pu.type == "bomb":
                             player.bomb_capacity += 1
+                            bonus_sound.play()
                         elif pu.type == "fire":
                             player.fire_power += 1
+                            bonus_sound.play()
+                        elif pu.type == "quad_damage":
+                            player.quad_damage = True
+                            player.quad_damage_start_time = current_time
+                            player.bomb_capacity += QUAD_DAMAGE_POWER
+                            player.fire_power += QUAD_DAMAGE_POWER
+                            qd_sound.play()
                         powerups.remove(pu)
-                        bonus_sound.play()
+                        
+            place_quad_damage_powerup()  # Call the function to place the quad damage powerup
             alive_players = [p for p in players if p.alive]
             if len(alive_players) <= 1:
                 if alive_players:
