@@ -79,6 +79,7 @@ BOMB_TIMER = 3000
 EXPLOSION_DURATION = 500
 
 quad_damage_image = pygame.image.load('qd.png')
+fire_powerup_image = pygame.image.load('fireup.png')
 
 # --- Helper Functions ---
 def clamp(value, min_value, max_value):
@@ -162,7 +163,7 @@ logo_image = pygame.image.load('C:\WORK\pyMan\logo.png')
 # Set the window icon to the logo image
 pygame.display.set_icon(logo_image)
 
-arcade_font = pygame.font.SysFont('Comic Sans MS', 72)  # Using a common font
+arcade_font = pygame.font.SysFont('Comic Sans MS', 90)  # Using a common font
 font_small = pygame.font.SysFont("arial", 32)
 
 VERSION = "v1.0.0"
@@ -199,7 +200,7 @@ def draw_logo(surface, alpha=255):
     # Render the version tag
     version_font = pygame.font.SysFont("arial", 24)
     version_text = version_font.render(VERSION, True, (255, 255, 255))
-    version_rect = version_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT // 2 + 40))
+    version_rect = version_text.get_rect(bottomright=(BASE_WIDTH - 10, BASE_HEIGHT - 10))
     surface.blit(version_text, version_rect)
 
 
@@ -462,27 +463,15 @@ def draw_fire_powerup_icon(surface, center, size):
     blue_border = (0, 255, 255)
     pygame.draw.rect(surface, blue_border, rect, 4)
     
-    w = size
-    h = size
-    cx, cy = center
-    points = [
-        (cx, cy - h * 0.5),
-        (cx + w * 0.35, cy - h * 0.1),
-        (cx + w * 0.2, cy + h * 0.4),
-        (cx, cy + h * 0.2),
-        (cx - w * 0.2, cy + h * 0.4),
-        (cx - w * 0.35, cy - h * 0.1)
-    ]
-    flame_color = (255,180,0)
-    pygame.draw.polygon(surface, flame_color, points)
-    pygame.draw.polygon(surface, (0,0,0), points, 2)
-    eye_r = max(1, size // 10)
-    offset_x = size // 8
-    offset_y = size // 8
-    pygame.gfxdraw.filled_circle(surface, int(cx - offset_x), int(cy - offset_y), eye_r, (0,0,0))
-    pygame.gfxdraw.filled_circle(surface, int(cx + offset_x), int(cy - offset_y), eye_r, (0,0,0))
-    smile_rect = pygame.Rect(int(cx - size*0.2), int(cy), int(size*0.4), int(size*0.2))
-    pygame.draw.arc(surface, (0,0,0), smile_rect, math.radians(20), math.radians(160), 2)
+     # Scale the fire powerup image to fit the size
+    scaled_image = pygame.transform.smoothscale(fire_powerup_image, (size, size))
+    
+    # Get the rectangle for the scaled image and center it
+    image_rect = scaled_image.get_rect(center=center)
+    
+    # Blit the scaled image onto the surface
+    surface.blit(scaled_image, image_rect)
+    
 def draw_quad_damage_powerup_icon(surface, center, size):
     # Scale the quad damage image to fit the size
     scaled_image = pygame.transform.smoothscale(quad_damage_image, (size, size))
@@ -669,15 +658,15 @@ def handle_explosion(explosion):
                     break
 
 def draw_controls(surface):
-    font = pygame.font.SysFont("arial", 24)
-    y_offset = BASE_HEIGHT - 150
+    font = pygame.font.SysFont("arial", 40)
+    y_offset = BASE_HEIGHT - BASE_HEIGHT // 3
     for i, player in enumerate(players):
         controls = player.controls
         control_text = f"Player {i+1} Controls: Up: {pygame.key.name(controls['up'])}, Down: {pygame.key.name(controls['down'])}, Left: {pygame.key.name(controls['left'])}, Right: {pygame.key.name(controls['right'])}, Bomb: {pygame.key.name(controls['bomb'])}"
         text = font.render(control_text, True, player.color)
         rect = text.get_rect(center=(BASE_WIDTH // 2, y_offset))
         surface.blit(text, rect)
-        y_offset += 30
+        y_offset += 50
 
 def draw_stat_screen(surface, winner):
     font = pygame.font.SysFont("arial", 48, bold=True)
@@ -704,7 +693,7 @@ def draw_stat_screen(surface, winner):
         surface.blit(trophy_surface, (200, y_offset))
         y_offset += 40
         
-    draw_controls(surface)
+    #draw_controls(surface)
 
 def draw_champion_screen(surface, champion):
     font = pygame.font.SysFont("arial", 60, bold=True)
@@ -793,11 +782,9 @@ while True:
         elapsed = current_time - startup_start_time
         if elapsed < 2000:
             alpha = 255
-        elif elapsed < 2500:
+        elif elapsed < 2800:
             alpha = int(255 * (2500 - elapsed) / 500)
-        else:
-            #game_state = "playing"
-            continue
+       
         
         if int(elapsed) >= 2200:
             draw_controls(game_surface)
