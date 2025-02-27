@@ -12,6 +12,7 @@ bonus_sound = pygame.mixer.Sound('sounds/pick-bonus.wav')
 explosion_sound = pygame.mixer.Sound('sounds/explosion_short.wav')
 death_sound = pygame.mixer.Sound('sounds/death.wav')
 
+
 # --- Configurable Constants ---
 NUM_PLAYERS = 2  # Default players (min 2, max 6)
 NUM_PLAYERS = max(2, min(NUM_PLAYERS, 6))
