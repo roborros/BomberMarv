@@ -339,7 +339,7 @@ class PowerUp:
 
 
 def init_game():
-    global board, bombs, explosions, powerups, players
+    global board, bombs, explosions, powerups, players, game_start_time
     board = generate_maze()
     bombs = []
     explosions = []
@@ -388,6 +388,7 @@ def init_game():
         
         clear_safe_zone(board, player.start_grid_x, player.start_grid_y, offsets)
         player.reset()
+    game_start_time = pygame.time.get_ticks() + 2000  # Add a 2-second freeze time
 
 def get_explosion_cells(bomb):
     cells = [(bomb.x, bomb.y)]
@@ -731,7 +732,7 @@ while True:
                 if game_state in ["win", "champion", "startup"]:
                     init_game()
                     game_state = "playing"
-            elif game_state == "playing":
+            elif game_state == "playing" and current_time >= game_start_time:
                 for player in players:
                     if event.key == player.controls['bomb']:
                         player.drop_bomb(bombs, current_time)
@@ -758,62 +759,72 @@ while True:
         draw_logo(game_surface, alpha)
 
     elif game_state == "playing":
-        for player in players:
-            player.update(dt, board, bombs)
-        triggered_explosions = []
-        for bomb in bombs[:]:
-            if bomb.update(current_time):
-                exp = Explosion(get_explosion_cells(bomb), current_time)
-                triggered_explosions.append(exp)
-                bomb.owner.active_bombs -= 1
-                bombs.remove(bomb)
-        chain_cells = set()
-        for exp in triggered_explosions:
-            for cell in exp.cells:
-                chain_cells.add(cell)
-        chain_triggered = True
-        while chain_triggered:
-            chain_triggered = False
+        if current_time < game_start_time:
+            draw_board(game_surface)
+            draw_powerups(game_surface)
+            draw_bombs(game_surface, current_time)
+            draw_explosions(game_surface, current_time)
+            draw_players(game_surface)
+            start_text = font_small.render("Get Ready!", True, (255, 255, 255))
+            start_rect = start_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT - 50))
+            game_surface.blit(start_text, start_rect)
+        else:
+            for player in players:
+                player.update(dt, board, bombs)
+            triggered_explosions = []
             for bomb in bombs[:]:
-                if (bomb.x, bomb.y) in chain_cells:
+                if bomb.update(current_time):
                     exp = Explosion(get_explosion_cells(bomb), current_time)
                     triggered_explosions.append(exp)
-                    for cell in exp.cells:
-                        chain_cells.add(cell)
                     bomb.owner.active_bombs -= 1
                     bombs.remove(bomb)
-                    chain_triggered = True
-        explosions.extend(triggered_explosions)
-        for explosion in explosions[:]:
-            if not explosion.is_active(current_time):
-                handle_explosion(explosion)
-                explosions.remove(explosion)
-        for player in players:
-            if not player.alive:
-                continue
-            for pu in powerups[:]:
-                if player.get_grid_pos() == (pu.x, pu.y):
-                    if pu.type == "bomb":
-                        player.bomb_capacity += 1
-                    elif pu.type == "fire":
-                        player.fire_power += 1
-                    powerups.remove(pu)
-                    bonus_sound.play()
-        alive_players = [p for p in players if p.alive]
-        if len(alive_players) <= 1:
-            if alive_players:
-                alive_players[0].trophies += 1
-                if alive_players[0].trophies >= TROPHY_WIN_THRESHOLD:
-                    game_state = "champion"
+            chain_cells = set()
+            for exp in triggered_explosions:
+                for cell in exp.cells:
+                    chain_cells.add(cell)
+            chain_triggered = True
+            while chain_triggered:
+                chain_triggered = False
+                for bomb in bombs[:]:
+                    if (bomb.x, bomb.y) in chain_cells:
+                        exp = Explosion(get_explosion_cells(bomb), current_time)
+                        triggered_explosions.append(exp)
+                        for cell in exp.cells:
+                            chain_cells.add(cell)
+                        bomb.owner.active_bombs -= 1
+                        bombs.remove(bomb)
+                        chain_triggered = True
+            explosions.extend(triggered_explosions)
+            for explosion in explosions[:]:
+                if not explosion.is_active(current_time):
+                    handle_explosion(explosion)
+                    explosions.remove(explosion)
+            for player in players:
+                if not player.alive:
+                    continue
+                for pu in powerups[:]:
+                    if player.get_grid_pos() == (pu.x, pu.y):
+                        if pu.type == "bomb":
+                            player.bomb_capacity += 1
+                        elif pu.type == "fire":
+                            player.fire_power += 1
+                        powerups.remove(pu)
+                        bonus_sound.play()
+            alive_players = [p for p in players if p.alive]
+            if len(alive_players) <= 1:
+                if alive_players:
+                    alive_players[0].trophies += 1
+                    if alive_players[0].trophies >= TROPHY_WIN_THRESHOLD:
+                        game_state = "champion"
+                    else:
+                        game_state = "win"
                 else:
                     game_state = "win"
-            else:
-                game_state = "win"
-        draw_board(game_surface)
-        draw_powerups(game_surface)
-        draw_bombs(game_surface, current_time)
-        draw_explosions(game_surface, current_time)
-        draw_players(game_surface)
+            draw_board(game_surface)
+            draw_powerups(game_surface)
+            draw_bombs(game_surface, current_time)
+            draw_explosions(game_surface, current_time)
+            draw_players(game_surface)
 
     elif game_state == "win":
         draw_logo(game_surface, alpha=255)
