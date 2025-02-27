@@ -346,22 +346,6 @@ def init_game():
     bombs = []
     explosions = []
     powerups = []
-    chosen_positions = []
-
-    def is_valid_starting_position(x, y):
-        # Check if the position and its perpendicular neighbors are free
-        if board[y][x] != INDESTRUCTIBLE:
-            free_cells = 0
-            if x > 0 and board[y][x - 1] != INDESTRUCTIBLE:
-                free_cells += 1
-            if x < GRID_WIDTH - 1 and board[y][x + 1] != INDESTRUCTIBLE:
-                free_cells += 1
-            if y > 0 and board[y - 1][x] != INDESTRUCTIBLE:
-                free_cells += 1
-            if y < GRID_HEIGHT - 1 and board[y + 1][x] != INDESTRUCTIBLE:
-                free_cells += 1
-            return free_cells >= 2
-        return False
 
     fixed_positions = [(1, 1), (GRID_WIDTH - 2, 1), (1, GRID_HEIGHT - 2), (GRID_WIDTH - 2, GRID_HEIGHT - 2)]
     corner_patterns = {
@@ -371,7 +355,6 @@ def init_game():
         (GRID_WIDTH - 2, GRID_HEIGHT - 2): [(0,0), (-1,0), (0,-1)]
     }
     
-    # Shuffle the players list
     random.shuffle(players)
 
     for i, player in enumerate(players):
@@ -436,7 +419,6 @@ def draw_powerup_icon(surface, center, size, powerup_type):
 def draw_bomb_powerup_icon(surface, center, size):
     size = int(size * 1.3)
     rect = pygame.Rect(center[0] - size//2, center[1] - size//2, size, size)
-    blue_fill = (50, 50, 255)
     blue_border = (0, 255, 255)
     pygame.draw.rect(surface, blue_border, rect, 4)
     bomb_r = size // 3
@@ -452,6 +434,11 @@ def draw_bomb_powerup_icon(surface, center, size):
     
 
 def draw_fire_powerup_icon(surface, center, size):
+    size2 = int(size * 1.3)
+    rect = pygame.Rect(center[0] - size2//2, center[1] - size2//2, size2, size2)
+    blue_border = (0, 255, 255)
+    pygame.draw.rect(surface, blue_border, rect, 4)
+    
     w = size
     h = size
     cx, cy = center
