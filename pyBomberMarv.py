@@ -9,6 +9,8 @@ pygame.mixer.init()
 
 # Load the sound file
 bonus_sound = pygame.mixer.Sound('sounds/pick-bonus.wav')
+explosion_sound = pygame.mixer.Sound('sounds/explosion_short.wav')
+death_sound = pygame.mixer.Sound('sounds/death.wav')
 
 # --- Configurable Constants ---
 NUM_PLAYERS = 2  # Default players (min 2, max 6)
@@ -40,7 +42,6 @@ if NUM_PLAYERS > 4:
     GRID_WIDTH = int(GRID_SIZE * 1.3)
 else:
     GRID_WIDTH = GRID_SIZE
-    
 GRID_HEIGHT = GRID_WIDTH  # Using a square grid
 
 BASE_WIDTH = CELL_SIZE * GRID_WIDTH
@@ -600,6 +601,7 @@ def darken_color(color, factor):
     return (int(color[0] * factor), int(color[1] * factor), int(color[2] * factor))
 
 def handle_explosion(explosion):
+    explosion_sound.play()
     for (x, y) in explosion.cells:
         if board[y][x] == DESTRUCTIBLE:
             board[y][x] = EMPTY
@@ -615,6 +617,7 @@ def handle_explosion(explosion):
                 explosion_rect = pygame.Rect(cell[0]*CELL_SIZE, cell[1]*CELL_SIZE, CELL_SIZE, CELL_SIZE)
                 if circle_rect_collision((player.pos.x, player.pos.y), player.collision_radius, explosion_rect):
                     player.alive = False
+                    death_sound.play()
                     break
 
 def draw_controls(surface):
