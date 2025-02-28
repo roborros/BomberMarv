@@ -34,9 +34,9 @@ FLAME_ARM_THICKNESS_RATIO = 0.9
 
 POWERUP_PROBABILITY = 0.3  # Chance to spawn a powerup when a block is destroyed
 
-TROPHY_WIN_THRESHOLD = 5   # Number of trophies needed to become Champion
+TROPHY_WIN_THRESHOLD = 2   # Number of trophies needed to become Champion
 
-QUAD_DAMAGE_PROBABILITY = 0.001*500 # Chance to spawn a Quad Damage powerup
+QUAD_DAMAGE_PROBABILITY = 0.0003 # Chance to spawn a Quad Damage powerup
 QUAD_DAMAGE_TIME = 20 # Duration of Quad Damage effect (s)
 QUAD_DAMAGE_POWER = 10    # Powerup bonus to bomb capacity and fire power
 QUAD_DAMAGE_DELAY = 0*120  # Delay before Quad Damage powerup spawns (s)
@@ -258,6 +258,7 @@ class Player:
         self.quad_damage = False
         self.quad_damage_start_time = 0
         self.name = name
+        self.death_animation_time = 0
 
     def get_circle(self):
         return (self.pos, self.draw_radius)
@@ -267,6 +268,8 @@ class Player:
 
     def update(self, dt, board, bombs):
         if not self.alive:
+            if self.death_animation_time > 0:
+                self.death_animation_time -= dt
             return
         keys = pygame.key.get_pressed()
         direction = pygame.math.Vector2(0, 0)
@@ -527,40 +530,47 @@ def draw_trophy_icon(surface, pos, size):
 
 def draw_players(surface):
     for player in players:
-        if not player.alive:
+        if not player.alive and player.death_animation_time <= 0:
             continue
         pos = (int(player.pos.x), int(player.pos.y))
         r = player.draw_radius
-        pygame.gfxdraw.filled_circle(surface, pos[0], pos[1], r, player.color)
-        pygame.gfxdraw.aacircle(surface, pos[0], pos[1], r, player.color)
-        helmet_color = (min(player.color[0]+30,255), min(player.color[1]+30,255), min(player.color[2]+30,255))
-        rect_head = pygame.Rect(pos[0]-r, pos[1]-r, 2*r, 2*r)
-        pygame.draw.arc(surface, helmet_color, rect_head, math.pi, 2*math.pi, 3)
-        eye_r = max(1, r//8)
-        eye_offset_x = r//3
-        eye_offset_y = r//3
-        pygame.gfxdraw.filled_circle(surface, pos[0]-eye_offset_x, pos[1]-eye_offset_y, eye_r, (0,0,0))
-        pygame.gfxdraw.filled_circle(surface, pos[0]+eye_offset_x, pos[1]-eye_offset_y, eye_r, (0,0,0))
-        leg_width = r//3
-        leg_height = r//4
-        leg_offset = int(6 * math.sin(player.animation_time / 150.0))
-        left_leg = pygame.Rect(pos[0] - r//2 - leg_width//2, pos[1] + r - 2 + leg_offset, leg_width, leg_height)
-        right_leg = pygame.Rect(pos[0] + r//2 - leg_width//2, pos[1] + r - 2 - leg_offset, leg_width, leg_height)
-        leg_color = (player.color[0]//2, player.color[1]//2, player.color[2]//2)
-        pygame.draw.rect(surface, leg_color, left_leg)
-        pygame.draw.rect(surface, leg_color, right_leg)
+        if player.alive:
+            pygame.gfxdraw.filled_circle(surface, pos[0], pos[1], r, player.color)
+            pygame.gfxdraw.aacircle(surface, pos[0], pos[1], r, player.color)
+            helmet_color = (min(player.color[0]+30,255), min(player.color[1]+30,255), min(player.color[2]+30,255))
+            rect_head = pygame.Rect(pos[0]-r, pos[1]-r, 2*r, 2*r)
+            pygame.draw.arc(surface, helmet_color, rect_head, math.pi, 2*math.pi, 3)
+            eye_r = max(1, r//8)
+            eye_offset_x = r//3
+            eye_offset_y = r//3
+            pygame.gfxdraw.filled_circle(surface, pos[0]-eye_offset_x, pos[1]-eye_offset_y, eye_r, (0,0,0))
+            pygame.gfxdraw.filled_circle(surface, pos[0]+eye_offset_x, pos[1]-eye_offset_y, eye_r, (0,0,0))
+            leg_width = r//3
+            leg_height = r//4
+            leg_offset = int(6 * math.sin(player.animation_time / 150.0))
+            left_leg = pygame.Rect(pos[0] - r//2 - leg_width//2, pos[1] + r - 2 + leg_offset, leg_width, leg_height)
+            right_leg = pygame.Rect(pos[0] + r//2 - leg_width//2, pos[1] + r - 2 - leg_offset, leg_width, leg_height)
+            leg_color = (player.color[0]//2, player.color[1]//2, player.color[2]//2)
+            pygame.draw.rect(surface, leg_color, left_leg)
+            pygame.draw.rect(surface, leg_color, right_leg)
         
-        if player.quad_damage:
-            elapsed = pygame.time.get_ticks() - player.quad_damage_start_time
-            pulse = 1 + 0.1 * math.sin(2 * math.pi * (elapsed / 500.0))
-            rect_size = int((2 * r + 10) * pulse)
-            rect = pygame.Rect(pos[0] - rect_size // 2, pos[1] - rect_size // 2, rect_size, rect_size)
-            pygame.draw.rect(surface, (0, 255, 255), rect, 4)
+            if player.quad_damage:
+                elapsed = pygame.time.get_ticks() - player.quad_damage_start_time
+                pulse = 1 + 0.1 * math.sin(2 * math.pi * (elapsed / 500.0))
+                rect_size = int((2 * r + 10) * pulse)
+                rect = pygame.Rect(pos[0] - rect_size // 2, pos[1] - rect_size // 2, rect_size, rect_size)
+                pygame.draw.rect(surface, (0, 255, 255), rect, 4)
             
-        # Draw player name
-        name_text = font_small.render(player.name, True, (255, 255, 255))
-        name_rect = name_text.get_rect(center=(pos[0], pos[1] - r - 10))
-        surface.blit(name_text, name_rect)
+            # Draw player name
+            name_text = font_small.render(player.name, True, (255, 255, 255))
+            name_rect = name_text.get_rect(center=(pos[0], pos[1] - r - 10))
+            surface.blit(name_text, name_rect)
+        else:
+            # Draw death animation
+            alpha = int(255 * (player.death_animation_time / 1000.0))
+            death_color = (255, 0, 0, alpha)
+            pygame.gfxdraw.filled_circle(surface, pos[0], pos[1], r, death_color)
+            pygame.gfxdraw.aacircle(surface, pos[0], pos[1], r, death_color)
 
 def draw_bombs(surface, current_time):
     for bomb in bombs:
@@ -665,6 +675,7 @@ def handle_explosion(explosion):
         explosion_sound_qd.play()
     else:
         explosion_sound.play()
+        
     for (x, y) in explosion.cells:
         if board[y][x] == DESTRUCTIBLE:
             board[y][x] = EMPTY
@@ -680,15 +691,21 @@ def handle_explosion(explosion):
                 explosion_rect = pygame.Rect(cell[0]*CELL_SIZE, cell[1]*CELL_SIZE, CELL_SIZE, CELL_SIZE)
                 if circle_rect_collision((player.pos.x, player.pos.y), player.collision_radius, explosion_rect):
                     player.alive = False
+                    player.death_animation_time = 1000  # 1 second death animation
                     death_sound.play()
                     break
 
 def draw_controls(surface):
     font = pygame.font.SysFont("arial", 40)
     y_offset = BASE_HEIGHT - BASE_HEIGHT // 3
+    control_text = "Controls: Up -  Down - Left - Right - Bomb"
+    text = font.render(control_text, True, (255, 255, 255))
+    rect = text.get_rect(center=(BASE_WIDTH // 2, y_offset))
+    surface.blit(text, rect)
+    y_offset += 50
     for i, player in enumerate(players):
         controls = player.controls
-        control_text = f"Player {i+1} Controls: Up: {pygame.key.name(controls['up'])}, Down: {pygame.key.name(controls['down'])}, Left: {pygame.key.name(controls['left'])}, Right: {pygame.key.name(controls['right'])}, Bomb: {pygame.key.name(controls['bomb'])}"
+        control_text = f"{player.name}: {pygame.key.name(controls['up'])} - {pygame.key.name(controls['down'])}- {pygame.key.name(controls['left'])} - {pygame.key.name(controls['right'])} - {pygame.key.name(controls['bomb'])}"
         text = font.render(control_text, True, player.color)
         rect = text.get_rect(center=(BASE_WIDTH // 2, y_offset))
         surface.blit(text, rect)
@@ -703,7 +720,7 @@ def draw_stat_screen(surface, winner):
         for i in range(winner.trophies):
             trophy_pos = (x_start + i * (icon_size + 5), BASE_HEIGHT//2 + 70)
             draw_trophy_icon(surface, trophy_pos, icon_size)
-        text = font.render(f"Player {players.index(winner)+1} wins!", True, winner.color)
+        text = font.render(f"{winner.name} wins!", True, winner.color)
     else:
         text = font.render("No one wins!", True, (255,255,255))
     rect = text.get_rect(center=(BASE_WIDTH//2, BASE_HEIGHT//2 + 80))
@@ -714,7 +731,7 @@ def draw_stat_screen(surface, winner):
         trophy_surface = pygame.Surface((150, 40), pygame.SRCALPHA)
         for j in range(player.trophies):
             draw_trophy_icon(trophy_surface, (j * 30, 0), 24+10)
-        win_text = font_small.render(f"Player {i+1}:", True, player.color)
+        win_text = font_small.render(f"{player.name}:", True, player.color)
         surface.blit(win_text, (50, y_offset))
         surface.blit(trophy_surface, (200, y_offset))
         y_offset += 40
@@ -727,7 +744,7 @@ def draw_champion_screen(surface, champion):
     trophy_surface = pygame.Surface((200, 40), pygame.SRCALPHA)
     for j in range(champion.trophies):
         draw_trophy_icon(trophy_surface, (j * 30, 0), 24)
-    text = font.render(f"Champion: Player {players.index(champion)+1}", True, champion.color)
+    text = font.render(f"Champion: {champion.name}", True, champion.color)
     rect = text.get_rect(center=(BASE_WIDTH//2, BASE_HEIGHT//2 - 100))
     surface.blit(text, rect)
     surface.blit(trophy_surface, (BASE_WIDTH//2 - 100, BASE_HEIGHT//2 + 100))
