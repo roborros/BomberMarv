@@ -10,6 +10,7 @@ pygame.mixer.init()
 # Load the sound file
 bonus_sound = pygame.mixer.Sound('sounds/pick-bonus.wav')
 explosion_sound = pygame.mixer.Sound('sounds/explosion_short.wav')
+explosion_sound_qd = pygame.mixer.Sound('sounds/explosion_short_qd.wav')
 death_sound = pygame.mixer.Sound('sounds/death.wav')
 qd_sound = pygame.mixer.Sound('sounds/quad_damage.mp3')
 
@@ -39,6 +40,7 @@ QUAD_DAMAGE_PROBABILITY = 0.001*500 # Chance to spawn a Quad Damage powerup
 QUAD_DAMAGE_TIME = 20 # Duration of Quad Damage effect (s)
 QUAD_DAMAGE_POWER = 10    # Powerup bonus to bomb capacity and fire power
 QUAD_DAMAGE_DELAY = 0*120  # Delay before Quad Damage powerup spawns (s)
+QUAD_DAMAGE_SPEEDUP = 1.5  # Speedup
 
 GRID_SIZE = 15
 
@@ -58,12 +60,10 @@ if NUM_PLAYERS > 4:
     GRID_WIDTH = int(GRID_SIZE * 1.3)
 else:
     GRID_WIDTH = GRID_SIZE
-GRID_HEIGHT = GRID_WIDTH  # Using a square grid
+GRID_HEIGHT = GRID_WIDTH
 
 BASE_WIDTH = CELL_SIZE * GRID_WIDTH
 BASE_HEIGHT = CELL_SIZE * GRID_HEIGHT
-
-
 
 
 pygame.init()
@@ -86,17 +86,18 @@ COLOR_DESTRUCTIBLE = (200, 200, 200)
 COLOR_BOMB_FILL = (120, 120, 120)
 COLOR_BOMB_OUTLINE = (80, 80, 80)
 COLOR_FUSE = (255, 200, 150)
-# Explosion colors are computed dynamically.
 
 BOMB_TIMER = 3000
 EXPLOSION_DURATION = 400
 
-quad_damage_image = pygame.image.load('qd.png')
-fire_powerup_image = pygame.image.load('fireup.png')
-blast_image = pygame.image.load('blast.png')
-blast_image_qd = pygame.image.load('blast_qd.png')
-blast_centre_image = pygame.image.load('blast_centre.png')
-blast_centre_image_qd = pygame.image.load('blast_centre_qd.png')
+# --- IMGS ---
+quad_damage_image = pygame.image.load('img\\qd.png')
+fire_powerup_image = pygame.image.load('img\\fireup.png')
+blast_image = pygame.image.load('img\\blast.png')
+blast_image_qd = pygame.image.load('img\\blast_qd.png')
+blast_centre_image = pygame.image.load('img\\blast_centre.png')
+blast_centre_image_qd = pygame.image.load('img\\blast_centre_qd.png')
+logo_image = pygame.image.load('img\\logo.png')
 
 # --- Helper Functions ---
 def clamp(value, min_value, max_value):
@@ -174,8 +175,6 @@ controls_list = [
     {'up': pygame.K_e, 'down': pygame.K_d, 'left': pygame.K_s, 'right': pygame.K_f, 'bomb': pygame.K_w}
 ]
 
-# Load the logo image
-logo_image = pygame.image.load('C:\WORK\pyMan\logo.png')
 
 # Set the window icon to the logo image
 pygame.display.set_icon(logo_image)
@@ -285,7 +284,12 @@ class Player:
         else:
             self.animation_time = 0
         original_pos = self.pos.copy()
-        self.pos += direction * self.speed * (dt / 1000.0)
+        if self.quad_damage:
+            spd = int(self.speed * QUAD_DAMAGE_SPEEDUP)
+        else:
+            spd = self.speed
+                
+        self.pos += direction * spd * (dt / 1000.0)
         # Update bomb ownership: if player's grid cell != bomb's cell, mark bomb as owner_left.
         for bomb in bombs:
             if bomb.owner == self and not bomb.owner_left:
@@ -657,7 +661,10 @@ def draw_blast_arm(surface, start_pos, end_offset, image):
     
 
 def handle_explosion(explosion):
-    explosion_sound.play()
+    if explosion.quad_damage:
+        explosion_sound_qd.play()
+    else:
+        explosion_sound.play()
     for (x, y) in explosion.cells:
         if board[y][x] == DESTRUCTIBLE:
             board[y][x] = EMPTY
