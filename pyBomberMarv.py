@@ -18,10 +18,9 @@ qd_sound = pygame.mixer.Sound('sounds/quad_damage.mp3')
 NUM_PLAYERS = 4  # Default players (min 2, max 6)
 NUM_PLAYERS = max(2, min(NUM_PLAYERS, 6))
 
-GAME_CELL_SIZE = 100  # Cell size (overall resolution)
-CELL_SIZE = GAME_CELL_SIZE
+CELL_SIZE = 100  # Cell size (overall resolution)
 
-PLAYER_SPEED = 220  # Default player speed (pixels per second)
+PLAYER_SPEED = int(CELL_SIZE*2.5)  # Default player speed (pixels per second)
 
 PLAYER_DRAW_SCALE = 0.85     # Drawn sprite diameter = 85% of cell edge
 PLAYER_COLLISION_SCALE = 0.7 # Collision circle = 75% of cell edge
@@ -30,7 +29,7 @@ BOMB_DRAW_SCALE = 0.9         # Bomb drawn diameter = 90% of cell edge
 BOMB_PULSE_AMPLITUDE = 0.1    # 10% pulse modulation
 BOMB_PULSE_SPEED = 300.0      # Bomb pulse period (ms)
 
-FLAME_ARM_THICKNESS_RATIO = 0.85*5
+FLAME_ARM_THICKNESS_RATIO = 0.9
 
 POWERUP_PROBABILITY = 0.3  # Chance to spawn a powerup when a block is destroyed
 
@@ -605,8 +604,9 @@ def draw_explosions(surface, current_time):
             center_img = blast_centre_image
         
         # Draw the center of the explosion using the center image
-        center_rect = center_img.get_rect(center=center_pixel)
-        surface.blit(center_img, center_rect)
+        scaled_center_img = pygame.transform.smoothscale(center_img, (CELL_SIZE * FLAME_ARM_THICKNESS_RATIO, CELL_SIZE * FLAME_ARM_THICKNESS_RATIO))
+        center_rect = scaled_center_img.get_rect(center=center_pixel)
+        surface.blit(scaled_center_img, center_rect)
         
         # Draw the arms of the explosion using the blast image
         if up_length > 0:
@@ -630,7 +630,7 @@ def draw_blast_arm(surface, start_pos, end_offset, image):
     angle = math.degrees(math.atan2(y2 - y1, x2 - x1))
     
     # Scale the image to the length of the arm
-    scaled_image = pygame.transform.smoothscale(image, (int(length), image.get_height()))
+    scaled_image = pygame.transform.smoothscale(image, (int(length), int(CELL_SIZE * FLAME_ARM_THICKNESS_RATIO)))
     
     # Rotate the image
     if angle == 0:
