@@ -55,6 +55,20 @@ colors = [
     (150, 100, 200)   # Light Purple
 ]
 
+# --- Control Schemes ---
+controls_list = [
+    {'up': pygame.K_UP, 'down': pygame.K_DOWN, 'left': pygame.K_LEFT, 'right': pygame.K_RIGHT, 'bomb': pygame.K_RCTRL},
+    {'up': pygame.K_w, 'down': pygame.K_s, 'left': pygame.K_a, 'right': pygame.K_d, 'bomb': pygame.K_q},
+    {'up': pygame.K_f, 'down': pygame.K_v, 'left': pygame.K_c, 'right': pygame.K_b, 'bomb': pygame.K_x},
+    {'up': pygame.K_z, 'down': pygame.K_h, 'left': pygame.K_g, 'right': pygame.K_j, 'bomb': pygame.K_t},
+    {'up': pygame.K_o, 'down': pygame.K_l, 'left': pygame.K_k, 'right': pygame.K_j, 'bomb': pygame.K_t},
+    {'up': pygame.K_e, 'down': pygame.K_d, 'left': pygame.K_s, 'right': pygame.K_f, 'bomb': pygame.K_w}
+]
+
+
+
+VERSION = "v1.0.0"
+
 
 if NUM_PLAYERS > 4:
     GRID_WIDTH = int(GRID_SIZE * 1.3)
@@ -98,6 +112,11 @@ blast_image_qd = pygame.image.load('img\\blast_qd.png')
 blast_centre_image = pygame.image.load('img\\blast_centre.png')
 blast_centre_image_qd = pygame.image.load('img\\blast_centre_qd.png')
 logo_image = pygame.image.load('img\\logo.png')
+
+pygame.display.set_icon(logo_image)
+
+arcade_font = pygame.font.SysFont('Comic Sans MS', 90)  # Using a common font
+font_small = pygame.font.SysFont("arial", 32)
 
 # --- Helper Functions ---
 def clamp(value, min_value, max_value):
@@ -165,26 +184,7 @@ def generate_maze():
                 board[y][x] = DESTRUCTIBLE
     return board
 
-# --- Control Schemes ---
-controls_list = [
-    {'up': pygame.K_UP, 'down': pygame.K_DOWN, 'left': pygame.K_LEFT, 'right': pygame.K_RIGHT, 'bomb': pygame.K_RCTRL},
-    {'up': pygame.K_w, 'down': pygame.K_s, 'left': pygame.K_a, 'right': pygame.K_d, 'bomb': pygame.K_q},
-    {'up': pygame.K_f, 'down': pygame.K_v, 'left': pygame.K_c, 'right': pygame.K_b, 'bomb': pygame.K_x},
-    {'up': pygame.K_z, 'down': pygame.K_h, 'left': pygame.K_g, 'right': pygame.K_j, 'bomb': pygame.K_t},
-    {'up': pygame.K_o, 'down': pygame.K_l, 'left': pygame.K_k, 'right': pygame.K_j, 'bomb': pygame.K_t},
-    {'up': pygame.K_e, 'down': pygame.K_d, 'left': pygame.K_s, 'right': pygame.K_f, 'bomb': pygame.K_w}
-]
 
-
-# Set the window icon to the logo image
-pygame.display.set_icon(logo_image)
-
-arcade_font = pygame.font.SysFont('Comic Sans MS', 90)  # Using a common font
-font_small = pygame.font.SysFont("arial", 32)
-
-VERSION = "v1.0.0"
-
-# --- Logo Drawing ---
 def draw_logo(surface, alpha=255):
     # Get the original dimensions of the logo
     logo_width, logo_height = logo_image.get_size()
@@ -384,7 +384,7 @@ class PowerUp:
     def __init__(self, x, y, type, spawn_time=0):
         self.x = x
         self.y = y
-        self.type = type  # "bomb" or "fire"
+        self.type = type
         self.spawn_time = spawn_time
 
 
@@ -482,6 +482,7 @@ def draw_bomb_powerup_icon(surface, center, size):
     fuse_center = (cell_center[0], cell_center[1] - fuse_offset)
     pygame.gfxdraw.filled_circle(surface, fuse_center[0], fuse_center[1], fuse_radius, COLOR_FUSE)
     pygame.gfxdraw.aacircle(surface, fuse_center[0], fuse_center[1], fuse_radius, COLOR_FUSE)   
+
 def draw_fire_powerup_icon(surface, center, size):
     size2 = int(size * 1.3)
     rect = pygame.Rect(center[0] - size2//2, center[1] - size2//2, size2, size2)
@@ -705,7 +706,7 @@ def draw_controls(surface):
     y_offset += 50
     for i, player in enumerate(players):
         controls = player.controls
-        control_text = f"{player.name}: {pygame.key.name(controls['up'])} - {pygame.key.name(controls['down'])}- {pygame.key.name(controls['left'])} - {pygame.key.name(controls['right'])} - {pygame.key.name(controls['bomb'])}"
+        control_text = f"{player.name}: {pygame.key.name(controls['up'])} - {pygame.key.name(controls['down'])} - {pygame.key.name(controls['left'])} - {pygame.key.name(controls['right'])} - {pygame.key.name(controls['bomb'])}"
         text = font.render(control_text, True, player.color)
         rect = text.get_rect(center=(BASE_WIDTH // 2, y_offset))
         surface.blit(text, rect)
@@ -749,6 +750,23 @@ def draw_champion_screen(surface, champion):
     surface.blit(text, rect)
     surface.blit(trophy_surface, (BASE_WIDTH//2 - 100, BASE_HEIGHT//2 + 100))
 
+def get_explosion_cells(bomb):
+    cells = [(bomb.x, bomb.y)]
+    for dx, dy in [(1,0), (-1,0), (0,1), (0,-1)]:
+        for i in range(1, bomb.fire_power + 1):
+            nx = bomb.x + dx * i
+            ny = bomb.y + dy * i
+            if nx < 0 or nx >= GRID_WIDTH or ny < 0 or ny >= GRID_HEIGHT:
+                break
+            if board[ny][nx] == INDESTRUCTIBLE:
+                break
+            cells.append((nx, ny))
+            if board[ny][nx] == DESTRUCTIBLE:
+                break
+    return cells
+
+# --- Main Game Loop ---
+
 # --- Global State for Screens ---
 game_state = "startup"  # "startup", "playing", "win", "champion"
 startup_start_time = pygame.time.get_ticks()
@@ -767,22 +785,6 @@ for i in range(NUM_PLAYERS):
     players.append(p)
 init_game()
 
-def get_explosion_cells(bomb):
-    cells = [(bomb.x, bomb.y)]
-    for dx, dy in [(1,0), (-1,0), (0,1), (0,-1)]:
-        for i in range(1, bomb.fire_power + 1):
-            nx = bomb.x + dx * i
-            ny = bomb.y + dy * i
-            if nx < 0 or nx >= GRID_WIDTH or ny < 0 or ny >= GRID_HEIGHT:
-                break
-            if board[ny][nx] == INDESTRUCTIBLE:
-                break
-            cells.append((nx, ny))
-            if board[ny][nx] == DESTRUCTIBLE:
-                break
-    return cells
-
-# --- Main Game Loop ---
 window_size = INITIAL_WINDOW_SIZE
 
 while True:
