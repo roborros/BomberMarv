@@ -18,19 +18,19 @@ qd_sound = pygame.mixer.Sound('sounds/quad_damage.mp3')
 NUM_PLAYERS = 4  # Default players (min 2, max 6)
 NUM_PLAYERS = max(2, min(NUM_PLAYERS, 6))
 
-GAME_CELL_SIZE = 80  # Cell size (overall resolution)
+GAME_CELL_SIZE = 100  # Cell size (overall resolution)
 CELL_SIZE = GAME_CELL_SIZE
 
 PLAYER_SPEED = 220  # Default player speed (pixels per second)
 
-PLAYER_DRAW_SCALE = 0.85      # Drawn sprite diameter = 85% of cell edge
-PLAYER_COLLISION_SCALE = 0.75 # Collision circle = 75% of cell edge
+PLAYER_DRAW_SCALE = 0.85     # Drawn sprite diameter = 85% of cell edge
+PLAYER_COLLISION_SCALE = 0.7 # Collision circle = 75% of cell edge
 
 BOMB_DRAW_SCALE = 0.9         # Bomb drawn diameter = 90% of cell edge
 BOMB_PULSE_AMPLITUDE = 0.1    # 10% pulse modulation
 BOMB_PULSE_SPEED = 300.0      # Bomb pulse period (ms)
 
-FLAME_ARM_THICKNESS_RATIO = 0.75
+FLAME_ARM_THICKNESS_RATIO = 0.85*5
 
 POWERUP_PROBABILITY = 0.3  # Chance to spawn a powerup when a block is destroyed
 
@@ -40,9 +40,20 @@ QUAD_DAMAGE_PROBABILITY = 0.001*500 # Chance to spawn a Quad Damage powerup
 QUAD_DAMAGE_TIME = 20 # Duration of Quad Damage effect (s)
 QUAD_DAMAGE_POWER = 10    # Powerup bonus to bomb capacity and fire power
 QUAD_DAMAGE_DELAY = 0*120  # Delay before Quad Damage powerup spawns (s)
-# --- Grid & Base Resolution Settings ---
 
 GRID_SIZE = 15
+
+player_names = ["Alice", "Bob", "Charlie", "Diana", "Eve", "Frank"]
+players = []
+colors = [
+    (100, 150, 200),  # Light Blue
+    (200, 150, 100),  # Light Brown
+    (150, 200, 100),  # Light Green
+    (200, 100, 150),  # Light Pink
+    (100, 200, 150),  # Light Teal
+    (150, 100, 200)   # Light Purple
+]
+
 
 if NUM_PLAYERS > 4:
     GRID_WIDTH = int(GRID_SIZE * 1.3)
@@ -52,6 +63,9 @@ GRID_HEIGHT = GRID_WIDTH  # Using a square grid
 
 BASE_WIDTH = CELL_SIZE * GRID_WIDTH
 BASE_HEIGHT = CELL_SIZE * GRID_HEIGHT
+
+
+
 
 pygame.init()
 display_info = pygame.display.Info()
@@ -226,7 +240,7 @@ def draw_trophy_icon(surface, pos, size):
 
 # --- Classes ---
 class Player:
-    def __init__(self, grid_x, grid_y, color, controls):
+    def __init__(self, grid_x, grid_y, color, controls, name):
         self.start_grid_x = grid_x
         self.start_grid_y = grid_y
         self.pos = pygame.math.Vector2(grid_x * CELL_SIZE + CELL_SIZE // 2,
@@ -243,8 +257,9 @@ class Player:
         self.draw_radius = int(CELL_SIZE * PLAYER_DRAW_SCALE / 2)
         self.collision_radius = int(CELL_SIZE * PLAYER_COLLISION_SCALE / 2)
         self.animation_time = 0
-        self.quad_damage = False  # Add this line
-        self.quad_damage_start_time = 0  # Add this line
+        self.quad_damage = False
+        self.quad_damage_start_time = 0
+        self.name = name
 
     def get_circle(self):
         return (self.pos, self.draw_radius)
@@ -538,6 +553,11 @@ def draw_players(surface):
             rect_size = int((2 * r + 10) * pulse)
             rect = pygame.Rect(pos[0] - rect_size // 2, pos[1] - rect_size // 2, rect_size, rect_size)
             pygame.draw.rect(surface, (0, 255, 255), rect, 4)
+            
+        # Draw player name
+        name_text = font_small.render(player.name, True, (255, 255, 255))
+        name_rect = name_text.get_rect(center=(pos[0], pos[1] - r - 10))
+        surface.blit(name_text, name_rect)
 
 def draw_bombs(surface, current_time):
     for bomb in bombs:
@@ -716,17 +736,9 @@ pygame.display.set_caption("BomberMarv")
 clock = pygame.time.Clock()
 game_surface = pygame.Surface((BASE_WIDTH, BASE_HEIGHT))
 
-players = []
-colors = [
-    (100, 150, 200),  # Light Blue
-    (200, 150, 100),  # Light Brown
-    (150, 200, 100),  # Light Green
-    (200, 100, 150),  # Light Pink
-    (100, 200, 150),  # Light Teal
-    (150, 100, 200)   # Light Purple
-]
+
 for i in range(NUM_PLAYERS):
-    p = Player(1, 1, colors[i % len(colors)], controls_list[i % len(controls_list)])
+    p = Player(1, 1, colors[i % len(colors)], controls_list[i % len(controls_list)], player_names[i % len(player_names)])
     p.trophies = 0
     players.append(p)
 init_game()
