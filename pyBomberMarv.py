@@ -14,9 +14,13 @@ explosion_sound_qd = pygame.mixer.Sound('sounds/explosion_short_qd.wav')
 death_sound = pygame.mixer.Sound('sounds/death.wav')
 qd_sound = pygame.mixer.Sound('sounds/quad_damage.mp3')
 
+# Set the volume for the explosion sounds to a lower level
+explosion_sound.set_volume(0.5)  # Set volume to 30%
+bonus_sound.set_volume(0.5)  # Set volume to 30%
+
 
 # --- Configurable Constants ---
-NUM_PLAYERS = 4  # Default players (min 2, max 6)
+NUM_PLAYERS = 6  # Default players (min 2, max 6)
 NUM_PLAYERS = max(2, min(NUM_PLAYERS, 6))
 
 CELL_SIZE = 100  # Cell size (overall resolution)
@@ -32,19 +36,19 @@ BOMB_PULSE_SPEED = 300.0      # Bomb pulse period (ms)
 
 FLAME_ARM_THICKNESS_RATIO = 0.9
 
-POWERUP_PROBABILITY = 0.3  # Chance to spawn a powerup when a block is destroyed
+POWERUP_PROBABILITY = 0.25  # Chance to spawn a powerup when a block is destroyed
 
-TROPHY_WIN_THRESHOLD = 2   # Number of trophies needed to become Champion
+TROPHY_WIN_THRESHOLD = 3   # Number of trophies needed to become Champion
 
 QUAD_DAMAGE_PROBABILITY = 0.0003 # Chance to spawn a Quad Damage powerup
 QUAD_DAMAGE_TIME = 20 # Duration of Quad Damage effect (s)
 QUAD_DAMAGE_POWER = 10    # Powerup bonus to bomb capacity and fire power
-QUAD_DAMAGE_DELAY = 0*120  # Delay before Quad Damage powerup spawns (s)
+QUAD_DAMAGE_DELAY = 40  # Delay before Quad Damage powerup spawns (s)
 QUAD_DAMAGE_SPEEDUP = 1.5  # Speedup
 
 GRID_SIZE = 15
 
-player_names = ["Alice", "Bob", "Charlie", "Diana", "Eve", "Frank"]
+player_names = ["Sobi", "Sasa", "Tom", "Marv", "Dan", "Ondra"]
 players = []
 colors = [
     (100, 150, 200),  # Light Blue
@@ -57,12 +61,12 @@ colors = [
 
 # --- Control Schemes ---
 controls_list = [
-    {'up': pygame.K_UP, 'down': pygame.K_DOWN, 'left': pygame.K_LEFT, 'right': pygame.K_RIGHT, 'bomb': pygame.K_RCTRL},
-    {'up': pygame.K_w, 'down': pygame.K_s, 'left': pygame.K_a, 'right': pygame.K_d, 'bomb': pygame.K_q},
-    {'up': pygame.K_f, 'down': pygame.K_v, 'left': pygame.K_c, 'right': pygame.K_b, 'bomb': pygame.K_x},
-    {'up': pygame.K_z, 'down': pygame.K_h, 'left': pygame.K_g, 'right': pygame.K_j, 'bomb': pygame.K_t},
-    {'up': pygame.K_o, 'down': pygame.K_l, 'left': pygame.K_k, 'right': pygame.K_j, 'bomb': pygame.K_t},
-    {'up': pygame.K_e, 'down': pygame.K_d, 'left': pygame.K_s, 'right': pygame.K_f, 'bomb': pygame.K_w}
+    {'up': pygame.K_KP_DIVIDE, 'down': pygame.K_KP8, 'left': pygame.K_KP7, 'right': pygame.K_KP9, 'bomb': pygame.K_RCTRL},
+    {'up': pygame.K_KP5, 'down': pygame.K_KP2, 'left': pygame.K_KP1, 'right': pygame.K_KP3, 'bomb': pygame.K_KP0},
+    {'up': pygame.K_HOME, 'down': pygame.K_END, 'left': pygame.K_DELETE, 'right': pygame.K_PAGEDOWN, 'bomb': pygame.K_BACKSPACE},
+    {'up': pygame.K_w, 'down': pygame.K_s, 'left': pygame.K_a, 'right': pygame.K_d, 'bomb': pygame.K_LCTRL},
+    {'up': pygame.K_f , 'down': pygame.K_v, 'left': pygame.K_c, 'right': pygame.K_b, 'bomb': pygame.K_LSHIFT},
+    {'up': pygame.K_i, 'down': pygame.K_k, 'left': pygame.K_j, 'right': pygame.K_l, 'bomb': pygame.K_SPACE}
 ]
 
 
@@ -298,7 +302,22 @@ class Player:
             if bomb.owner == self and not bomb.owner_left:
                 if self.get_grid_pos() != (bomb.x, bomb.y):
                     bomb.owner_left = True
+        #if self.collides_with_walls(board) or self.collides_with_bombs(bombs):
+         #   self.pos = original_pos
+        
+        # Check for collisions
         if self.collides_with_walls(board) or self.collides_with_bombs(bombs):
+            # If there's a small collision, clamp the player to the direction they are aiming for
+            if direction.x != 0 and direction.y != 0:
+                # Try moving only in the x direction
+                self.pos = original_pos + pygame.math.Vector2(direction.x * spd * (dt / 1000.0), 0)
+                if not (self.collides_with_walls(board) or self.collides_with_bombs(bombs)):
+                    return
+                # Try moving only in the y direction
+                self.pos = original_pos + pygame.math.Vector2(0, direction.y * spd * (dt / 1000.0))
+                if not (self.collides_with_walls(board) or self.collides_with_bombs(bombs)):
+                    return
+            # If both attempts fail, revert to the original position
             self.pos = original_pos
             
         # Handle quad damage duration
@@ -320,16 +339,23 @@ class Player:
         for bomb in bombs:
             if bomb.owner == self and not bomb.owner_left:
                 continue
-            # For own bombs that have been left, use a smaller effective radius (hysteresis)
+            bomb_center = pygame.math.Vector2(bomb.x * CELL_SIZE + CELL_SIZE / 2, bomb.y * CELL_SIZE + CELL_SIZE / 2)
             if bomb.owner == self:
-                bomb_center = pygame.math.Vector2(bomb.x * CELL_SIZE + CELL_SIZE/2, bomb.y * CELL_SIZE + CELL_SIZE/2)
                 if (self.pos - bomb_center).length() < CELL_SIZE * 0.4:
                     return True
             else:
                 bomb_rect = pygame.Rect(bomb.x * CELL_SIZE, bomb.y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
                 if circle_rect_collision((self.pos.x, self.pos.y), self.collision_radius, bomb_rect):
+                    # Allow movement if the player is already on the bomb
+                    if self.get_grid_pos() == (bomb.x, bomb.y):
+                        continue
+                    # Allow movement if the player is moving away from the bomb
+                    if (self.pos - bomb_center).length() < self.collision_radius + CELL_SIZE * 0.5:
+                        continue
                     return True
         return False
+    
+    
 
     def drop_bomb(self, bombs, current_time):
         if not self.alive or self.active_bombs >= self.bomb_capacity:
@@ -414,11 +440,11 @@ def init_game():
         elif i == 4:
             player.start_grid_x = GRID_WIDTH // 4
             player.start_grid_y = GRID_HEIGHT // 2
-            offsets = [(0,0), (1,0), (0,1)]
+            offsets = [(0,0), (1,0), (0,1), (1,1), (-1,0), (0,-1), (-1,-1), (1,-1), (-1,1)]
         elif i == 5:
             player.start_grid_x = 3 * GRID_WIDTH // 4
             player.start_grid_y = GRID_HEIGHT // 2
-            offsets = [(0,0), (-1,0), (0,1)]
+            offsets = [(0,0), (-1,0), (0,1), (-1,1), (1,0), (0,-1), (1,-1), (-1,-1), (1,1)]
         
         clear_safe_zone(board, player.start_grid_x, player.start_grid_y, offsets)
         player.reset()
