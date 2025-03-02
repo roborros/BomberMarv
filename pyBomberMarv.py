@@ -15,9 +15,9 @@ death_sound = pygame.mixer.Sound('sounds/death.wav')
 qd_sound = pygame.mixer.Sound('sounds/quad_damage.mp3')
 
 # Set the volume for the explosion sounds to a lower level
-explosion_sound.set_volume(0.5)  # Set volume to 30%
-bonus_sound.set_volume(0.5)  # Set volume to 30%
-
+explosion_sound.set_volume(0.1)  # Set volume to 30%
+bonus_sound.set_volume(0.1)  # Set volume to 30%
+death_sound.set_volume(0.1)  # Set volume to 30%
 
 # --- Configurable Constants ---
 NUM_PLAYERS = 6  # Default players (min 2, max 6)
@@ -40,7 +40,7 @@ POWERUP_PROBABILITY = 0.25  # Chance to spawn a powerup when a block is destroye
 
 TROPHY_WIN_THRESHOLD = 3   # Number of trophies needed to become Champion
 
-QUAD_DAMAGE_PROBABILITY = 0.0003 # Chance to spawn a Quad Damage powerup
+QUAD_DAMAGE_PROBABILITY = 0.0005 # Chance to spawn a Quad Damage powerup
 QUAD_DAMAGE_TIME = 20 # Duration of Quad Damage effect (s)
 QUAD_DAMAGE_POWER = 10    # Powerup bonus to bomb capacity and fire power
 QUAD_DAMAGE_DELAY = 40  # Delay before Quad Damage powerup spawns (s)
@@ -68,7 +68,7 @@ controls_list = [
     {'up': pygame.K_f , 'down': pygame.K_v, 'left': pygame.K_c, 'right': pygame.K_b, 'bomb': pygame.K_LSHIFT},
     {'up': pygame.K_i, 'down': pygame.K_k, 'left': pygame.K_j, 'right': pygame.K_l, 'bomb': pygame.K_SPACE}
 ]
-
+# https://www.pygame.org/docs/ref/key.html
 
 
 VERSION = "v1.0.0"
@@ -241,6 +241,7 @@ def draw_trophy_icon(surface, pos, size):
     pygame.draw.rect(surface, trophy_color, base_rect)
 
 # --- Classes ---
+
 class Player:
     def __init__(self, grid_x, grid_y, color, controls, name):
         self.start_grid_x = grid_x
@@ -290,42 +291,36 @@ class Player:
             self.animation_time += dt
         else:
             self.animation_time = 0
+
         original_pos = self.pos.copy()
-        if self.quad_damage:
-            spd = int(self.speed * QUAD_DAMAGE_SPEEDUP)
-        else:
-            spd = self.speed
-                
+        spd = self.speed if not self.quad_damage else int(self.speed * QUAD_DAMAGE_SPEEDUP)
         self.pos += direction * spd * (dt / 1000.0)
-        # Update bomb ownership: if player's grid cell != bomb's cell, mark bomb as owner_left.
+
+        # Update bomb ownership if the player has left their bomb cell.
         for bomb in bombs:
             if bomb.owner == self and not bomb.owner_left:
                 if self.get_grid_pos() != (bomb.x, bomb.y):
                     bomb.owner_left = True
-        #if self.collides_with_walls(board) or self.collides_with_bombs(bombs):
-         #   self.pos = original_pos
-        
-        # Check for collisions
-        if self.collides_with_walls(board) or self.collides_with_bombs(bombs):
-            # If there's a small collision, clamp the player to the direction they are aiming for
-            if direction.x != 0 and direction.y != 0:
-                # Try moving only in the x direction
-                self.pos = original_pos + pygame.math.Vector2(direction.x * spd * (dt / 1000.0), 0)
-                if not (self.collides_with_walls(board) or self.collides_with_bombs(bombs)):
-                    return
-                # Try moving only in the y direction
-                self.pos = original_pos + pygame.math.Vector2(0, direction.y * spd * (dt / 1000.0))
-                if not (self.collides_with_walls(board) or self.collides_with_bombs(bombs)):
-                    return
-            # If both attempts fail, revert to the original position
+
+        # Use our new collision check.
+        if self.collides_with_walls(board) or self.collides_with_bombs(bombs, original_pos):
+            # Try moving only along x
+            self.pos = original_pos + pygame.math.Vector2(direction.x * spd * (dt / 1000.0), 0)
+            if not (self.collides_with_walls(board) or self.collides_with_bombs(bombs, original_pos)):
+                return
+            # Try moving only along y
+            self.pos = original_pos + pygame.math.Vector2(0, direction.y * spd * (dt / 1000.0))
+            if not (self.collides_with_walls(board) or self.collides_with_bombs(bombs, original_pos)):
+                return
+            # Both attempts failed, revert.
             self.pos = original_pos
-            
-        # Handle quad damage duration
-        if self.quad_damage and pygame.time.get_ticks() - self.quad_damage_start_time > QUAD_DAMAGE_TIME*1000:
+
+        # Handle quad damage duration.
+        if self.quad_damage and pygame.time.get_ticks() - self.quad_damage_start_time > QUAD_DAMAGE_TIME * 1000:
             self.quad_damage = False
             self.bomb_capacity -= QUAD_DAMAGE_POWER
             self.fire_power -= QUAD_DAMAGE_POWER
-
+            
     def collides_with_walls(self, board):
         for y in range(GRID_HEIGHT):
             for x in range(GRID_WIDTH):
@@ -335,26 +330,33 @@ class Player:
                         return True
         return False
 
-    def collides_with_bombs(self, bombs):
+    def collides_with_bombs(self, bombs, original_pos):
         for bomb in bombs:
+            # Skip your own bomb that hasn't been left yet.
             if bomb.owner == self and not bomb.owner_left:
                 continue
-            bomb_center = pygame.math.Vector2(bomb.x * CELL_SIZE + CELL_SIZE / 2, bomb.y * CELL_SIZE + CELL_SIZE / 2)
-            if bomb.owner == self:
-                if (self.pos - bomb_center).length() < CELL_SIZE * 0.4:
-                    return True
-            else:
-                bomb_rect = pygame.Rect(bomb.x * CELL_SIZE, bomb.y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
-                if circle_rect_collision((self.pos.x, self.pos.y), self.collision_radius, bomb_rect):
-                    # Allow movement if the player is already on the bomb
-                    if self.get_grid_pos() == (bomb.x, bomb.y):
-                        continue
-                    # Allow movement if the player is moving away from the bomb
-                    if (self.pos - bomb_center).length() < self.collision_radius + CELL_SIZE * 0.5:
-                        continue
-                    return True
+
+            # Get bomb's cell and center.
+            bomb_cell = (bomb.x, bomb.y)
+            bomb_center = pygame.math.Vector2(bomb.x * CELL_SIZE + CELL_SIZE / 2,
+                                                bomb.y * CELL_SIZE + CELL_SIZE / 2)
+            # If the player originally was in the bomb's cell:
+            if (int(original_pos.x // CELL_SIZE), int(original_pos.y // CELL_SIZE)) == bomb_cell:
+                # If the new position is further from the bomb center than the starting position, let the player exit:
+                if (self.pos - bomb_center).length()+int(CELL_SIZE/10) > (original_pos - bomb_center).length():
+                    continue  # allow the move out
+
+            # Otherwise (or if not exiting), use a reduced bomb collision box.
+            margin = CELL_SIZE * 0.35  # tweak margin as needed
+            bomb_rect = pygame.Rect(
+                bomb.x * CELL_SIZE + margin,
+                bomb.y * CELL_SIZE + margin,
+                CELL_SIZE - 2 * margin,
+                CELL_SIZE - 2 * margin
+            )
+            if circle_rect_collision((self.pos.x, self.pos.y), self.collision_radius, bomb_rect):
+                return True
         return False
-    
     
 
     def drop_bomb(self, bombs, current_time):
