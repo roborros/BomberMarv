@@ -1,6 +1,6 @@
 
 import pygame
-from bm_params import BASE_WIDTH, BASE_HEIGHT, logo_image, VERSION, arcade_font
+from bm_params import *
 
 def draw_brick_pattern(rect, surface):
     brick_height = rect.height // 4
@@ -67,3 +67,17 @@ def draw_trophy_icon(surface, pos, size):
     # Draw a base
     base_rect = pygame.Rect(x + int(width * 0.3), y + int(height * 0.85), int(width * 0.4), int(height * 0.15))
     pygame.draw.rect(surface, trophy_color, base_rect)
+    
+def draw_board(surface,theGame):
+    for y in range(GRID_HEIGHT):
+        for x in range(GRID_WIDTH):
+            rect = pygame.Rect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+            if theGame.board[y][x] == EMPTY:
+                pygame.gfxdraw.box(surface, rect, COLOR_BG)
+            elif theGame.board[y][x] == INDESTRUCTIBLE:
+                pygame.gfxdraw.box(surface, rect, COLOR_INDESTRUCTIBLE)
+                pygame.draw.rect(surface, (80,80,80), rect, 1)
+            elif theGame.board[y][x] == DESTRUCTIBLE:
+                pygame.gfxdraw.box(surface, rect, COLOR_DESTRUCTIBLE)
+                draw_brick_pattern(rect, surface)
+                pygame.draw.rect(surface, (80,80,80), rect, 1)

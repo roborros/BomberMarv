@@ -32,19 +32,7 @@ from bm_game_sm import *
 
 
 
-def draw_board(surface):
-    for y in range(GRID_HEIGHT):
-        for x in range(GRID_WIDTH):
-            rect = pygame.Rect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
-            if theGame.board[y][x] == EMPTY:
-                pygame.gfxdraw.box(surface, rect, COLOR_BG)
-            elif theGame.board[y][x] == INDESTRUCTIBLE:
-                pygame.gfxdraw.box(surface, rect, COLOR_INDESTRUCTIBLE)
-                pygame.draw.rect(surface, (80,80,80), rect, 1)
-            elif theGame.board[y][x] == DESTRUCTIBLE:
-                pygame.gfxdraw.box(surface, rect, COLOR_DESTRUCTIBLE)
-                draw_brick_pattern(rect, surface)
-                pygame.draw.rect(surface, (80,80,80), rect, 1)
+
 
 def draw_powerups(surface):
     for p in theGame.powerups:
@@ -409,7 +397,7 @@ while True:
 
     elif theGame.game_state == "playing":
         if current_time < theGame.game_start_time:
-            draw_board(game_surface)
+            draw_board(game_surface, theGame)
             draw_powerups(game_surface)
             draw_bombs(game_surface, current_time)
             draw_explosions(game_surface, current_time)
@@ -478,7 +466,7 @@ while True:
                         theGame.game_state = "win"
                 else:
                     theGame.game_state = "win"
-            draw_board(game_surface)
+            draw_board(game_surface, theGame)
             draw_powerups(game_surface)
             draw_bombs(game_surface, current_time)
             draw_explosions(game_surface, current_time)
