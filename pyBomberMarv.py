@@ -30,20 +30,7 @@ from bm_game_sm import *
 
 
 
-def get_explosion_cells(bomb):
-    cells = [(bomb.x, bomb.y)]
-    for dx, dy in [(1,0), (-1,0), (0,1), (0,-1)]:
-        for i in range(1, bomb.fire_power + 1):
-            nx = bomb.x + dx * i
-            ny = bomb.y + dy * i
-            if nx < 0 or nx >= GRID_WIDTH or ny < 0 or ny >= GRID_HEIGHT:
-                break
-            if theGame.board[ny][nx] == INDESTRUCTIBLE:
-                break
-            cells.append((nx, ny))
-            if theGame.board[ny][nx] == DESTRUCTIBLE:
-                break
-    return cells
+
 
 def draw_board(surface):
     for y in range(GRID_HEIGHT):
@@ -436,7 +423,7 @@ while True:
             triggered_explosions = []
             for bomb in theGame.bombs[:]:
                 if bomb.update(current_time):
-                    exp = Explosion(get_explosion_cells(bomb), current_time, bomb.quad_damage)
+                    exp = Explosion(theGame.get_explosion_cells(bomb), current_time, bomb.quad_damage)
                     triggered_explosions.append(exp)
                     bomb.owner.active_bombs -= 1
                     theGame.bombs.remove(bomb)
@@ -449,7 +436,7 @@ while True:
                 chain_triggered = False
                 for bomb in theGame.bombs[:]:
                     if (bomb.x, bomb.y) in chain_cells:
-                        exp = Explosion(get_explosion_cells(bomb), current_time,bomb.quad_damage)
+                        exp = Explosion(theGame.get_explosion_cells(bomb), current_time,bomb.quad_damage)
                         triggered_explosions.append(exp)
                         for cell in exp.cells:
                             chain_cells.add(cell)

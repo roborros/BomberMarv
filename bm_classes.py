@@ -232,3 +232,18 @@ class Game:
             clear_safe_zone(self.board, player.start_grid_x, player.start_grid_y, offsets)
             player.reset()
         self.game_start_time = pygame.time.get_ticks() + 2000  # Add a 2-second freeze time
+
+    def get_explosion_cells(self,bomb):
+        cells = [(bomb.x, bomb.y)]
+        for dx, dy in [(1,0), (-1,0), (0,1), (0,-1)]:
+            for i in range(1, bomb.fire_power + 1):
+                nx = bomb.x + dx * i
+                ny = bomb.y + dy * i
+                if nx < 0 or nx >= GRID_WIDTH or ny < 0 or ny >= GRID_HEIGHT:
+                    break
+                if self.board[ny][nx] == INDESTRUCTIBLE:
+                    break
+                cells.append((nx, ny))
+                if self.board[ny][nx] == DESTRUCTIBLE:
+                    break
+        return cells
