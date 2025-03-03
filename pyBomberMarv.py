@@ -7,7 +7,6 @@ from lib_collisions import *
 from lib_grid import *
 from bm_drawing import *
 from bm_classes import *
-from bm_game_sm import *
 
 
 ## TODO
@@ -25,61 +24,14 @@ from bm_game_sm import *
 # add developer mode with simple ui and collision box visualization, direction of movement, etc.
 # game class to store all game state instead of global variables and add methods to it?
 
-## BUG
-# stat screen does not show the player tropies
+
+# BUG
 
 
-def place_quad_damage_powerup():
-    if (pygame.time.get_ticks() - theGame.game_start_time) >= QUAD_DAMAGE_DELAY*1000:  # 2 minutes
-        if not any(pu.type == "quad_damage" for pu in theGame.powerups):
-            empty_cells = [(x, y) for y in range(GRID_HEIGHT) for x in range(GRID_WIDTH) if theGame.board[y][x] == EMPTY]
-            if empty_cells and random.random() < QUAD_DAMAGE_PROBABILITY:
-                x, y = random.choice(empty_cells)
-                theGame.powerups.append(PowerUp(x, y, "quad_damage"))
-
-def handle_explosion(explosion):
-    if explosion.quad_damage:
-        explosion_sound_qd.play()
-    else:
-        explosion_sound.play()
-        
-    for (x, y) in explosion.cells:
-        if theGame.board[y][x] == DESTRUCTIBLE:
-            theGame.board[y][x] = EMPTY
-            if random.random() < POWERUP_PROBABILITY:
-                pu_type = random.choice(["bomb", "fire"])
-                theGame.powerups.append(PowerUp(x, y, pu_type, spawn_time=explosion.start_time))
-    for pu in theGame.powerups[:]:
-        if pu.spawn_time < explosion.start_time and (pu.x, pu.y) in explosion.cells:
-            theGame.powerups.remove(pu)
-    for player in theGame.players:
-        if player.alive:
-            for cell in explosion.cells:
-                explosion_rect = pygame.Rect(cell[0]*CELL_SIZE, cell[1]*CELL_SIZE, CELL_SIZE, CELL_SIZE)
-                if circle_rect_collision((player.pos.x, player.pos.y), player.collision_radius, explosion_rect):
-                    player.alive = False
-                    player.death_animation_time = 1000  # 1 second death animation
-                    death_sound.play()
-                    break
-
-
-# --- Main Game Loop ---
-
-# --- Global State for Screens ---
-game_state = "startup"  # "startup", "playing", "win", "champion"
-startup_start_time = pygame.time.get_ticks()
-
-# --- Fullscreen and Resizable Window Setup ---
-is_fullscreen = False
-window = pygame.display.set_mode(INITIAL_WINDOW_SIZE, pygame.RESIZABLE)
-pygame.display.set_caption("BomberMarv")
-clock = pygame.time.Clock()
-game_surface = pygame.Surface((BASE_WIDTH, BASE_HEIGHT))
 
 theGame = Game()
 theGame.init_game()
 
-window_size = INITIAL_WINDOW_SIZE
 
 while True:
     dt = clock.tick(FPS)
@@ -110,7 +62,7 @@ while True:
 
     game_surface.fill(COLOR_BG)
     if theGame.game_state == "startup":
-        elapsed = current_time - startup_start_time
+        elapsed = current_time - theGame.startup_start_time
         if elapsed < 2000:
             alpha = 255
         elif elapsed < 2800:
@@ -166,7 +118,7 @@ while True:
             theGame.explosions.extend(triggered_explosions)
             for explosion in theGame.explosions[:]:
                 if not explosion.is_active(current_time):
-                    handle_explosion(explosion)
+                    theGame.handle_explosion(explosion)
                     theGame.explosions.remove(explosion)
             for player in theGame.players:
                 if not player.alive:
@@ -187,7 +139,7 @@ while True:
                             qd_sound.play()
                         theGame.powerups.remove(pu)
                         
-            place_quad_damage_powerup()  # Call the function to place the quad damage powerup
+            theGame.place_quad_damage_powerup()
             alive_players = [p for p in theGame.players if p.alive]
             if len(alive_players) <= 1:
                 if alive_players:

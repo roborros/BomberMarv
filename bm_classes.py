@@ -4,7 +4,7 @@ import pygame
 from bm_params import *
 from lib_collisions import *
 from lib_grid import *
-
+from bm_sounds import *
 
 class Player:
     def __init__(self, grid_x, grid_y, color, controls, name):
@@ -247,3 +247,36 @@ class Game:
                 if self.board[ny][nx] == DESTRUCTIBLE:
                     break
         return cells
+    
+    def handle_explosion(self,explosion):
+        if explosion.quad_damage:
+            explosion_sound_qd.play()
+        else:
+            explosion_sound.play()
+            
+        for (x, y) in explosion.cells:
+            if self.board[y][x] == DESTRUCTIBLE:
+                self.board[y][x] = EMPTY
+                if random.random() < POWERUP_PROBABILITY:
+                    pu_type = random.choice(["bomb", "fire"])
+                    self.powerups.append(PowerUp(x, y, pu_type, spawn_time=explosion.start_time))
+        for pu in self.powerups[:]:
+            if pu.spawn_time < explosion.start_time and (pu.x, pu.y) in explosion.cells:
+                self.powerups.remove(pu)
+        for player in self.players:
+            if player.alive:
+                for cell in explosion.cells:
+                    explosion_rect = pygame.Rect(cell[0]*CELL_SIZE, cell[1]*CELL_SIZE, CELL_SIZE, CELL_SIZE)
+                    if circle_rect_collision((player.pos.x, player.pos.y), player.collision_radius, explosion_rect):
+                        player.alive = False
+                        player.death_animation_time = 1000  # 1 second death animation
+                        death_sound.play()
+                        break
+                    
+    def place_quad_damage_powerup(self):
+        if (pygame.time.get_ticks() - self.game_start_time) >= QUAD_DAMAGE_DELAY*1000:  # 2 minutes
+            if not any(pu.type == "quad_damage" for pu in self.powerups):
+                empty_cells = [(x, y) for y in range(GRID_HEIGHT) for x in range(GRID_WIDTH) if self.board[y][x] == EMPTY]
+                if empty_cells and random.random() < QUAD_DAMAGE_PROBABILITY:
+                    x, y = random.choice(empty_cells)
+                    self.powerups.append(PowerUp(x, y, "quad_damage"))

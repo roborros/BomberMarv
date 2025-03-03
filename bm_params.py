@@ -73,6 +73,11 @@ COLOR_BOMB_FILL = (120, 120, 120)
 COLOR_BOMB_OUTLINE = (80, 80, 80)
 COLOR_FUSE = (255, 200, 150)
 
+# --- Board Cell Types ---
+EMPTY = 0
+INDESTRUCTIBLE = 1
+DESTRUCTIBLE = 2
+
 
 # --- IMGS ---
 quad_damage_image = pygame.image.load('img\\qd.png')
@@ -97,10 +102,7 @@ BASE_HEIGHT = CELL_SIZE * GRID_HEIGHT
 
 BOMB_BASE_RADIUS = int((CELL_SIZE * BOMB_DRAW_SCALE) / 2)
 
-# --- Board Cell Types ---
-EMPTY = 0
-INDESTRUCTIBLE = 1
-DESTRUCTIBLE = 2
+
 
 
 pygame.init()
@@ -110,4 +112,12 @@ font_small = pygame.font.SysFont("arial", 32)
 display_info = pygame.display.Info()
 INITIAL_WINDOW_SIZE = (int(display_info.current_w * 0.7), int(display_info.current_h * 0.7))
 pygame.display.set_icon(logo_image)
+
+is_fullscreen = False
+
+window = pygame.display.set_mode(INITIAL_WINDOW_SIZE, pygame.RESIZABLE)
+pygame.display.set_caption("BomberMarv")
+clock = pygame.time.Clock()
+game_surface = pygame.Surface((BASE_WIDTH, BASE_HEIGHT))
+window_size = INITIAL_WINDOW_SIZE
 
