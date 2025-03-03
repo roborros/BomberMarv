@@ -35,7 +35,7 @@ class Player:
     def get_grid_pos(self):
         return (int(self.pos.x // CELL_SIZE), int(self.pos.y // CELL_SIZE))
 
-    def update(self, dt, board, bombs):
+    def update(self, dt, board, bombs, current_time):
         if not self.alive:
             if self.death_animation_time > 0:
                 self.death_animation_time -= dt
@@ -50,11 +50,14 @@ class Player:
             direction.x -= 1
         if keys[self.controls['right']]:
             direction.x += 1
-        if direction.length_squared() > 0:
+        if direction.length_squared() > 1:
             direction = direction.normalize()
             self.animation_time += dt
         else:
             self.animation_time = 0
+            
+        if keys[self.controls['bomb']]:  
+            self.drop_bomb(bombs, current_time)
 
         original_pos = self.pos.copy()
         spd = self.speed if not self.quad_damage else int(self.speed * QUAD_DAMAGE_SPEEDUP)
@@ -203,8 +206,6 @@ class Game:
             self.players.append(p)
     
     def init_game(self):
-    
-    #global board, bombs, explosions, powerups, game_start_time , players
 
         fixed_positions = [(1, 1), (GRID_WIDTH - 2, 1), (1, GRID_HEIGHT - 2), (GRID_WIDTH - 2, GRID_HEIGHT - 2)]
         corner_patterns = {

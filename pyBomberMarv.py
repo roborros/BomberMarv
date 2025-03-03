@@ -23,7 +23,10 @@ from bm_classes import *
 # add unit tests
 # add developer mode with simple ui and collision box visualization, direction of movement, etc.
 # game class to store all game state instead of global variables and add methods to it?
-
+# abstract pyge away from the game logic to not be locked in
+# ingame ECS key to pause the game
+# port to browser https://pygame-web.github.io/
+# remove bomb owner lesf tate from the bomb class and related collision checks
 
 # BUG
 
@@ -55,12 +58,10 @@ while True:
                 if theGame.game_state in ["win", "champion", "startup"]:
                     theGame.init_game()
                     theGame.game_state = "playing"
-            elif theGame.game_state == "playing" and theGame.current_time >= theGame.game_start_time:
-                for player in theGame.players:
-                    if event.key == player.controls['bomb']:
-                        player.drop_bomb(theGame.bombs, theGame.current_time)
 
     game_surface.fill(COLOR_BG)
+    
+    
     if theGame.game_state == "startup":
         elapsed = theGame.current_time - theGame.startup_start_time
         if elapsed < 2000:
@@ -81,17 +82,13 @@ while True:
 
     elif theGame.game_state == "playing":
         if theGame.current_time < theGame.game_start_time:
-            draw_board(game_surface, theGame)
-            draw_powerups(game_surface, theGame)
-            draw_bombs(game_surface, theGame.current_time, theGame.bombs)
-            draw_explosions(game_surface, theGame.current_time, theGame.explosions)
-            draw_players(game_surface,theGame.players)
+            draw_game_screen(game_surface, theGame)
             start_text = font_small.render("Get Ready!", True, (255, 255, 255))
             start_rect = start_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT - 50))
             game_surface.blit(start_text, start_rect)
         else:
             for player in theGame.players:
-                player.update(dt, theGame.board, theGame.bombs)
+                player.update(dt, theGame.board, theGame.bombs, theGame.current_time)
             triggered_explosions = []
             for bomb in theGame.bombs[:]:
                 if bomb.update(theGame.current_time):
@@ -150,11 +147,7 @@ while True:
                         theGame.game_state = "win"
                 else:
                     theGame.game_state = "win"
-            draw_board(game_surface, theGame)
-            draw_powerups(game_surface, theGame)
-            draw_bombs(game_surface, theGame.current_time, theGame.bombs)
-            draw_explosions(game_surface, theGame.current_time, theGame.explosions)
-            draw_players(game_surface, theGame.players)
+            draw_game_screen(game_surface, theGame)
 
     elif theGame.game_state == "win":
         draw_title_page(game_surface, alpha=255)
@@ -163,12 +156,5 @@ while True:
     elif theGame.game_state == "champion":
         draw_champion_screen(game_surface, alive_players[0] if alive_players else None)
     
-    factor = min(window_size[0] / BASE_WIDTH, window_size[1] / BASE_HEIGHT)
-    new_width = int(BASE_WIDTH * factor)
-    new_height = int(BASE_HEIGHT * factor)
-    scaled_surface = pygame.transform.smoothscale(game_surface, (new_width, new_height))
-    window.fill((0,0,0))
-    x_offset = (window_size[0] - new_width) // 2
-    y_offset = (window_size[1] - new_height) // 2
-    window.blit(scaled_surface, (x_offset, y_offset))
-    pygame.display.flip()
+    draw_adjust_screen_size(window_size, game_surface, window)
+

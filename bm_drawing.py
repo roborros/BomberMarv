@@ -293,8 +293,6 @@ def draw_blast_arm(surface, start_pos, end_offset, image):
     # Blit the rotated image onto the surface
     surface.blit(rotated_image, image_rect)
 
-
-
 def draw_controls(surface, players):
     font = pygame.font.SysFont("arial", 40)
     y_offset = BASE_HEIGHT - BASE_HEIGHT // 3
@@ -349,3 +347,20 @@ def draw_champion_screen(surface, champion):
     surface.blit(text, rect)
     surface.blit(trophy_surface, (BASE_WIDTH//2 - 100, BASE_HEIGHT//2 + 100))
 
+def draw_game_screen(surface, theGame):
+    draw_board(surface, theGame)
+    draw_powerups(surface, theGame)
+    draw_bombs(surface, theGame.current_time, theGame.bombs)
+    draw_explosions(surface, theGame.current_time, theGame.explosions)
+    draw_players(surface,theGame.players)
+    
+def draw_adjust_screen_size(window_size, game_surface, window):
+    factor = min(window_size[0] / BASE_WIDTH, window_size[1] / BASE_HEIGHT)
+    new_width = int(BASE_WIDTH * factor)
+    new_height = int(BASE_HEIGHT * factor)
+    scaled_surface = pygame.transform.smoothscale(game_surface, (new_width, new_height))
+    window.fill((0,0,0))
+    x_offset = (window_size[0] - new_width) // 2
+    y_offset = (window_size[1] - new_height) // 2
+    window.blit(scaled_surface, (x_offset, y_offset))
+    pygame.display.flip()
