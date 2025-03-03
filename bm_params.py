@@ -10,7 +10,7 @@ VERSION = "v1.1.0"
 
 # --- Configurable Constants ---
 NUM_PLAYERS = 6  # Default players (min 2, max 6)
-NUM_PLAYERS = max(2, min(NUM_PLAYERS, 6))
+NUM_PLAYERS = max(2, min(NUM_PLAYERS, 2))
 
 CELL_SIZE = 100  # Cell size (overall resolution)
 
@@ -40,7 +40,7 @@ GRID_SIZE = 15
 BOMB_TIMER = 3000
 EXPLOSION_DURATION = 400
 
-player_names = ["Sobi", "Sasa", "Tom", "Marv", "Dan", "Ondra"]
+player_names = ["Tom", "Marv", "Dan", "Ondra", "Sobi", "Sasa"]
 players = []
 colors = [
     (100, 150, 200),  # Light Blue
@@ -54,12 +54,12 @@ colors = [
 FPS = 60
 
 controls_list = [
-    {'up': pygame.K_KP_DIVIDE, 'down': pygame.K_KP8, 'left': pygame.K_KP7, 'right': pygame.K_KP9, 'bomb': pygame.K_RCTRL},
-    {'up': pygame.K_KP5, 'down': pygame.K_KP2, 'left': pygame.K_KP1, 'right': pygame.K_KP3, 'bomb': pygame.K_KP0},
     {'up': pygame.K_HOME, 'down': pygame.K_END, 'left': pygame.K_DELETE, 'right': pygame.K_PAGEDOWN, 'bomb': pygame.K_BACKSPACE},
     {'up': pygame.K_w, 'down': pygame.K_s, 'left': pygame.K_a, 'right': pygame.K_d, 'bomb': pygame.K_LCTRL},
     {'up': pygame.K_f , 'down': pygame.K_v, 'left': pygame.K_c, 'right': pygame.K_b, 'bomb': pygame.K_LSHIFT},
-    {'up': pygame.K_i, 'down': pygame.K_k, 'left': pygame.K_j, 'right': pygame.K_l, 'bomb': pygame.K_SPACE}
+    {'up': pygame.K_i, 'down': pygame.K_k, 'left': pygame.K_j, 'right': pygame.K_l, 'bomb': pygame.K_SPACE},
+    {'up': pygame.K_KP_DIVIDE, 'down': pygame.K_KP8, 'left': pygame.K_KP7, 'right': pygame.K_KP9, 'bomb': pygame.K_RCTRL},
+    {'up': pygame.K_KP5, 'down': pygame.K_KP2, 'left': pygame.K_KP1, 'right': pygame.K_KP3, 'bomb': pygame.K_KP0},
 ]
 # https://www.pygame.org/docs/ref/key.html
 

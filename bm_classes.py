@@ -161,6 +161,8 @@ class Bomb:
         self.quad_damage = False
         
     def update(self, current_time):
+        if current_time - self.start_time >= BOMB_TIMER:
+            self.exploded = True
         return current_time - self.start_time >= BOMB_TIMER
 
 class Explosion:

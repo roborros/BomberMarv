@@ -25,7 +25,8 @@ from bm_game_sm import *
 # add developer mode with simple ui and collision box visualization, direction of movement, etc.
 # game class to store all game state instead of global variables and add methods to it?
 
-
+## BUG
+# stat screen does not show the player tropies
 
 
 
@@ -383,8 +384,6 @@ pygame.display.set_caption("BomberMarv")
 clock = pygame.time.Clock()
 game_surface = pygame.Surface((BASE_WIDTH, BASE_HEIGHT))
 
-
-
 theGame = Game()
 theGame.init_game()
 
@@ -409,16 +408,16 @@ while True:
                     window = pygame.display.set_mode(INITIAL_WINDOW_SIZE, pygame.RESIZABLE)
                     window_size = INITIAL_WINDOW_SIZE
             elif event.key == pygame.K_RETURN:
-                if game_state in ["win", "champion", "startup"]:
+                if theGame.game_state in ["win", "champion", "startup"]:
                     theGame.init_game()
-                    game_state = "playing"
-            elif game_state == "playing" and current_time >= theGame.game_start_time:
+                    theGame.game_state = "playing"
+            elif theGame.game_state == "playing" and current_time >= theGame.game_start_time:
                 for player in theGame.players:
                     if event.key == player.controls['bomb']:
                         player.drop_bomb(theGame.bombs, current_time)
 
     game_surface.fill(COLOR_BG)
-    if game_state == "startup":
+    if theGame.game_state == "startup":
         elapsed = current_time - startup_start_time
         if elapsed < 2000:
             alpha = 255
@@ -436,7 +435,7 @@ while True:
         
         draw_title_page(game_surface, alpha)
 
-    elif game_state == "playing":
+    elif theGame.game_state == "playing":
         if current_time < theGame.game_start_time:
             draw_board(game_surface)
             draw_powerups(game_surface)
@@ -502,22 +501,22 @@ while True:
                 if alive_players:
                     alive_players[0].trophies += 1
                     if alive_players[0].trophies >= TROPHY_WIN_THRESHOLD:
-                        game_state = "champion"
+                        theGame.game_state = "champion"
                     else:
-                        game_state = "win"
+                        theGame.game_state = "win"
                 else:
-                    game_state = "win"
+                    theGame.game_state = "win"
             draw_board(game_surface)
             draw_powerups(game_surface)
             draw_bombs(game_surface, current_time)
             draw_explosions(game_surface, current_time)
             draw_players(game_surface)
 
-    elif game_state == "win":
+    elif theGame.game_state == "win":
         draw_title_page(game_surface, alpha=255)
         draw_stat_screen(game_surface, alive_players[0] if alive_players else None)
 
-    elif game_state == "champion":
+    elif theGame.game_state == "champion":
         draw_champion_screen(game_surface, alive_players[0] if alive_players else None)
     
     factor = min(window_size[0] / BASE_WIDTH, window_size[1] / BASE_HEIGHT)
