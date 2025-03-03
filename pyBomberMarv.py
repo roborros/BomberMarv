@@ -28,14 +28,14 @@ from bm_classes import *
 # BUG
 
 
-
 theGame = Game()
 theGame.init_game()
 
 
 while True:
-    dt = clock.tick(FPS)
-    current_time = pygame.time.get_ticks()
+    dt = clock.tick(FPS) # should be constant but when moved to params the game seems to by appx 30% faster, WHY?
+    theGame.tick()
+    
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             pygame.quit()
@@ -55,14 +55,14 @@ while True:
                 if theGame.game_state in ["win", "champion", "startup"]:
                     theGame.init_game()
                     theGame.game_state = "playing"
-            elif theGame.game_state == "playing" and current_time >= theGame.game_start_time:
+            elif theGame.game_state == "playing" and theGame.current_time >= theGame.game_start_time:
                 for player in theGame.players:
                     if event.key == player.controls['bomb']:
-                        player.drop_bomb(theGame.bombs, current_time)
+                        player.drop_bomb(theGame.bombs, theGame.current_time)
 
     game_surface.fill(COLOR_BG)
     if theGame.game_state == "startup":
-        elapsed = current_time - theGame.startup_start_time
+        elapsed = theGame.current_time - theGame.startup_start_time
         if elapsed < 2000:
             alpha = 255
         elif elapsed < 2800:
@@ -80,11 +80,11 @@ while True:
         draw_title_page(game_surface, alpha)
 
     elif theGame.game_state == "playing":
-        if current_time < theGame.game_start_time:
+        if theGame.current_time < theGame.game_start_time:
             draw_board(game_surface, theGame)
             draw_powerups(game_surface, theGame)
-            draw_bombs(game_surface, current_time, theGame.bombs)
-            draw_explosions(game_surface, current_time, theGame.explosions)
+            draw_bombs(game_surface, theGame.current_time, theGame.bombs)
+            draw_explosions(game_surface, theGame.current_time, theGame.explosions)
             draw_players(game_surface,theGame.players)
             start_text = font_small.render("Get Ready!", True, (255, 255, 255))
             start_rect = start_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT - 50))
@@ -94,8 +94,8 @@ while True:
                 player.update(dt, theGame.board, theGame.bombs)
             triggered_explosions = []
             for bomb in theGame.bombs[:]:
-                if bomb.update(current_time):
-                    exp = Explosion(theGame.get_explosion_cells(bomb), current_time, bomb.quad_damage)
+                if bomb.update(theGame.current_time):
+                    exp = Explosion(theGame.get_explosion_cells(bomb), theGame.current_time, bomb.quad_damage)
                     triggered_explosions.append(exp)
                     bomb.owner.active_bombs -= 1
                     theGame.bombs.remove(bomb)
@@ -108,7 +108,7 @@ while True:
                 chain_triggered = False
                 for bomb in theGame.bombs[:]:
                     if (bomb.x, bomb.y) in chain_cells:
-                        exp = Explosion(theGame.get_explosion_cells(bomb), current_time,bomb.quad_damage)
+                        exp = Explosion(theGame.get_explosion_cells(bomb), theGame.current_time,bomb.quad_damage)
                         triggered_explosions.append(exp)
                         for cell in exp.cells:
                             chain_cells.add(cell)
@@ -117,7 +117,7 @@ while True:
                         chain_triggered = True
             theGame.explosions.extend(triggered_explosions)
             for explosion in theGame.explosions[:]:
-                if not explosion.is_active(current_time):
+                if not explosion.is_active(theGame.current_time):
                     theGame.handle_explosion(explosion)
                     theGame.explosions.remove(explosion)
             for player in theGame.players:
@@ -133,7 +133,7 @@ while True:
                             bonus_sound.play()
                         elif pu.type == "quad_damage":
                             player.quad_damage = True
-                            player.quad_damage_start_time = current_time
+                            player.quad_damage_start_time = theGame.current_time
                             player.bomb_capacity += QUAD_DAMAGE_POWER
                             player.fire_power += QUAD_DAMAGE_POWER
                             qd_sound.play()
@@ -152,8 +152,8 @@ while True:
                     theGame.game_state = "win"
             draw_board(game_surface, theGame)
             draw_powerups(game_surface, theGame)
-            draw_bombs(game_surface, current_time, theGame.bombs)
-            draw_explosions(game_surface, current_time, theGame.explosions)
+            draw_bombs(game_surface, theGame.current_time, theGame.bombs)
+            draw_explosions(game_surface, theGame.current_time, theGame.explosions)
             draw_players(game_surface, theGame.players)
 
     elif theGame.game_state == "win":

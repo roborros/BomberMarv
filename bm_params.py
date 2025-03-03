@@ -14,7 +14,7 @@ NUM_PLAYERS = max(2, min(NUM_PLAYERS, 2))
 
 CELL_SIZE = 100  # Cell size (overall resolution)
 
-PLAYER_SPEED = int(CELL_SIZE*2.5)  # Default player speed (pixels per second)
+PLAYER_SPEED = int(CELL_SIZE*1.5)  # Default player speed (pixels per second)
 
 PLAYER_DRAW_SCALE = 0.85     # Drawn sprite diameter = 85% of cell edge
 PLAYER_COLLISION_SCALE = 0.7 # Collision circle = 75% of cell edge

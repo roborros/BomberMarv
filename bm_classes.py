@@ -193,6 +193,7 @@ class Game:
         self.players = []
         self.game_state = "startup"
         self.startup_start_time = pygame.time.get_ticks()
+        self.current_time = self.startup_start_time
         self.window = pygame.display.set_mode(INITIAL_WINDOW_SIZE, pygame.RESIZABLE)
         self.clock = pygame.time.Clock()
         self.game_surface = pygame.Surface((BASE_WIDTH, BASE_HEIGHT))
@@ -273,10 +274,14 @@ class Game:
                         death_sound.play()
                         break
                     
-    def place_quad_damage_powerup(self):
+    def place_quad_damage_powerup(self):        
         if (pygame.time.get_ticks() - self.game_start_time) >= QUAD_DAMAGE_DELAY*1000:  # 2 minutes
             if not any(pu.type == "quad_damage" for pu in self.powerups):
                 empty_cells = [(x, y) for y in range(GRID_HEIGHT) for x in range(GRID_WIDTH) if self.board[y][x] == EMPTY]
                 if empty_cells and random.random() < QUAD_DAMAGE_PROBABILITY:
                     x, y = random.choice(empty_cells)
                     self.powerups.append(PowerUp(x, y, "quad_damage"))
+                                
+    def tick(self):
+        self.current_time = pygame.time.get_ticks()                
+                    
