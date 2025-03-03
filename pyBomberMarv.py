@@ -29,13 +29,6 @@ from bm_game_sm import *
 # stat screen does not show the player tropies
 
 
-
-
-
-
-
-
-
 def place_quad_damage_powerup():
     if (pygame.time.get_ticks() - theGame.game_start_time) >= QUAD_DAMAGE_DELAY*1000:  # 2 minutes
         if not any(pu.type == "quad_damage" for pu in theGame.powerups):
@@ -43,8 +36,6 @@ def place_quad_damage_powerup():
             if empty_cells and random.random() < QUAD_DAMAGE_PROBABILITY:
                 x, y = random.choice(empty_cells)
                 theGame.powerups.append(PowerUp(x, y, "quad_damage"))
-
-    
 
 def handle_explosion(explosion):
     if explosion.quad_damage:
@@ -71,59 +62,6 @@ def handle_explosion(explosion):
                     death_sound.play()
                     break
 
-def draw_controls(surface):
-    font = pygame.font.SysFont("arial", 40)
-    y_offset = BASE_HEIGHT - BASE_HEIGHT // 3
-    control_text = "Controls: Up -  Down - Left - Right - Bomb"
-    text = font.render(control_text, True, (255, 255, 255))
-    rect = text.get_rect(center=(BASE_WIDTH // 2, y_offset))
-    surface.blit(text, rect)
-    y_offset += 50
-    for i, player in enumerate(players):
-        controls = player.controls
-        control_text = f"{player.name}: {pygame.key.name(controls['up'])} - {pygame.key.name(controls['down'])} - {pygame.key.name(controls['left'])} - {pygame.key.name(controls['right'])} - {pygame.key.name(controls['bomb'])}"
-        text = font.render(control_text, True, player.color)
-        rect = text.get_rect(center=(BASE_WIDTH // 2, y_offset))
-        surface.blit(text, rect)
-        y_offset += 50
-
-def draw_stat_screen(surface, winner):
-    font = pygame.font.SysFont("arial", 48, bold=True)
-    draw_title_page(surface, alpha=255)
-    if winner:
-        x_start = BASE_WIDTH//2 + 150
-        icon_size = 24
-        for i in range(winner.trophies):
-            trophy_pos = (x_start + i * (icon_size + 5), BASE_HEIGHT//2 + 70)
-            draw_trophy_icon(surface, trophy_pos, icon_size)
-        text = font.render(f"{winner.name} wins!", True, winner.color)
-    else:
-        text = font.render("No one wins!", True, (255,255,255))
-    rect = text.get_rect(center=(BASE_WIDTH//2, BASE_HEIGHT//2 + 80))
-    surface.blit(text, rect)
-    font_small = pygame.font.SysFont("arial", 32)
-    y_offset = BASE_HEIGHT//2 + 110
-    for i, player in enumerate(players):
-        trophy_surface = pygame.Surface((150, 40), pygame.SRCALPHA)
-        for j in range(player.trophies):
-            draw_trophy_icon(trophy_surface, (j * 30, 0), 24+10)
-        win_text = font_small.render(f"{player.name}:", True, player.color)
-        surface.blit(win_text, (50, y_offset))
-        surface.blit(trophy_surface, (200, y_offset))
-        y_offset += 40
-        
-    #draw_controls(surface)
-
-def draw_champion_screen(surface, champion):
-    font = pygame.font.SysFont("arial", 60, bold=True)
-    draw_title_page(surface, alpha=255)
-    trophy_surface = pygame.Surface((200, 40), pygame.SRCALPHA)
-    for j in range(champion.trophies):
-        draw_trophy_icon(trophy_surface, (j * 30, 0), 24)
-    text = font.render(f"Champion: {champion.name}", True, champion.color)
-    rect = text.get_rect(center=(BASE_WIDTH//2, BASE_HEIGHT//2 - 100))
-    surface.blit(text, rect)
-    surface.blit(trophy_surface, (BASE_WIDTH//2 - 100, BASE_HEIGHT//2 + 100))
 
 # --- Main Game Loop ---
 
@@ -180,7 +118,7 @@ while True:
        
         
         if int(elapsed) >= 2200:
-            draw_controls(game_surface)
+            draw_controls(game_surface, theGame.players)
 
             # Display "Press Enter to start the game" message
             start_text = font_small.render("Press Enter to start the game", True, (255, 255, 255))
@@ -268,7 +206,7 @@ while True:
 
     elif theGame.game_state == "win":
         draw_title_page(game_surface, alpha=255)
-        draw_stat_screen(game_surface, alive_players[0] if alive_players else None)
+        draw_stat_screen(game_surface, alive_players[0] if alive_players else None, theGame.players)
 
     elif theGame.game_state == "champion":
         draw_champion_screen(game_surface, alive_players[0] if alive_players else None)

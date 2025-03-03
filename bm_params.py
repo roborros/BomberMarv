@@ -41,7 +41,7 @@ BOMB_TIMER = 3000
 EXPLOSION_DURATION = 400
 
 player_names = ["Tom", "Marv", "Dan", "Ondra", "Sobi", "Sasa"]
-players = []
+#players = []
 colors = [
     (100, 150, 200),  # Light Blue
     (200, 150, 100),  # Light Brown
