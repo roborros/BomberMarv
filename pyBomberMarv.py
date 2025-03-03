@@ -356,21 +356,6 @@ def draw_champion_screen(surface, champion):
     surface.blit(text, rect)
     surface.blit(trophy_surface, (BASE_WIDTH//2 - 100, BASE_HEIGHT//2 + 100))
 
-def get_explosion_cells(bomb):
-    cells = [(bomb.x, bomb.y)]
-    for dx, dy in [(1,0), (-1,0), (0,1), (0,-1)]:
-        for i in range(1, bomb.fire_power + 1):
-            nx = bomb.x + dx * i
-            ny = bomb.y + dy * i
-            if nx < 0 or nx >= GRID_WIDTH or ny < 0 or ny >= GRID_HEIGHT:
-                break
-            if theGame.board[ny][nx] == INDESTRUCTIBLE:
-                break
-            cells.append((nx, ny))
-            if theGame.board[ny][nx] == DESTRUCTIBLE:
-                break
-    return cells
-
 # --- Main Game Loop ---
 
 # --- Global State for Screens ---
