@@ -59,7 +59,7 @@ while True:
                     theGame.init_game()
                     theGame.game_state = "playing"
 
-    game_surface.fill(COLOR_BG)
+    game_surface.fill(COLOR_BG) # move inside drawinf fcns
     
     
     if theGame.game_state == "startup":
@@ -69,6 +69,7 @@ while True:
         elif elapsed < 2800:
             alpha = int(255 * (2500 - elapsed) / 500)
        
+        draw_title_page(game_surface, alpha)
         
         if int(elapsed) >= 2200:
             draw_controls(game_surface, theGame.players)
@@ -78,7 +79,7 @@ while True:
             start_rect = start_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT - 50))
             game_surface.blit(start_text, start_rect)
         
-        draw_title_page(game_surface, alpha)
+        
 
     elif theGame.game_state == "playing":
         if theGame.current_time < theGame.game_start_time:
