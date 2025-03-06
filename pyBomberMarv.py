@@ -34,6 +34,7 @@ from bm_classes import *
 theGame = Game()
 theGame.init_game()
 
+theScreen = Screen()
 
 while True:
     theGame.tick()
@@ -42,7 +43,8 @@ while True:
     
     
     if theGame.game_state == "startup":
-        theGame.fsm_startup(game_surface)
+        
+        theScreen.draw_startup(game_surface,theGame)
         
     elif theGame.game_state == "playing":
         

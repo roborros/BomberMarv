@@ -323,8 +323,14 @@ class Game:
                         self.game_state = "playing"
                         
                         
-    def fsm_startup(self,surface):
-        elapsed = self.current_time - self.startup_start_time
+    
+            
+class Screen:
+    def __init__(self):
+        self.foo = False
+    
+    def draw_startup(self,surface,Game):
+        elapsed = Game.current_time - Game.startup_start_time
         if elapsed < 2000:
             alpha = 255
         elif elapsed < 2800:
@@ -333,7 +339,7 @@ class Game:
         draw_title_page(surface, alpha)
         
         if int(elapsed) >= 2200:
-            draw_controls(surface, self.players)
+            draw_controls(surface, Game.players)
 
             # Display "Press Enter to start the game" message
             start_text = font_small.render("Press Enter to start the game", True, (255, 255, 255))
