@@ -317,10 +317,7 @@ class Game:
                     else:
                         window = pygame.display.set_mode(INITIAL_WINDOW_SIZE, pygame.RESIZABLE)
                         self.window_size = INITIAL_WINDOW_SIZE
-                elif event.key == pygame.K_RETURN:
-                    if self.game_state in ["win", "champion", "startup"]:
-                        self.init_game()
-                        self.game_state = "playing"
+                
                         
     def update(self):
         #update players
