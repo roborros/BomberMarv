@@ -322,7 +322,36 @@ class Game:
                         self.init_game()
                         self.game_state = "playing"
                         
-                        
+    def update(self):
+        #update players
+        for player in self.players:
+                player.update(self.dt, self.board, self.bombs, self.current_time) 
+        
+        # update bombs & check for explosions
+        triggered_explosions = []
+        for bomb in self.bombs[:]:
+            if bomb.update(self.current_time):
+                exp = Explosion(self.get_explosion_cells(bomb), self.current_time, bomb.quad_damage)
+                triggered_explosions.append(exp)
+                bomb.owner.active_bombs -= 1
+                self.bombs.remove(bomb)
+        chain_cells = set()
+        for exp in triggered_explosions:
+            for cell in exp.cells:
+                chain_cells.add(cell)
+        chain_triggered = True
+        while chain_triggered:
+            chain_triggered = False
+            for bomb in self.bombs[:]:
+                if (bomb.x, bomb.y) in chain_cells:
+                    exp = Explosion(self.get_explosion_cells(bomb), self.current_time,bomb.quad_damage)
+                    triggered_explosions.append(exp)
+                    for cell in exp.cells:
+                        chain_cells.add(cell)
+                    bomb.owner.active_bombs -= 1
+                    self.bombs.remove(bomb)
+                    chain_triggered = True
+        self.explosions.extend(triggered_explosions)         
     
             
 class Screen:
