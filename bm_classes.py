@@ -207,6 +207,11 @@ class Game:
     
     def init_game(self):
 
+        self.board = generate_maze()
+        self.bombs = []
+        self.explosions = []
+        self.powerups = []
+        
         fixed_positions = [(1, 1), (GRID_WIDTH - 2, 1), (1, GRID_HEIGHT - 2), (GRID_WIDTH - 2, GRID_HEIGHT - 2)]
         corner_patterns = {
             (1, 1): [(0,0), (1,0), (0,1)],
