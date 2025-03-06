@@ -317,6 +317,10 @@ class Game:
                     else:
                         window = pygame.display.set_mode(INITIAL_WINDOW_SIZE, pygame.RESIZABLE)
                         self.window_size = INITIAL_WINDOW_SIZE
+                elif event.key == pygame.K_RETURN:
+                    if self.game_state in ["win", "champion", "startup"]:
+                        self.init_game()
+                        self.game_state = "get_ready"
                 
                         
     def update(self):
@@ -350,6 +354,39 @@ class Game:
                     chain_triggered = True
         self.explosions.extend(triggered_explosions)         
     
+        self.handle_explosions()
+        
+        for player in self.players: 
+            if not player.alive:
+                continue
+            for pu in self.powerups[:]:
+                if player.get_grid_pos() == (pu.x, pu.y):
+                    if pu.type == "bomb":
+                        player.bomb_capacity += 1
+                        bonus_sound.play()
+                    elif pu.type == "fire":
+                        player.fire_power += 1
+                        bonus_sound.play()
+                    elif pu.type == "quad_damage":
+                        player.quad_damage = True
+                        player.quad_damage_start_time = self.current_time
+                        player.bomb_capacity += QUAD_DAMAGE_POWER
+                        player.fire_power += QUAD_DAMAGE_POWER
+                        qd_sound.play()
+                    self.powerups.remove(pu)
+                    
+        self.place_quad_damage_powerup()
+        
+        alive_players = [p for p in self.players if p.alive]
+        if len(alive_players) <= 1:
+            if alive_players:
+                alive_players[0].trophies += 1
+                if alive_players[0].trophies >= TROPHY_WIN_THRESHOLD:
+                    self.game_state = "champion"
+                else:
+                    self.game_state = "win"
+            else:
+                self.game_state = "win"   
             
 class Screen:
     def __init__(self):
@@ -361,7 +398,9 @@ class Screen:
             alpha = 255
         elif elapsed < 2800:
             alpha = int(255 * (2500 - elapsed) / 500)
-       
+        else:
+            alpha = 0
+            
         draw_title_page(surface, alpha)
         
         if int(elapsed) >= 2200:

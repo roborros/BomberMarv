@@ -6,7 +6,7 @@ import math
 
 
 
-VERSION = "v1.1.0"
+VERSION = "v1.2.0"
 
 # --- Configurable Constants ---
 NUM_PLAYERS = 6  # Default players (min 2, max 6)
