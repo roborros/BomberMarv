@@ -36,52 +36,16 @@ theGame.init_game()
 
 
 while True:
-    dt = clock.tick(FPS) # should be constant but when moved to params the game seems to by appx 30% faster, WHY?
     theGame.tick()
     
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            pygame.quit()
-            sys.exit()
-        elif event.type == pygame.VIDEORESIZE:
-            window_size = event.size
-        elif event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_F11:
-                is_fullscreen = not is_fullscreen
-                if is_fullscreen:
-                    window = pygame.display.set_mode((0,0), pygame.FULLSCREEN)
-                    window_size = window.get_size()
-                else:
-                    window = pygame.display.set_mode(INITIAL_WINDOW_SIZE, pygame.RESIZABLE)
-                    window_size = INITIAL_WINDOW_SIZE
-            elif event.key == pygame.K_RETURN:
-                if theGame.game_state in ["win", "champion", "startup"]:
-                    theGame.init_game()
-                    theGame.game_state = "playing"
-
-    game_surface.fill(COLOR_BG) # move inside drawinf fcns
+    theGame.handle_window_events()
     
     
     if theGame.game_state == "startup":
-        elapsed = theGame.current_time - theGame.startup_start_time
-        if elapsed < 2000:
-            alpha = 255
-        elif elapsed < 2800:
-            alpha = int(255 * (2500 - elapsed) / 500)
-       
-        draw_title_page(game_surface, alpha)
+        theGame.fsm_startup(game_surface)
         
-        if int(elapsed) >= 2200:
-            draw_controls(game_surface, theGame.players)
-
-            # Display "Press Enter to start the game" message
-            start_text = font_small.render("Press Enter to start the game", True, (255, 255, 255))
-            start_rect = start_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT - 50))
-            game_surface.blit(start_text, start_rect)
-        
-        
-
     elif theGame.game_state == "playing":
+        
         if theGame.current_time < theGame.game_start_time:
             draw_game_screen(game_surface, theGame)
             start_text = font_small.render("Get Ready!", True, (255, 255, 255))
@@ -89,7 +53,7 @@ while True:
             game_surface.blit(start_text, start_rect)
         else:
             for player in theGame.players:
-                player.update(dt, theGame.board, theGame.bombs, theGame.current_time)
+                player.update(theGame.dt, theGame.board, theGame.bombs, theGame.current_time)
             triggered_explosions = []
             for bomb in theGame.bombs[:]:
                 if bomb.update(theGame.current_time):
@@ -114,10 +78,9 @@ while True:
                         theGame.bombs.remove(bomb)
                         chain_triggered = True
             theGame.explosions.extend(triggered_explosions)
-            for explosion in theGame.explosions[:]:
-                if not explosion.is_active(theGame.current_time):
-                    theGame.handle_explosion(explosion)
-                    theGame.explosions.remove(explosion)
+
+            theGame.handle_explosions()
+                    
             for player in theGame.players:
                 if not player.alive:
                     continue
@@ -138,6 +101,7 @@ while True:
                         theGame.powerups.remove(pu)
                         
             theGame.place_quad_damage_powerup()
+            
             alive_players = [p for p in theGame.players if p.alive]
             if len(alive_players) <= 1:
                 if alive_players:
@@ -147,9 +111,9 @@ while True:
                     else:
                         theGame.game_state = "win"
                 else:
-                    theGame.game_state = "win"
+                    theGame.game_state = "win"   
             draw_game_screen(game_surface, theGame)
-
+        
     elif theGame.game_state == "win":
         draw_title_page(game_surface, alpha=255)
         draw_stat_screen(game_surface, alive_players[0] if alive_players else None, theGame.players)
@@ -157,5 +121,5 @@ while True:
     elif theGame.game_state == "champion":
         draw_champion_screen(game_surface, alive_players[0] if alive_players else None)
     
-    draw_adjust_screen_size(window_size, game_surface, window)
+    draw_adjust_screen_size(theGame.window_size, game_surface, window)
 

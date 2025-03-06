@@ -113,11 +113,7 @@ display_info = pygame.display.Info()
 INITIAL_WINDOW_SIZE = (int(display_info.current_w * 0.7), int(display_info.current_h * 0.7))
 pygame.display.set_icon(logo_image)
 
-is_fullscreen = False
-
 window = pygame.display.set_mode(INITIAL_WINDOW_SIZE, pygame.RESIZABLE)
 pygame.display.set_caption("BomberMarv")
-clock = pygame.time.Clock()
 game_surface = pygame.Surface((BASE_WIDTH, BASE_HEIGHT))
-window_size = INITIAL_WINDOW_SIZE
 

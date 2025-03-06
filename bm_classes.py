@@ -5,6 +5,7 @@ from bm_params import *
 from lib_collisions import *
 from lib_grid import *
 from bm_sounds import *
+from bm_drawing import *
 
 class Player:
     def __init__(self, grid_x, grid_y, color, controls, name):
@@ -200,6 +201,10 @@ class Game:
         self.window = pygame.display.set_mode(INITIAL_WINDOW_SIZE, pygame.RESIZABLE)
         self.clock = pygame.time.Clock()
         self.game_surface = pygame.Surface((BASE_WIDTH, BASE_HEIGHT))
+        self.dt = 0
+        
+        self.window_size = INITIAL_WINDOW_SIZE
+        self.is_fullscreen = False
         
         for i in range(NUM_PLAYERS):
             p = Player(1, 1, colors[i % len(colors)], controls_list[i % len(controls_list)], player_names[i % len(player_names)])
@@ -255,30 +260,34 @@ class Game:
                     break
         return cells
     
-    def handle_explosion(self,explosion):
-        if explosion.quad_damage:
-            explosion_sound_qd.play()
-        else:
-            explosion_sound.play()
-            
-        for (x, y) in explosion.cells:
-            if self.board[y][x] == DESTRUCTIBLE:
-                self.board[y][x] = EMPTY
-                if random.random() < POWERUP_PROBABILITY:
-                    pu_type = random.choice(["bomb", "fire"])
-                    self.powerups.append(PowerUp(x, y, pu_type, spawn_time=explosion.start_time))
-        for pu in self.powerups[:]:
-            if pu.spawn_time < explosion.start_time and (pu.x, pu.y) in explosion.cells:
-                self.powerups.remove(pu)
-        for player in self.players:
-            if player.alive:
-                for cell in explosion.cells:
-                    explosion_rect = pygame.Rect(cell[0]*CELL_SIZE, cell[1]*CELL_SIZE, CELL_SIZE, CELL_SIZE)
-                    if circle_rect_collision((player.pos.x, player.pos.y), player.collision_radius, explosion_rect):
-                        player.alive = False
-                        player.death_animation_time = 1000  # 1 second death animation
-                        death_sound.play()
-                        break
+    def handle_explosions(self):
+        
+        for explosion in self.explosions[:]:
+            if not explosion.is_active(self.current_time):
+                if explosion.quad_damage:
+                    explosion_sound_qd.play()
+                else:
+                    explosion_sound.play()
+                    
+                for (x, y) in explosion.cells:
+                    if self.board[y][x] == DESTRUCTIBLE:
+                        self.board[y][x] = EMPTY
+                        if random.random() < POWERUP_PROBABILITY:
+                            pu_type = random.choice(["bomb", "fire"])
+                            self.powerups.append(PowerUp(x, y, pu_type, spawn_time=explosion.start_time))
+                for pu in self.powerups[:]:
+                    if pu.spawn_time < explosion.start_time and (pu.x, pu.y) in explosion.cells:
+                        self.powerups.remove(pu)
+                for player in self.players:
+                    if player.alive:
+                        for cell in explosion.cells:
+                            explosion_rect = pygame.Rect(cell[0]*CELL_SIZE, cell[1]*CELL_SIZE, CELL_SIZE, CELL_SIZE)
+                            if circle_rect_collision((player.pos.x, player.pos.y), player.collision_radius, explosion_rect):
+                                player.alive = False
+                                player.death_animation_time = 1000  # 1 second death animation
+                                death_sound.play()
+                                break           
+                self.explosions.remove(explosion)
                     
     def place_quad_damage_powerup(self):        
         if (pygame.time.get_ticks() - self.game_start_time) >= QUAD_DAMAGE_DELAY*1000:  # 2 minutes
@@ -289,5 +298,44 @@ class Game:
                     self.powerups.append(PowerUp(x, y, "quad_damage"))
                                 
     def tick(self):
+        self.dt = self.clock.tick(FPS)
         self.current_time = pygame.time.get_ticks()                
                     
+    def handle_window_events(self):
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+            elif event.type == pygame.VIDEORESIZE:
+                self.window_size = event.size
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_F11:
+                    self.is_fullscreen = not self.is_fullscreen
+                    if self.is_fullscreen:
+                        window = pygame.display.set_mode((0,0), pygame.FULLSCREEN)
+                        self.window_size = window.get_size()
+                    else:
+                        window = pygame.display.set_mode(INITIAL_WINDOW_SIZE, pygame.RESIZABLE)
+                        self.window_size = INITIAL_WINDOW_SIZE
+                elif event.key == pygame.K_RETURN:
+                    if self.game_state in ["win", "champion", "startup"]:
+                        self.init_game()
+                        self.game_state = "playing"
+                        
+                        
+    def fsm_startup(self,surface):
+        elapsed = self.current_time - self.startup_start_time
+        if elapsed < 2000:
+            alpha = 255
+        elif elapsed < 2800:
+            alpha = int(255 * (2500 - elapsed) / 500)
+       
+        draw_title_page(surface, alpha)
+        
+        if int(elapsed) >= 2200:
+            draw_controls(surface, self.players)
+
+            # Display "Press Enter to start the game" message
+            start_text = font_small.render("Press Enter to start the game", True, (255, 255, 255))
+            start_rect = start_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT - 50))
+            surface.blit(start_text, start_rect)

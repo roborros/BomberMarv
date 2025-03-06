@@ -18,6 +18,8 @@ def draw_brick_pattern(rect, surface):
             
             
 def draw_title_page(surface, alpha=255):
+    surface.fill(COLOR_BG) # move inside drawing fcns
+    
     # Get the original dimensions of the logo
     logo_width, logo_height = logo_image.get_size()
     
@@ -50,6 +52,8 @@ def draw_title_page(surface, alpha=255):
     version_text = version_font.render(VERSION, True, (255, 255, 255))
     version_rect = version_text.get_rect(bottomright=(BASE_WIDTH - 10, BASE_HEIGHT - 10))
     surface.blit(version_text, version_rect)
+    
+    
     
 
 
@@ -337,6 +341,7 @@ def draw_stat_screen(surface, winner, players):
     #draw_controls(surface)
 
 def draw_champion_screen(surface, champion):
+    surface.fill(COLOR_BG) # move inside drawing fcns
     font = pygame.font.SysFont("arial", 60, bold=True)
     draw_title_page(surface, alpha=255)
     trophy_surface = pygame.Surface((200, 40), pygame.SRCALPHA)
@@ -346,8 +351,10 @@ def draw_champion_screen(surface, champion):
     rect = text.get_rect(center=(BASE_WIDTH//2, BASE_HEIGHT//2 - 100))
     surface.blit(text, rect)
     surface.blit(trophy_surface, (BASE_WIDTH//2 - 100, BASE_HEIGHT//2 + 100))
+    
 
 def draw_game_screen(surface, theGame):
+    game_surface.fill(COLOR_BG) # move inside drawing fcns
     draw_board(surface, theGame)
     draw_powerups(surface, theGame)
     draw_bombs(surface, theGame.current_time, theGame.bombs)
