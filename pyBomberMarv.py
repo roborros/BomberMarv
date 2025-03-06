@@ -30,6 +30,7 @@ from bm_classes import *
 
 # BUG
 
+# test version for web deployment using piglet
 
 theGame = Game()
 theGame.init_game()
