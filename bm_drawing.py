@@ -354,7 +354,7 @@ def draw_champion_screen(surface, champion):
     
 
 def draw_game_screen(surface, theGame):
-    game_surface.fill(COLOR_BG) # move inside drawing fcns
+    surface.fill(COLOR_BG) # move inside drawing fcns
     draw_board(surface, theGame)
     draw_powerups(surface, theGame)
     draw_bombs(surface, theGame.current_time, theGame.bombs)
@@ -371,3 +371,9 @@ def draw_adjust_screen_size(window_size, game_surface, window):
     y_offset = (window_size[1] - new_height) // 2
     window.blit(scaled_surface, (x_offset, y_offset))
     pygame.display.flip()
+    
+def draw_get_ready(surface):
+    start_text = arcade_font.render("Get Ready!", True, (180, 60, 120))
+    start_rect = start_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT- 500))
+    surface.blit(start_text, start_rect)
+    
