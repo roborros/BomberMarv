@@ -27,6 +27,7 @@ from bm_classes import *
 # ingame ECS key to pause the game
 # port to browser https://pygame-web.github.io/
 # remove bomb owner lesf tate from the bomb class and related collision checks
+# abstract state changes to the game class method
 
 # BUG
 
@@ -71,4 +72,4 @@ while True:
         draw_champion_screen(theScreen.surface, alive_players[0] if alive_players else None)
     
     draw_adjust_screen_size(theGame.window_size, theScreen.surface, window)
-
+    #automate_player(theGame.players[0], theGame.dt, theGame.board, theGame.bombs)
