@@ -27,9 +27,11 @@ from bm_classes import *
 # ingame ECS key to pause the game
 # port to browser https://pygame-web.github.io/
 # remove bomb owner lesf tate from the bomb class and related collision checks
+# abstract state changes to the game class method
 
 # BUG
 
+# test version for web deployment using piglet
 
 theGame = Game()
 theGame.init_game()
@@ -43,15 +45,13 @@ while True:
     
     if theGame.game_state == "startup":
         
-        theScreen.draw_startup(game_surface,theGame)
+        theScreen.draw_startup(theGame)
     
     elif theGame.game_state == "get_ready":
         
         if theGame.current_time < theGame.game_start_time:
-            draw_game_screen(game_surface, theGame)
-            start_text = arcade_font.render("Get Ready!", True, (180, 60, 120))
-            start_rect = start_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT- 500))
-            game_surface.blit(start_text, start_rect)
+            draw_game_screen(theScreen.surface, theGame)
+            draw_get_ready(theScreen.surface)
         else:
             theGame.game_state = "playing"  
     
@@ -59,18 +59,17 @@ while True:
              
         theGame.update()
                 
-        
-        draw_game_screen(game_surface, theGame)
+        draw_game_screen(theScreen.surface, theGame)
         
     elif theGame.game_state == "win":
         
-        draw_title_page(game_surface, alpha=255)
+        draw_title_page(theScreen.surface, alpha=255)
         alive_players = [p for p in theGame.players if p.alive]
-        draw_stat_screen(game_surface, alive_players[0] if alive_players else None, theGame.players)
+        draw_stat_screen(theScreen.surface, alive_players[0] if alive_players else None, theGame.players)
 
     elif theGame.game_state == "champion":
         alive_players = [p for p in theGame.players if p.alive]
-        draw_champion_screen(game_surface, alive_players[0] if alive_players else None)
+        draw_champion_screen(theScreen.surface, alive_players[0] if alive_players else None)
     
-    draw_adjust_screen_size(theGame.window_size, game_surface, window)
-
+    draw_adjust_screen_size(theGame.window_size, theScreen.surface, window)
+    #automate_player(theGame.players[0], theGame.dt, theGame.board, theGame.bombs)

@@ -390,9 +390,9 @@ class Game:
             
 class Screen:
     def __init__(self):
-        self.foo = False
+        self.surface = pygame.Surface((BASE_WIDTH, BASE_HEIGHT))
     
-    def draw_startup(self,surface,Game):
+    def draw_startup(self,Game):
         elapsed = Game.current_time - Game.startup_start_time
         if elapsed < 2000:
             alpha = 255
@@ -401,12 +401,12 @@ class Screen:
         else:
             alpha = 0
             
-        draw_title_page(surface, alpha)
+        draw_title_page(self.surface, alpha)
         
         if int(elapsed) >= 2200:
-            draw_controls(surface, Game.players)
+            draw_controls(self.surface, Game.players)
 
             # Display "Press Enter to start the game" message
             start_text = font_small.render("Press Enter to start the game", True, (255, 255, 255))
             start_rect = start_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT - 50))
-            surface.blit(start_text, start_rect)
+            self.surface.blit(start_text, start_rect)
