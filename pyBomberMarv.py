@@ -27,7 +27,7 @@ from bm_classes import *
 # ingame ECS key to pause the game
 # port to browser https://pygame-web.github.io/
 # remove bomb owner lesf tate from the bomb class and related collision checks
-
+# collect and present game stats and events (how many bonuses (show plot in time), bombs, kills)
 # BUG
 
 
