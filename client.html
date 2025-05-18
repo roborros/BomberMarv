@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>BomberMarv Stream Client</title>
+    <!-- CLIENT_VERSION: 1.0.2 -->
+    <style>
+        body { margin: 0; background: #111; }
+        #fps {
+            position: absolute;
+            top: 8px;
+            left: 12px;
+            color: #fff;
+            background: rgba(0,0,0,0.5);
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 18px;
+            z-index: 10;
+        }
+        #gameimg {
+            display: block;
+            margin: 0 auto;
+            max-width: 100vw;
+            max-height: 100vh;
+        }
+        #versions {
+            position: fixed;
+            bottom: 12px;
+            right: 12px;
+            color: #fff;
+            background: rgba(0,0,0,0.5);
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 14px;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+    <div id="fps">FPS: 0</div>
+    <img id="gameimg" src="" alt="Game Stream" />
+    <div id="versions">Loading versions...</div>
+    <script>
+        const wsUrl = 'ws://' + location.hostname + ':8765';
+        console.log('Connecting to WebSocket:', wsUrl);
+        const ws = new WebSocket(wsUrl);
+        const img = document.getElementById('gameimg');
+        const fpsDiv = document.getElementById('fps');
+        const versionsDiv = document.getElementById('versions');
+        let frameTimestamps = [];
+        const FPS_WINDOW = 5000; // 5 seconds in ms
+
+        // Fetch version info from the server
+        fetch('/versions')
+            .then(resp => resp.json())
+            .then(data => {
+                versionsDiv.textContent = `versions: ws server ${data.ws_server}, http server ${data.http_server}, client 1.0.2`;
+            })
+            .catch(() => {
+                versionsDiv.textContent = 'versions: unknown';
+            });
+
+        ws.binaryType = 'arraybuffer';
+        ws.onopen = function() {
+            console.log('WebSocket connection opened');
+            fpsDiv.textContent = 'Connected, waiting for frames...';
+        };
+        ws.onerror = function(e) {
+            console.error('WebSocket error:', e);
+            fpsDiv.textContent = 'WebSocket error';
+        };
+        ws.onmessage = function(event) {
+            const now = performance.now();
+            frameTimestamps.push(now);
+            // Remove frames older than 5 seconds
+            while (frameTimestamps.length > 0 && now - frameTimestamps[0] > FPS_WINDOW) {
+                frameTimestamps.shift();
+            }
+            // Calculate FPS for each second in the window
+            let fpsSamples = [];
+            for (let t = now - FPS_WINDOW; t < now; t += 1000) {
+                let count = frameTimestamps.filter(ts => ts >= t && ts < t + 1000).length;
+                fpsSamples.push(count);
+            }
+            // Calculate average and std deviation
+            let avg = 0, std = 0;
+            if (fpsSamples.length > 0) {
+                avg = fpsSamples.reduce((a, b) => a + b, 0) / fpsSamples.length;
+                std = Math.sqrt(fpsSamples.reduce((a, b) => a + Math.pow(b - avg, 2), 0) / fpsSamples.length);
+            }
+            avg = avg.toFixed(1);
+            std = std.toFixed(1);
+            fpsDiv.textContent = `FPS: ${avg} ± ${std}`;
+
+            const blob = new Blob([event.data], {type: 'image/jpeg'});
+            const url = URL.createObjectURL(blob);
+            img.src = url;
+            img.onload = () => URL.revokeObjectURL(url);
+        };
+        ws.onclose = function(e) {
+            console.log('WebSocket closed:', e);
+            fpsDiv.textContent = 'Disconnected';
+        };
+
+        // --- Key input handling ---
+        window.addEventListener('keydown', function(e) {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({type: 'keydown', key: e.key, code: e.code, ts: Date.now()}));
+            }
+        });
+        window.addEventListener('keyup', function(e) {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({type: 'keyup', key: e.key, code: e.code, ts: Date.now()}));
+            }
+        });
+    </script>
+</body>
+</html>

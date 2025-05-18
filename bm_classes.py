@@ -1,5 +1,3 @@
-
-
 import pygame
 from bm_params import *
 from lib_collisions import *
@@ -36,20 +34,21 @@ class Player:
     def get_grid_pos(self):
         return (int(self.pos.x // CELL_SIZE), int(self.pos.y // CELL_SIZE))
 
-    def update(self, dt, board, bombs, current_time):
+    def update(self, dt, board, bombs, current_time, web_keys=None):
         if not self.alive:
             if self.death_animation_time > 0:
                 self.death_animation_time -= dt
             return
         keys = pygame.key.get_pressed()
         direction = pygame.math.Vector2(0, 0)
-        if keys[self.controls['up']]:
+        # Use web_keys as an OR with local keys
+        if keys[self.controls['up']] or (web_keys and self.controls['up'].name.lower() in web_keys):
             direction.y -= 1
-        if keys[self.controls['down']]:
+        if keys[self.controls['down']] or (web_keys and self.controls['down'].name.lower() in web_keys):
             direction.y += 1
-        if keys[self.controls['left']]:
+        if keys[self.controls['left']] or (web_keys and self.controls['left'].name.lower() in web_keys):
             direction.x -= 1
-        if keys[self.controls['right']]:
+        if keys[self.controls['right']] or (web_keys and self.controls['right'].name.lower() in web_keys):
             direction.x += 1
         if direction.length_squared() > 1:
             direction = direction.normalize()
@@ -57,7 +56,7 @@ class Player:
         else:
             self.animation_time = 0
             
-        if keys[self.controls['bomb']]:  
+        if keys[self.controls['bomb']] or (web_keys and self.controls['bomb'].name.lower() in web_keys):  
             self.drop_bomb(bombs, current_time)
 
         original_pos = self.pos.copy()
@@ -205,6 +204,7 @@ class Game:
         
         self.window_size = INITIAL_WINDOW_SIZE
         self.is_fullscreen = False
+        self.web_keys = set()  # Track keys pressed from web client
         
         for i in range(NUM_PLAYERS):
             p = Player(1, 1, colors[i % len(colors)], controls_list[i % len(controls_list)], player_names[i % len(player_names)])
@@ -322,11 +322,17 @@ class Game:
                         self.init_game()
                         self.game_state = "get_ready"
                 
+    def handle_web_key_event(self, event):
+        # event: dict with 'type', 'key', 'code', 'ts'
+        if event['type'] == 'keydown':
+            self.web_keys.add(event['key'])
+        elif event['type'] == 'keyup':
+            self.web_keys.discard(event['key'])
                         
     def update(self):
         #update players
         for player in self.players:
-                player.update(self.dt, self.board, self.bombs, self.current_time) 
+                player.update(self.dt, self.board, self.bombs, self.current_time, self.web_keys) 
         
         # update bombs & check for explosions
         triggered_explosions = []
