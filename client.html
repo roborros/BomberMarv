@@ -56,7 +56,7 @@
         fetch('/versions')
             .then(resp => resp.json())
             .then(data => {
-                versionsDiv.textContent = `versions: ws server ${data.ws_server}, http server ${data.http_server}, client 1.0.2`;
+                versionsDiv.textContent = `versions: ws server ${data.ws_server}, http server ${data.http_server}, client 1.0.3`;
             })
             .catch(() => {
                 versionsDiv.textContent = 'versions: unknown';
@@ -105,15 +105,27 @@
         };
 
         // --- Key input handling ---
+        let pressedKeys = new Set();
+
+        function sendKeyEvent(type, key, code) {
+            const msg = { type: type, key: key, code: code, ts: Date.now() };
+            ws.send(JSON.stringify(msg));
+            console.log("Sent to server:", msg); // Debug log
+        }
+
         window.addEventListener('keydown', function(e) {
             if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({type: 'keydown', key: e.key, code: e.code, ts: Date.now()}));
+                sendKeyEvent('keydown', e.key, e.code);
             }
+            pressedKeys.add(e.key);
+            console.log('Pressed keys:', Array.from(pressedKeys));
         });
         window.addEventListener('keyup', function(e) {
             if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({type: 'keyup', key: e.key, code: e.code, ts: Date.now()}));
+                sendKeyEvent('keyup', e.key, e.code);
             }
+            pressedKeys.delete(e.key);
+            console.log('Pressed keys:', Array.from(pressedKeys));
         });
     </script>
 </body>

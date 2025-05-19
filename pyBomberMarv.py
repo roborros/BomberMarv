@@ -1,15 +1,17 @@
 # internal imports
-from bm_params import *
-from bm_sounds import *
-from lib_collisions import *
-from lib_grid import *
-from bm_drawing import *
-from bm_classes import *
+
 from PIL import Image
 import io
 import threading
 import subprocess
 import socket
+import multiprocessing
+import ws_stream_server  # Import as a module
+import psutil
+from turbojpeg import TurboJPEG, TJPF_RGB
+import numpy as np
+
+
 
 
 ## TODO
@@ -36,88 +38,97 @@ import socket
 
 # test version for web deployment using piglet
 
-def save_surface_as_jpeg(surface, filename="current_frame.jpg"):
-    # Convert pygame surface to string buffer and then to PIL Image
-    # If using pyglet, adapt accordingly
-    try:
-        import pygame
-        import os
-        import time
-        # Convert surface to string buffer
-        data = pygame.image.tostring(surface, 'RGB')
-        img = Image.frombytes('RGB', surface.get_size(), data)
-        tmp_filename = filename + ".tmp"
-        img.save(tmp_filename, 'JPEG', quality=25)
-        # Atomic rename with retry on Windows
-        for attempt in range(10):
-            try:
-                os.replace(tmp_filename, filename)
-                break
-            except PermissionError:
-                if attempt == 9:
-                    raise
-                time.sleep(0.01)  # Wait 10ms and try again
-    except ImportError:
-        # If using pyglet or another library, adapt this part
-        pass
+def save_surface_as_jpeg(surface):
+    data = pygame.image.tostring(surface, 'RGB')
+    width, height = surface.get_size()
+    arr = np.frombuffer(data, dtype=np.uint8).reshape((height, width, 3))   
+    jpeg_bytes = jpeg.encode(arr, quality=85, pixel_format=TJPF_RGB)
+    return jpeg_bytes
+
+
 
 def is_port_in_use(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
-def start_ws_server():
-    # Check if either port is in use
-    if is_port_in_use(8080):
-        print("Port 8080 is already in use. Not starting HTTP server.")
-        return
-    if is_port_in_use(8765):
-        print("Port 8765 is already in use. Not starting WebSocket server.")
-        return
-    # Start the WebSocket/HTTP server in a background thread
-    def run_server():
-        subprocess.Popen(["python", "ws_stream_server.py"])
-    threading.Thread(target=run_server, daemon=True).start()
+def start_ws_server_with_queue(frame_queue):
+    # Start the server in a process, passing the queue, and log output to ws_server.log
+    p = multiprocessing.Process(target=ws_stream_server.run_server_with_queue, args=(frame_queue, "ws_server.log"))
+    p.daemon = True
+    p.start()
+    return p
 
-# Start the streaming server
-start_ws_server()
+def kill_existing_ws_server_processes():
+    """Kill any running ws_stream_server.py processes (zombie cleanup)."""
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        try:
+            if proc.info['name'] and 'python' in proc.info['name'].lower():
+                cmdline = ' '.join(proc.info.get('cmdline') or [])
+                if 'ws_stream_server.py' in cmdline:
+                    print(f"Killing zombie ws_stream_server.py process (PID {proc.pid})")
+                    proc.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
 
-theGame = Game()
-theGame.init_game()
-
-theScreen = Screen()
-
-while True:
-    theGame.tick()
+if __name__ == "__main__":
     
-    theGame.handle_window_events()
+    jpeg = TurboJPEG("C:\\libjpeg-turbo-gcc64\\bin\\libturbojpeg.dll")
     
-    if theGame.game_state == "startup":
-        theScreen.draw_startup(theGame)
+    from bm_params import *
+    from bm_sounds import *
+    from lib_collisions import *
+    from lib_grid import *
+    from bm_drawing import *
+    from bm_classes import *
     
-    elif theGame.game_state == "get_ready":
-        if theGame.current_time < theGame.game_start_time:
+    
+    kill_existing_ws_server_processes()
+    
+    # Start the streaming server with a multiprocessing queue
+    frame_queue = multiprocessing.Queue(maxsize=2)
+    ws_process = start_ws_server_with_queue(frame_queue)
+
+    theGame = Game()
+    theGame.init_game()
+
+    theScreen = Screen()
+
+    while True:
+        theGame.tick()
+        
+        theGame.handle_window_events()
+        if theGame.game_state == "startup":
+            theScreen.draw_startup(theGame)
+        elif theGame.game_state == "get_ready":
+            if theGame.current_time < theGame.game_start_time:
+                draw_game_screen(theScreen.surface, theGame)
+                draw_get_ready(theScreen.surface)
+            else:
+                theGame.game_state = "playing"  
+        elif theGame.game_state == "playing":
+            theGame.update()
             draw_game_screen(theScreen.surface, theGame)
-            draw_get_ready(theScreen.surface)
-        else:
-            theGame.game_state = "playing"  
-    
-    elif theGame.game_state == "playing":
-        theGame.update()
-        draw_game_screen(theScreen.surface, theGame)
-    
-    elif theGame.game_state == "win":
-        draw_title_page(theScreen.surface, alpha=255)
-        alive_players = [p for p in theGame.players if p.alive]
-        draw_stat_screen(theScreen.surface, alive_players[0] if alive_players else None, theGame.players)
+        elif theGame.game_state == "win":
+            draw_title_page(theScreen.surface, alpha=255)
+            alive_players = [p for p in theGame.players if p.alive]
+            draw_stat_screen(theScreen.surface, alive_players[0] if alive_players else None, theGame.players)
+        elif theGame.game_state == "champion":
+            alive_players = [p for p in theGame.players if p.alive]
+            draw_champion_screen(theScreen.surface, alive_players[0] if alive_players else None)
 
-    elif theGame.game_state == "champion":
-        alive_players = [p for p in theGame.players if p.alive]
-        draw_champion_screen(theScreen.surface, alive_players[0] if alive_players else None)
-    
-    
-    save_surface_as_jpeg(theScreen.surface)
-    
-    
-    draw_adjust_screen_size(theGame.window_size, theScreen.surface, window)
-    
-    #automate_player(theGame.players[0], theGame.dt, theGame.board, theGame.bombs)
+        
+        jpeg_bytes = save_surface_as_jpeg(theScreen.surface)
+        
+        
+        if jpeg_bytes is not None:
+            # Only keep the latest frame in the queue
+            while not frame_queue.empty():
+                try:
+                    frame_queue.get_nowait()
+                except:
+                    break
+            frame_queue.put(jpeg_bytes)
+        
+        
+        draw_adjust_screen_size(theGame.window_size, theScreen.surface, window)
+
