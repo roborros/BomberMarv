@@ -41,14 +41,21 @@ class Player:
             return
         keys = pygame.key.get_pressed()
         direction = pygame.math.Vector2(0, 0)
-        # Use web_keys as an OR with local keys
-        if keys[self.controls['up']] or (web_keys and self.controls['up'].name.lower() in web_keys):
+        # Remap all web_keys using browser_key_to_pygame
+        mapped_web_keys = set()
+        if web_keys:
+            for k in web_keys:
+                mapped = browser_key_to_pygame(k)
+                if mapped:
+                    mapped_web_keys.add(mapped.lower())
+        # Use mapped_web_keys as an OR with local keys
+        if keys[self.controls['up']] or (mapped_web_keys and pygame.key.name(self.controls['up']).lower() in mapped_web_keys):
             direction.y -= 1
-        if keys[self.controls['down']] or (web_keys and self.controls['down'].name.lower() in web_keys):
+        if keys[self.controls['down']] or (mapped_web_keys and pygame.key.name(self.controls['down']).lower() in mapped_web_keys):
             direction.y += 1
-        if keys[self.controls['left']] or (web_keys and self.controls['left'].name.lower() in web_keys):
+        if keys[self.controls['left']] or (mapped_web_keys and pygame.key.name(self.controls['left']).lower() in mapped_web_keys):
             direction.x -= 1
-        if keys[self.controls['right']] or (web_keys and self.controls['right'].name.lower() in web_keys):
+        if keys[self.controls['right']] or (mapped_web_keys and pygame.key.name(self.controls['right']).lower() in mapped_web_keys):
             direction.x += 1
         if direction.length_squared() > 1:
             direction = direction.normalize()
@@ -56,7 +63,7 @@ class Player:
         else:
             self.animation_time = 0
             
-        if keys[self.controls['bomb']] or (web_keys and self.controls['bomb'].name.lower() in web_keys):  
+        if keys[self.controls['bomb']] or (mapped_web_keys and pygame.key.name(self.controls['bomb']).lower() in mapped_web_keys):  
             self.drop_bomb(bombs, current_time)
 
         original_pos = self.pos.copy()
@@ -416,3 +423,57 @@ class Screen:
             start_text = font_small.render("Press Enter to start the game", True, (255, 255, 255))
             start_rect = start_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT - 50))
             self.surface.blit(start_text, start_rect)
+
+def browser_key_to_pygame(key):
+    """
+    Map browser key names (from event.key) to pygame key names as returned by pygame.key.name().
+    Returns the pygame key name as a lowercase string, or None if not mapped.
+    """
+    key = key.lower()
+    mapping = {
+        # Arrow keys
+        'arrowup': 'up',
+        'arrowdown': 'down',
+        'arrowleft': 'left',
+        'arrowright': 'right',
+        # Space and enter
+        ' ': 'space',
+        'space': 'space',
+        'enter': 'return',
+        # Control keys
+        'control': 'ctrl',
+        'ctrl': 'ctrl',
+        'left control': 'left ctrl',
+        'right control': 'right ctrl',
+        'shift': 'shift',
+        'left shift': 'left shift',
+        'right shift': 'right shift',
+        'alt': 'alt',
+        'left alt': 'left alt',
+        'right alt': 'right alt',
+        'backspace': 'backspace',
+        'delete': 'delete',
+        'home': 'home',
+        'end': 'end',
+        'pageup': 'page up',
+        'pagedown': 'page down',
+        # Numpad
+        'numpad0': 'kp0',
+        'numpad1': 'kp1',
+        'numpad2': 'kp2',
+        'numpad3': 'kp3',
+        'numpad4': 'kp4',
+        'numpad5': 'kp5',
+        'numpad6': 'kp6',
+        'numpad7': 'kp7',
+        'numpad8': 'kp8',
+        'numpad9': 'kp9',
+        'numpaddivide': 'kp_divide',
+        # Letters and numbers
+    }
+    if key in mapping:
+        return mapping[key]
+    # Letters and digits
+    if len(key) == 1 and key.isalnum():
+        return key
+    return None

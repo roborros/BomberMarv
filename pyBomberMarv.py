@@ -51,9 +51,9 @@ def is_port_in_use(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
-def start_ws_server_with_queue(frame_queue):
-    # Start the server in a process, passing the queue, and log output to ws_server.log
-    p = multiprocessing.Process(target=ws_stream_server.run_server_with_queue, args=(frame_queue, "ws_server.log"))
+def start_ws_server_with_queue(frame_queue, input_queue):
+    # Start the server in a process, passing both queues, and log output to ws_server.log
+    p = multiprocessing.Process(target=ws_stream_server.run_server_with_queue, args=(frame_queue, input_queue, "ws_server.log"))
     p.daemon = True
     p.start()
     return p
@@ -84,9 +84,10 @@ if __name__ == "__main__":
     
     kill_existing_ws_server_processes()
     
-    # Start the streaming server with a multiprocessing queue
+    # Start the streaming server with a multiprocessing queue for frames and input
     frame_queue = multiprocessing.Queue(maxsize=2)
-    ws_process = start_ws_server_with_queue(frame_queue)
+    input_queue = multiprocessing.Queue()
+    ws_process = start_ws_server_with_queue(frame_queue, input_queue)
 
     theGame = Game()
     theGame.init_game()
@@ -97,6 +98,14 @@ if __name__ == "__main__":
         theGame.tick()
         
         theGame.handle_window_events()
+        # Handle web key events from input_queue
+        while not input_queue.empty():
+            try:
+                event = input_queue.get_nowait()
+                theGame.handle_web_key_event(event)
+            except Exception:
+                break
+                
         if theGame.game_state == "startup":
             theScreen.draw_startup(theGame)
         elif theGame.game_state == "get_ready":
