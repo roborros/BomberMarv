@@ -42,7 +42,7 @@ def save_surface_as_jpeg(surface):
     data = pygame.image.tostring(surface, 'RGB')
     width, height = surface.get_size()
     arr = np.frombuffer(data, dtype=np.uint8).reshape((height, width, 3))   
-    jpeg_bytes = jpeg.encode(arr, quality=85, pixel_format=TJPF_RGB)
+    jpeg_bytes = jpeg.encode(arr, quality=65, pixel_format=TJPF_RGB)
     return jpeg_bytes
 
 

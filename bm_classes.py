@@ -426,7 +426,7 @@ class Screen:
 
 def browser_key_to_pygame(key):
     """
-    Map browser key names (from event.key) to pygame key names as returned by pygame.key.name().
+    Map browser key names (from event.key or event.code) to pygame key names as returned by pygame.key.name().
     Returns the pygame key name as a lowercase string, or None if not mapped.
     """
     key = key.lower()
@@ -441,16 +441,22 @@ def browser_key_to_pygame(key):
         'space': 'space',
         'enter': 'return',
         # Control keys
-        'control': 'ctrl',
-        'ctrl': 'ctrl',
+        'control': 'left ctrl',  # Default to left ctrl for generic 'control'
+        'ctrl': 'left ctrl',
         'left control': 'left ctrl',
         'right control': 'right ctrl',
+        'controlleft': 'left ctrl',
+        'controlright': 'right ctrl',
         'shift': 'shift',
         'left shift': 'left shift',
         'right shift': 'right shift',
+        'shiftleft': 'left shift',
+        'shiftright': 'right shift',
         'alt': 'alt',
         'left alt': 'left alt',
         'right alt': 'right alt',
+        'altleft': 'left alt',
+        'altright': 'right alt',
         'backspace': 'backspace',
         'delete': 'delete',
         'home': 'home',

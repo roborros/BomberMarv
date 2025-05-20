@@ -59,76 +59,70 @@ def run_server_with_queue(frame_queue, input_queue, log_path=None):
     from aiohttp import web
     import json
     
-    import profiler
-    
-    
-    
-    
+    """import profiler
+    profiler.profile_start()
+    profiler.profile_end()"""
 
     FRAME_RATE = 30
     PORT = 8765
     HTTP_PORT = 8080
     CLIENT_HTML = "client.html"
 
+    # --- Shared latest frame logic ---
+    latest_frame = None
+    latest_frame_lock = threading.Lock()
+
+    def frame_updater():
+        nonlocal latest_frame
+        while True:
+            try:
+                frame = frame_queue.get(timeout=1)
+                with latest_frame_lock:
+                    latest_frame = frame
+            except Exception:
+                continue
+
+    threading.Thread(target=frame_updater, daemon=True).start()
+
     async def stream_frames(websocket):
         print(f"Client connected: {websocket.remote_address}")
-        last_sent = None
         pressed_keys = set()
-        
+        last_sent_frame = None
         try:
             while True:
+                # Handle input events
                 try:
+                    msg = await asyncio.wait_for(websocket.recv(), timeout=0.025)
+                    if msg:
+                        try:
+                            data = json.loads(msg)
+                            if data.get('type') == 'keydown':
+                                pressed_keys.add(data.get('key'))
+                            elif data.get('type') == 'keyup':
+                                pressed_keys.discard(data.get('key'))
+                            print(f"Currently pressed keys from client: {sorted(pressed_keys)}")
+                            input_queue.put(data)
+                        except Exception as e:
+                            print(f"Error parsing input: {e}")
+                except asyncio.TimeoutError:
+                    pass
+                # Send the latest frame to this client only if it's new
+                with latest_frame_lock:
+                    frame = latest_frame
+                if frame is not None and frame is not last_sent_frame:
                     try:
-                        msg = await asyncio.wait_for(websocket.recv(), timeout=0.01)
-                        if msg:
-                            try:
-                                data = json.loads(msg)
-                                if data.get('type') == 'keydown':
-                                    pressed_keys.add(data.get('key'))
-                                elif data.get('type') == 'keyup':
-                                    pressed_keys.discard(data.get('key'))
-                                print(f"Currently pressed keys from client: {sorted(pressed_keys)}")
-                                # Propagate key event to game process
-                                input_queue.put(data)
-                            except Exception as e:
-                                print(f"Error parsing input: {e}")
-                    except asyncio.TimeoutError:
-                        pass
-                    # Get the latest frame from the queue
-                    try:
-                        profiler.profile_start()
-                        
-                        frame = frame_queue.get(timeout=0.05)
-                        
-                        # send every frame
                         await websocket.send(frame)
-                        
-                        profiler.profile_end()
-                        
-                        # Only send the frame if it's different from the last sent frame
-                        #if frame != last_sent:
-                        #    await websocket.send(frame)
-                        #    last_sent = frame
-                    except queue.Empty:
-                        pass
-                    
-                    
-                    
-                    
-                    
-                    
-                except websockets.ConnectionClosed as cc:
-                    print(f"WebSocket connection closed: {cc}")
-                    break
-                
-                except Exception as e:
-                    print(f"Error in stream_frames inner loop: {e}")
-                    await asyncio.sleep(1)
-                    
+                        last_sent_frame = frame
+                    except Exception as e:
+                        print(f"Error sending frame: {e}")
+                        break
+                else:
+                    await asyncio.sleep(0.001)  # Yield to event loop, avoid busy-wait
+        except websockets.ConnectionClosed as cc:
+            print(f"WebSocket connection closed: {cc}")
         except Exception as e:
-            print(f"Error in stream_frames outer: {e}")
+            print(f"Error in stream_frames: {e}")
         print(f"Exiting stream_frames for {websocket.remote_address}")
-        
 
     async def handle_root(request):
         return web.FileResponse(CLIENT_HTML)
