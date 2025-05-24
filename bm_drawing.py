@@ -18,7 +18,7 @@ def draw_brick_pattern(rect, surface):
             
             
 def draw_title_page(surface, alpha=255):
-    surface.fill(COLOR_BG) # move inside drawing fcns
+    surface.fill(COLOR_BG) 
     
     # Get the original dimensions of the logo
     logo_width, logo_height = logo_image.get_size()

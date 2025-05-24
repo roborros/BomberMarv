@@ -12,8 +12,6 @@ from turbojpeg import TurboJPEG, TJPF_RGB
 import numpy as np
 
 
-
-
 ## TODO
 # improve collisions - rounded rectangle corners, alley clamping
 # rework explosion animation and colision box
@@ -42,7 +40,7 @@ def save_surface_as_jpeg(surface):
     data = pygame.image.tostring(surface, 'RGB')
     width, height = surface.get_size()
     arr = np.frombuffer(data, dtype=np.uint8).reshape((height, width, 3))   
-    jpeg_bytes = jpeg.encode(arr, quality=65, pixel_format=TJPF_RGB)
+    jpeg_bytes = jpeg.encode(arr, quality=85, pixel_format=TJPF_RGB)
     return jpeg_bytes
 
 
@@ -80,7 +78,7 @@ if __name__ == "__main__":
     from lib_grid import *
     from bm_drawing import *
     from bm_classes import *
-    
+    #import profiler
     
     kill_existing_ws_server_processes()
     
@@ -97,6 +95,7 @@ if __name__ == "__main__":
     while True:
         theGame.tick()
         
+        
         theGame.handle_window_events()
         # Handle web key events from input_queue
         while not input_queue.empty():
@@ -105,9 +104,12 @@ if __name__ == "__main__":
                 theGame.handle_web_key_event(event)
             except Exception:
                 break
+        
                 
         if theGame.game_state == "startup":
             theScreen.draw_startup(theGame)
+        elif theGame.game_state == "game_prep":
+            theScreen.draw_game_prep(theGame)
         elif theGame.game_state == "get_ready":
             if theGame.current_time < theGame.game_start_time:
                 draw_game_screen(theScreen.surface, theGame)

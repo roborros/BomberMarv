@@ -49,13 +49,13 @@ class Player:
                 if mapped:
                     mapped_web_keys.add(mapped.lower())
         # Use mapped_web_keys as an OR with local keys
-        if keys[self.controls['up']] or (mapped_web_keys and pygame.key.name(self.controls['up']).lower() in mapped_web_keys):
+        if keys[self.controls['up']] or (mapped_web_keys and 'up' in mapped_web_keys):
             direction.y -= 1
-        if keys[self.controls['down']] or (mapped_web_keys and pygame.key.name(self.controls['down']).lower() in mapped_web_keys):
+        if keys[self.controls['down']] or (mapped_web_keys and 'down' in mapped_web_keys):
             direction.y += 1
-        if keys[self.controls['left']] or (mapped_web_keys and pygame.key.name(self.controls['left']).lower() in mapped_web_keys):
+        if keys[self.controls['left']] or (mapped_web_keys and 'left' in mapped_web_keys):
             direction.x -= 1
-        if keys[self.controls['right']] or (mapped_web_keys and pygame.key.name(self.controls['right']).lower() in mapped_web_keys):
+        if keys[self.controls['right']] or (mapped_web_keys and 'right' in mapped_web_keys):
             direction.x += 1
         if direction.length_squared() > 1:
             direction = direction.normalize()
@@ -63,7 +63,7 @@ class Player:
         else:
             self.animation_time = 0
             
-        if keys[self.controls['bomb']] or (mapped_web_keys and pygame.key.name(self.controls['bomb']).lower() in mapped_web_keys):  
+        if keys[self.controls['bomb']] or (mapped_web_keys and 'space' in mapped_web_keys):  
             self.drop_bomb(bombs, current_time)
 
         original_pos = self.pos.copy()
@@ -325,21 +325,45 @@ class Game:
                         window = pygame.display.set_mode(INITIAL_WINDOW_SIZE, pygame.RESIZABLE)
                         self.window_size = INITIAL_WINDOW_SIZE
                 elif event.key == pygame.K_RETURN:
-                    if self.game_state in ["win", "champion", "startup"]:
+                    if self.game_state == "startup":
+                        self.game_state = "game_prep"
+                    if self.game_state in ["win", "champion", "game_prep"]:
                         self.init_game()
                         self.game_state = "get_ready"
                 
     def handle_web_key_event(self, event):
-        # event: dict with 'type', 'key', 'code', 'ts'
-        if event['type'] == 'keydown':
-            self.web_keys.add(event['key'])
-        elif event['type'] == 'keyup':
-            self.web_keys.discard(event['key'])
-                        
+        # event: dict with 'type', 'key', 'code', 'ts', 'player_id'
+        player_id = event.get('player_id', 0)
+        if not hasattr(self, 'web_keys_by_player'):
+            self.web_keys_by_player = {}
+        if not hasattr(self, 'player_id_to_player'):
+            self.player_id_to_player = {}
+        # Assign player_id to next available Player if not already mapped
+        if player_id not in self.player_id_to_player:
+            assigned = set(self.player_id_to_player.values())
+            for player in self.players:
+                if player not in assigned:
+                    self.player_id_to_player[player_id] = player
+                    break
+        player_obj = self.player_id_to_player.get(player_id, None)
+        if player_obj is not None:
+            if player_obj not in self.web_keys_by_player:
+                self.web_keys_by_player[player_obj] = set()
+            if event['type'] == 'keydown':
+                self.web_keys_by_player[player_obj].add(event['key'])
+            elif event['type'] == 'keyup':
+                self.web_keys_by_player[player_obj].discard(event['key'])
+
     def update(self):
-        #update players
-        for player in self.players:
-                player.update(self.dt, self.board, self.bombs, self.current_time, self.web_keys) 
+        # update players
+        for idx, player in enumerate(self.players):
+            web_keys = set()
+            if hasattr(self, 'web_keys_by_player') and player in self.web_keys_by_player:
+                web_keys = self.web_keys_by_player[player]
+                if idx in (0, 1):
+                    allowed = {'arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' ', 'space'}
+                    web_keys = set(k for k in web_keys if k.lower() in allowed)
+            player.update(self.dt, self.board, self.bombs, self.current_time, web_keys)
         
         # update bombs & check for explosions
         triggered_explosions = []
@@ -423,6 +447,13 @@ class Screen:
             start_text = font_small.render("Press Enter to start the game", True, (255, 255, 255))
             start_rect = start_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT - 50))
             self.surface.blit(start_text, start_rect)
+            
+    def draw_game_prep(self, Game):
+        self.surface.fill(COLOR_BG) 
+        
+        # write list of conected clients
+        
+        # write list of players, theirs colors 
 
 def browser_key_to_pygame(key):
     """

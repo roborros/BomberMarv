@@ -43,6 +43,7 @@
     <img id="gameimg" src="" alt="Game Stream" />
     <div id="versions">Loading versions...</div>
     <script>
+        let playerId = null;
         const wsUrl = 'ws://' + location.hostname + ':8765';
         console.log('Connecting to WebSocket:', wsUrl);
         const ws = new WebSocket(wsUrl);
@@ -72,6 +73,17 @@
             fpsDiv.textContent = 'WebSocket error';
         };
         ws.onmessage = function(event) {
+            // If this is a player_id assignment, handle it
+            if (typeof event.data === 'string') {
+                try {
+                    const msg = JSON.parse(event.data);
+                    if (msg.type === 'player_id') {
+                        playerId = msg.player_id;
+                        console.log('Assigned playerId:', playerId);
+                        return;
+                    }
+                } catch (e) {}
+            }
             const now = performance.now();
             frameTimestamps.push(now);
             // Remove frames older than 5 seconds
@@ -108,7 +120,8 @@
         let pressedKeys = new Set();
 
         function sendKeyEvent(type, key, code) {
-            const msg = { type: type, key: key, code: code, ts: Date.now() };
+            if (playerId === null) return; // Don't send until assigned
+            const msg = { type: type, key: key, code: code, ts: Date.now(), player_id: playerId };
             ws.send(JSON.stringify(msg));
             console.log("Sent to server:", msg); // Debug log
         }
