@@ -1,4 +1,3 @@
-
 import pygame
 from bm_params import *
 
@@ -11,10 +10,11 @@ def draw_brick_pattern(rect, surface):
         offset = brick_width // 2 if row % 2 == 1 else 0
         y = rect.top + row * (rect.height // rows)
         x = rect.left + offset
+        # Prevent infinite loop: ensure x always increases
         while x < rect.right:
             brick_rect = pygame.Rect(x, y, brick_width, rect.height // rows)
             pygame.draw.rect(surface, mortar_color, brick_rect, 1)
-            x += brick_width
+            x += brick_width  # <-- increment x to avoid infinite loop
             
             
 def draw_title_page(surface, alpha=255):
@@ -354,12 +354,48 @@ def draw_champion_screen(surface, champion):
     
 
 def draw_game_screen(surface, theGame):
-    surface.fill(COLOR_BG) # move inside drawing fcns
+    surface.fill(COLOR_BG)
     draw_board(surface, theGame)
     draw_powerups(surface, theGame)
     draw_bombs(surface, theGame.current_time, theGame.bombs)
     draw_explosions(surface, theGame.current_time, theGame.explosions)
-    draw_players(surface,theGame.players)
+    draw_players(surface, theGame.players)
+    if SHOW_PLAYER_DIRECTIONS:
+        draw_player_directions(surface, theGame.players, theGame)
+        
+        
+# Draw player direction vectors and highlight the cell the player is pointing at
+# (call this from draw_game_screen)
+def draw_player_directions(surface, players, theGame):
+    for player in players:
+        if not player.alive:
+            continue
+        if hasattr(player, 'direction') and player.direction.length_squared() > 0:
+            start = (int(player.pos.x), int(player.pos.y))
+            end = (int(player.pos.x + player.direction.x * CELL_SIZE), int(player.pos.y + player.direction.y * CELL_SIZE))
+            pygame.draw.line(surface, (255, 0, 0), start, end, 4)
+            pygame.draw.circle(surface, (255, 0, 0), end, 7)
+            # Highlight the cell the player is pointing at
+            cell_x = int((player.pos.x + player.direction.x * CELL_SIZE) // CELL_SIZE)
+            cell_y = int((player.pos.y + player.direction.y * CELL_SIZE) // CELL_SIZE)
+            # Defensive: check bounds
+            if 0 <= cell_y < len(theGame.board) and 0 <= cell_x < len(theGame.board[0]):
+                cell_empty = theGame.board[cell_y][cell_x] == EMPTY
+            else:
+                cell_empty = False
+            if cell_empty:
+                highlight_color = (0, 255, 0, 120)  # semi-transparent green
+                dx, dy = int(player.direction.x), int(player.direction.y)
+                if (dx == 1 and dy == 0) or (dx == -1 and dy == 0) or (dx == 0 and dy == 1) or (dx == 0 and dy == -1):
+                    cell_center = (cell_x * CELL_SIZE + CELL_SIZE // 2, cell_y * CELL_SIZE + CELL_SIZE // 2)
+                    pygame.draw.line(surface, (0, 200, 0), start, cell_center, 4)
+                    pygame.draw.circle(surface, (0, 200, 0), cell_center, 7)
+            else:
+                highlight_color = (255, 0, 0, 120)  # semi-transparent red
+            highlight_rect = pygame.Rect(cell_x * CELL_SIZE, cell_y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+            highlight_surface = pygame.Surface((CELL_SIZE, CELL_SIZE), pygame.SRCALPHA)
+            highlight_surface.fill(highlight_color)
+            surface.blit(highlight_surface, (highlight_rect.x, highlight_rect.y))
     
 def draw_adjust_screen_size(window_size, game_surface, window):
     factor = min(window_size[0] / BASE_WIDTH, window_size[1] / BASE_HEIGHT)
@@ -376,4 +412,4 @@ def draw_get_ready(surface):
     start_text = arcade_font.render("Get Ready!", True, (180, 60, 120))
     start_rect = start_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT- 500))
     surface.blit(start_text, start_rect)
-    
+

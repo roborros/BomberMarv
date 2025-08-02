@@ -5,6 +5,8 @@ from lib_grid import *
 from bm_sounds import *
 from bm_drawing import *
 
+
+
 class Player:
     def __init__(self, grid_x, grid_y, color, controls, name):
         self.start_grid_x = grid_x
@@ -27,6 +29,7 @@ class Player:
         self.quad_damage_start_time = 0
         self.name = name
         self.death_animation_time = 0
+        self.direction = pygame.math.Vector2(0, 0)  # Initialize direction
 
     def get_circle(self):
         return (self.pos, self.draw_radius)
@@ -38,6 +41,7 @@ class Player:
         if not self.alive:
             if self.death_animation_time > 0:
                 self.death_animation_time -= dt
+            self.direction = pygame.math.Vector2(0, 0)  # No direction if dead
             return
         keys = pygame.key.get_pressed()
         direction = pygame.math.Vector2(0, 0)
@@ -63,6 +67,8 @@ class Player:
         else:
             self.animation_time = 0
             
+        self.direction = direction  # Always store the current direction vector
+
         if keys[self.controls['bomb']] or (mapped_web_keys and 'space' in mapped_web_keys):  
             self.drop_bomb(bombs, current_time)
 
@@ -232,7 +238,7 @@ class Game:
             (GRID_WIDTH - 2, GRID_HEIGHT - 2): [(0,0), (-1,0), (0,-1)]
         }
         
-        random.shuffle(self.players)
+        #random.shuffle(self.players)
 
         for i, player in enumerate(self.players):
             if i < 4:
@@ -324,10 +330,11 @@ class Game:
                     else:
                         window = pygame.display.set_mode(INITIAL_WINDOW_SIZE, pygame.RESIZABLE)
                         self.window_size = INITIAL_WINDOW_SIZE
-                elif event.key == pygame.K_RETURN:
+                elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                    print(f"ENTER pressed, game_state={self.game_state}")
                     if self.game_state == "startup":
                         self.game_state = "game_prep"
-                    if self.game_state in ["win", "champion", "game_prep"]:
+                    elif self.game_state in ["win", "champion", "game_prep"]:
                         self.init_game()
                         self.game_state = "get_ready"
                 
@@ -351,6 +358,13 @@ class Game:
                 self.web_keys_by_player[player_obj] = set()
             if event['type'] == 'keydown':
                 self.web_keys_by_player[player_obj].add(event['key'])
+                # Allow Enter/Return to start the game from browser
+                if event['key'].lower() in ('enter', 'return'):
+                    if self.game_state == "startup":
+                        self.game_state = "game_prep"
+                    if self.game_state in ["win", "champion", "game_prep"]:
+                        self.init_game()
+                        self.game_state = "get_ready"
             elif event['type'] == 'keyup':
                 self.web_keys_by_player[player_obj].discard(event['key'])
 
@@ -449,11 +463,13 @@ class Screen:
             self.surface.blit(start_text, start_rect)
             
     def draw_game_prep(self, Game):
-        self.surface.fill(COLOR_BG) 
-        
-        # write list of conected clients
-        
-        # write list of players, theirs colors 
+        self.surface.fill(COLOR_BG)
+        # Draw 'Game Prep' text centered
+        font = pygame.font.SysFont("arial", 60, bold=True)
+        prep_text = font.render("Game Prep", True, (255, 255, 255))
+        prep_rect = prep_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT // 2))
+        self.surface.blit(prep_text, prep_rect)
+        # Optionally: show player list, colors, etc. here
 
 def browser_key_to_pygame(key):
     """
@@ -514,3 +530,5 @@ def browser_key_to_pygame(key):
     if len(key) == 1 and key.isalnum():
         return key
     return None
+
+
