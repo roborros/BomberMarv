@@ -219,6 +219,12 @@ class Game:
         self.is_fullscreen = False
         self.web_keys = set()  # Track keys pressed from web client
         
+        # Crushing walls feature variables
+        self.crushing_walls_active = False
+        self.crushing_walls_last_time = 0
+        self.crushing_walls_pattern = []
+        self.crushing_walls_index = 0
+        
         for i in range(NUM_PLAYERS):
             p = Player(1, 1, colors[i % len(colors)], controls_list[i % len(controls_list)], player_names[i % len(player_names)])
             self.players.append(p)
@@ -257,6 +263,143 @@ class Game:
             clear_safe_zone(self.board, player.start_grid_x, player.start_grid_y, offsets)
             player.reset()
         self.game_start_time = pygame.time.get_ticks() + 2000  # Add a 2-second freeze time
+        
+        # Reset crushing walls state
+        self.crushing_walls_active = False
+        self.crushing_walls_last_time = 0
+        self.crushing_walls_pattern = []
+        self.crushing_walls_index = 0
+
+    def generate_clockwise_pattern(self):
+        """Generate a clockwise traversal pattern starting from top-left corner"""
+        pattern = []
+        visited = set()
+        
+        # Start from the outermost layer and work inward
+        for layer in range(min(GRID_WIDTH, GRID_HEIGHT) // 2):
+            # Top row (left to right)
+            for x in range(layer, GRID_WIDTH - layer):
+                if (x, layer) not in visited:
+                    pattern.append((x, layer))
+                    visited.add((x, layer))
+            
+            # Right column (top to bottom, skip top corner)
+            for y in range(layer + 1, GRID_HEIGHT - layer):
+                if (GRID_WIDTH - 1 - layer, y) not in visited:
+                    pattern.append((GRID_WIDTH - 1 - layer, y))
+                    visited.add((GRID_WIDTH - 1 - layer, y))
+            
+            # Bottom row (right to left, skip right corner)
+            if GRID_HEIGHT - 1 - layer > layer:
+                for x in range(GRID_WIDTH - 2 - layer, layer - 1, -1):
+                    if (x, GRID_HEIGHT - 1 - layer) not in visited:
+                        pattern.append((x, GRID_HEIGHT - 1 - layer))
+                        visited.add((x, GRID_HEIGHT - 1 - layer))
+            
+            # Left column (bottom to top, skip both corners)
+            if GRID_WIDTH - 1 - layer > layer:
+                for y in range(GRID_HEIGHT - 2 - layer, layer, -1):
+                    if (layer, y) not in visited:
+                        pattern.append((layer, y))
+                        visited.add((layer, y))
+        
+        return pattern
+
+    def count_destroyable_cells(self):
+        """Count the number of destroyable cells on the board"""
+        count = 0
+        for y in range(GRID_HEIGHT):
+            for x in range(GRID_WIDTH):
+                if self.board[y][x] == DESTRUCTIBLE:
+                    count += 1
+        return count
+
+    def push_player_away_from_cell(self, player, cell_x, cell_y):
+        """Push a player away from a cell that's about to become a wall"""
+        if not player.alive:
+            return
+            
+        player_grid_x, player_grid_y = player.get_grid_pos()
+        if player_grid_x != cell_x or player_grid_y != cell_y:
+            return  # Player is not in this cell
+        
+        # Calculate the direction to push the player
+        # Find the closest empty cell
+        cell_center_x = cell_x * CELL_SIZE + CELL_SIZE // 2
+        cell_center_y = cell_y * CELL_SIZE + CELL_SIZE // 2
+        
+        # Try to push towards the center of the board
+        center_x = GRID_WIDTH // 2
+        center_y = GRID_HEIGHT // 2
+        
+        push_direction = pygame.math.Vector2(center_x - cell_x, center_y - cell_y)
+        if push_direction.length() > 0:
+            push_direction = push_direction.normalize()
+        else:
+            # If we're at the center, push in any valid direction
+            push_direction = pygame.math.Vector2(1, 0)
+        
+        # Push the player with enough force to get them out of the cell
+        push_force = CELL_SIZE * 0.6  # Push them most of the way out
+        original_pos = player.pos.copy()
+        player.pos += push_direction * push_force
+        
+        # Check if the new position is valid, if not try other directions
+        if player.collides_with_walls(self.board) or player.collides_with_bombs(self.bombs, original_pos):
+            # Try the four cardinal directions
+            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                player.pos = original_pos.copy()
+                test_direction = pygame.math.Vector2(dx, dy)
+                player.pos += test_direction * push_force
+                
+                if not (player.collides_with_walls(self.board) or player.collides_with_bombs(self.bombs, original_pos)):
+                    return  # Found a valid position
+            
+            # If no direction works, revert to original position
+            player.pos = original_pos
+
+    def handle_crushing_walls(self):
+        """Handle the crushing walls feature"""
+        alive_players = [p for p in self.players if p.alive]
+        
+        # Check if conditions are met to activate crushing walls
+        if len(alive_players) == 2 and \
+           (self.current_time - self.game_start_time) >= 120000 and \
+           self.count_destroyable_cells() < 5:
+            
+            if not self.crushing_walls_active:
+                # Initialize crushing walls
+                self.crushing_walls_active = True
+                self.crushing_walls_pattern = self.generate_clockwise_pattern()
+                self.crushing_walls_index = 0
+                self.crushing_walls_last_time = self.current_time
+                return
+            
+            # Add a new wall every second
+            if self.current_time - self.crushing_walls_last_time >= 1000:
+                if self.crushing_walls_index < len(self.crushing_walls_pattern):
+                    x, y = self.crushing_walls_pattern[self.crushing_walls_index]
+                    
+                    # Check if there's a player in this cell and push them away
+                    for player in alive_players:
+                        self.push_player_away_from_cell(player, x, y)
+                    
+                    # Replace whatever is in the cell with an indestructible wall
+                    self.board[y][x] = INDESTRUCTIBLE
+                    
+                    # Remove any powerups in this cell
+                    self.powerups = [pu for pu in self.powerups if not (pu.x == x and pu.y == y)]
+                    
+                    # Remove any bombs in this cell (they explode immediately)
+                    for bomb in self.bombs[:]:
+                        if bomb.x == x and bomb.y == y:
+                            exp = Explosion(self.get_explosion_cells(bomb), self.current_time, bomb.quad_damage)
+                            self.explosions.append(exp)
+                            bomb.owner.active_bombs -= 1
+                            self.bombs.remove(bomb)
+                    
+                    self.crushing_walls_index += 1
+                    self.crushing_walls_last_time = self.current_time
 
     def get_explosion_cells(self,bomb):
         cells = [(bomb.x, bomb.y)]
@@ -427,6 +570,9 @@ class Game:
                     self.powerups.remove(pu)
                     
         self.place_quad_damage_powerup()
+        
+        # Handle crushing walls feature
+        self.handle_crushing_walls()
         
         alive_players = [p for p in self.players if p.alive]
         if len(alive_players) <= 1:
