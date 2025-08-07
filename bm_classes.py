@@ -271,7 +271,8 @@ class Game:
         self.crushing_walls_index = 0
 
     def generate_clockwise_pattern(self):
-        """Generate a clockwise traversal pattern starting from top-left corner"""
+        """Generate a clockwise traversal pattern starting from top-left corner, 
+        but skip cells that are already indestructible walls"""
         pattern = []
         visited = set()
         
@@ -279,27 +280,27 @@ class Game:
         for layer in range(min(GRID_WIDTH, GRID_HEIGHT) // 2):
             # Top row (left to right)
             for x in range(layer, GRID_WIDTH - layer):
-                if (x, layer) not in visited:
+                if (x, layer) not in visited and self.board[layer][x] != INDESTRUCTIBLE:
                     pattern.append((x, layer))
                     visited.add((x, layer))
             
             # Right column (top to bottom, skip top corner)
             for y in range(layer + 1, GRID_HEIGHT - layer):
-                if (GRID_WIDTH - 1 - layer, y) not in visited:
+                if (GRID_WIDTH - 1 - layer, y) not in visited and self.board[y][GRID_WIDTH - 1 - layer] != INDESTRUCTIBLE:
                     pattern.append((GRID_WIDTH - 1 - layer, y))
                     visited.add((GRID_WIDTH - 1 - layer, y))
             
             # Bottom row (right to left, skip right corner)
             if GRID_HEIGHT - 1 - layer > layer:
                 for x in range(GRID_WIDTH - 2 - layer, layer - 1, -1):
-                    if (x, GRID_HEIGHT - 1 - layer) not in visited:
+                    if (x, GRID_HEIGHT - 1 - layer) not in visited and self.board[GRID_HEIGHT - 1 - layer][x] != INDESTRUCTIBLE:
                         pattern.append((x, GRID_HEIGHT - 1 - layer))
                         visited.add((x, GRID_HEIGHT - 1 - layer))
             
             # Left column (bottom to top, skip both corners)
             if GRID_WIDTH - 1 - layer > layer:
                 for y in range(GRID_HEIGHT - 2 - layer, layer, -1):
-                    if (layer, y) not in visited:
+                    if (layer, y) not in visited and self.board[y][layer] != INDESTRUCTIBLE:
                         pattern.append((layer, y))
                         visited.add((layer, y))
         
@@ -314,6 +315,55 @@ class Game:
                     count += 1
         return count
 
+    def find_nearest_safe_position(self, player, avoid_cell_x, avoid_cell_y):
+        """Find the nearest safe position for a player, avoiding a specific cell"""
+        player_grid_x, player_grid_y = player.get_grid_pos()
+        
+        # Search in expanding rings around the player's current position
+        for radius in range(1, max(GRID_WIDTH, GRID_HEIGHT)):
+            for dx in range(-radius, radius + 1):
+                for dy in range(-radius, radius + 1):
+                    # Only check cells on the perimeter of the current radius
+                    if abs(dx) != radius and abs(dy) != radius:
+                        continue
+                        
+                    new_grid_x = player_grid_x + dx
+                    new_grid_y = player_grid_y + dy
+                    
+                    # Skip if out of bounds
+                    if (new_grid_x < 0 or new_grid_x >= GRID_WIDTH or 
+                        new_grid_y < 0 or new_grid_y >= GRID_HEIGHT):
+                        continue
+                    
+                    # Skip if this is the cell we're trying to avoid
+                    if new_grid_x == avoid_cell_x and new_grid_y == avoid_cell_y:
+                        continue
+                    
+                    # Skip if this cell has a wall
+                    if self.board[new_grid_y][new_grid_x] in (INDESTRUCTIBLE, DESTRUCTIBLE):
+                        continue
+                    
+                    # Test if the player can be positioned in this cell
+                    test_pos = pygame.math.Vector2(
+                        new_grid_x * CELL_SIZE + CELL_SIZE // 2,
+                        new_grid_y * CELL_SIZE + CELL_SIZE // 2
+                    )
+                    
+                    # Temporarily set player position to test
+                    original_pos = player.pos.copy()
+                    player.pos = test_pos
+                    
+                    # Check if this position is valid (no collisions)
+                    if not (player.collides_with_walls(self.board) or player.collides_with_bombs(self.bombs, original_pos)):
+                        # Found a valid position, keep it
+                        return test_pos
+                    
+                    # Restore original position for next test
+                    player.pos = original_pos
+        
+        # If no safe position found, return current position
+        return player.pos.copy()
+
     def push_player_away_from_cell(self, player, cell_x, cell_y):
         """Push a player away from a cell that's about to become a wall"""
         if not player.alive:
@@ -323,40 +373,11 @@ class Game:
         if player_grid_x != cell_x or player_grid_y != cell_y:
             return  # Player is not in this cell
         
-        # Calculate the direction to push the player
-        # Find the closest empty cell
-        cell_center_x = cell_x * CELL_SIZE + CELL_SIZE // 2
-        cell_center_y = cell_y * CELL_SIZE + CELL_SIZE // 2
+        # Find the nearest safe position
+        safe_pos = self.find_nearest_safe_position(player, cell_x, cell_y)
         
-        # Try to push towards the center of the board
-        center_x = GRID_WIDTH // 2
-        center_y = GRID_HEIGHT // 2
-        
-        push_direction = pygame.math.Vector2(center_x - cell_x, center_y - cell_y)
-        if push_direction.length() > 0:
-            push_direction = push_direction.normalize()
-        else:
-            # If we're at the center, push in any valid direction
-            push_direction = pygame.math.Vector2(1, 0)
-        
-        # Push the player with enough force to get them out of the cell
-        push_force = CELL_SIZE * 0.6  # Push them most of the way out
-        original_pos = player.pos.copy()
-        player.pos += push_direction * push_force
-        
-        # Check if the new position is valid, if not try other directions
-        if player.collides_with_walls(self.board) or player.collides_with_bombs(self.bombs, original_pos):
-            # Try the four cardinal directions
-            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-                player.pos = original_pos.copy()
-                test_direction = pygame.math.Vector2(dx, dy)
-                player.pos += test_direction * push_force
-                
-                if not (player.collides_with_walls(self.board) or player.collides_with_bombs(self.bombs, original_pos)):
-                    return  # Found a valid position
-            
-            # If no direction works, revert to original position
-            player.pos = original_pos
+        # Move the player to the safe position
+        player.pos = safe_pos
 
     def handle_crushing_walls(self):
         """Handle the crushing walls feature"""
@@ -364,8 +385,8 @@ class Game:
         
         # Check if conditions are met to activate crushing walls
         if len(alive_players) == 2 and \
-           (self.current_time - self.game_start_time) >= 120000 and \
-           self.count_destroyable_cells() < 5:
+           (self.current_time - self.game_start_time) >= CRUSHING_WALLS_DELAY * 1000 and \
+           self.count_destroyable_cells() < CRUSHING_WALLS_MIN_DESTROYABLE:
             
             if not self.crushing_walls_active:
                 # Initialize crushing walls
@@ -380,9 +401,28 @@ class Game:
                 if self.crushing_walls_index < len(self.crushing_walls_pattern):
                     x, y = self.crushing_walls_pattern[self.crushing_walls_index]
                     
-                    # Check if there's a player in this cell and push them away
+                    # Check if there's a player in this cell and push them away BEFORE placing the wall
                     for player in alive_players:
                         self.push_player_away_from_cell(player, x, y)
+                    
+                    # Double-check: make sure no players are still in this cell after pushing
+                    players_still_in_cell = []
+                    for player in alive_players:
+                        if player.get_grid_pos() == (x, y):
+                            players_still_in_cell.append(player)
+                    
+                    # If players are still in the cell, try to move them to any adjacent empty cell
+                    for player in players_still_in_cell:
+                        for dx, dy in [(0, -1), (1, 0), (0, 1), (-1, 0)]:  # Up, Right, Down, Left
+                            adj_x, adj_y = x + dx, y + dy
+                            if (0 <= adj_x < GRID_WIDTH and 0 <= adj_y < GRID_HEIGHT and 
+                                self.board[adj_y][adj_x] == EMPTY):
+                                # Move player to adjacent empty cell
+                                player.pos = pygame.math.Vector2(
+                                    adj_x * CELL_SIZE + CELL_SIZE // 2,
+                                    adj_y * CELL_SIZE + CELL_SIZE // 2
+                                )
+                                break
                     
                     # Replace whatever is in the cell with an indestructible wall
                     self.board[y][x] = INDESTRUCTIBLE
