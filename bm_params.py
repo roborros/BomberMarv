@@ -35,6 +35,10 @@ QUAD_DAMAGE_POWER = 10    # Powerup bonus to bomb capacity and fire power
 QUAD_DAMAGE_DELAY = 40  # Delay before Quad Damage powerup spawns (s)
 QUAD_DAMAGE_SPEEDUP = 1.5  # Speedup
 
+# Crushing walls feature
+CRUSHING_WALLS_DELAY = 5  # Delay before crushing walls activate (seconds)
+CRUSHING_WALLS_MIN_DESTROYABLE = 500  # Minimum destroyable cells before activation
+
 GRID_SIZE = 15
 
 BOMB_TIMER = 3000
