@@ -274,16 +274,12 @@ class Game:
         self.is_fullscreen = False
         self.web_keys = set()  # Track keys pressed from web client
         
-<<<<<<< HEAD
         # Crushing walls feature variables
         self.crushing_walls_active = False
         self.crushing_walls_last_time = 0
         self.crushing_walls_pattern = []
         self.crushing_walls_index = 0
         
-        for i in range(NUM_PLAYERS):
-            p = Player(1, 1, colors[i % len(colors)], controls_list[i % len(controls_list)], player_names[i % len(player_names)])
-=======
         # Game preparation screen state
         self.prep_num_players = NUM_PLAYERS
         self.prep_player_names = player_names.copy()
@@ -293,11 +289,28 @@ class Game:
         # Simple navigation system
         self.prep_cursor_row = 0  # 0=num_players, 1-N=players, N+1=start_game
         self.prep_cursor_col = 0  # 0=name, 1=color, 2=controls (only when on player rows)
+        self.prep_section = 'players'  # 'players' or 'game'
+        self.prep_game_cursor = 0  # index within game settings list
+        self.prep_editing_mode = False  # True when editing values, False when navigating
         
         # Editing states
         self.prep_editing_control = None  # Which control key we're currently changing
         self.prep_editing_name = False  # Whether we're typing a custom name
         self.prep_custom_name = ""  # Buffer for custom name input
+        
+        # Track if prep screen has been shown
+        self.prep_screen_completed = False
+
+        # Gameplay settings (can be edited in prep screen)
+        self.prep_initial_bomb_capacity = 1
+        self.prep_initial_fire_power = 1
+        self.prep_player_speed = PLAYER_SPEED
+        self.prep_powerup_probability = POWERUP_PROBABILITY
+        self.prep_qd_probability = QUAD_DAMAGE_PROBABILITY
+        self.prep_qd_delay = QUAD_DAMAGE_DELAY
+        self.prep_crushing_delay = CRUSHING_WALLS_DELAY
+        self.prep_crushing_min_destroyable = CRUSHING_WALLS_MIN_DESTROYABLE
+        self.prep_trophy_threshold = TROPHY_WIN_THRESHOLD
         
         # Create initial players based on current settings
         self.create_players()
@@ -311,7 +324,6 @@ class Game:
                       colors[color_idx % len(colors)], 
                       self.prep_controls[i % len(self.prep_controls)], 
                       self.prep_player_names[i % len(self.prep_player_names)])
->>>>>>> 0e77396 (checkpoint before checking out cursor/add-indestructible-cells-to-increase-pressure-2048)
             self.players.append(p)
     
     def init_game(self):
@@ -349,6 +361,10 @@ class Game:
             
             clear_safe_zone(self.board, player.start_grid_x, player.start_grid_y, offsets)
             player.reset()
+            # Apply initial gameplay params
+            player.bomb_capacity = max(1, int(self.prep_initial_bomb_capacity))
+            player.fire_power = max(1, int(self.prep_initial_fire_power))
+            player.speed = max(50, int(self.prep_player_speed))
         self.game_start_time = pygame.time.get_ticks() + 2000  # Add a 2-second freeze time
         
         # Reset crushing walls state
@@ -472,8 +488,8 @@ class Game:
         
         # Check if conditions are met to activate crushing walls
         if len(alive_players) == 2 and \
-           (self.current_time - self.game_start_time) >= CRUSHING_WALLS_DELAY * 1000 and \
-           self.count_destroyable_cells() < CRUSHING_WALLS_MIN_DESTROYABLE:
+           (self.current_time - self.game_start_time) >= self.prep_crushing_delay * 1000 and \
+           self.count_destroyable_cells() < self.prep_crushing_min_destroyable:
             
             if not self.crushing_walls_active:
                 # Initialize crushing walls
@@ -573,10 +589,10 @@ class Game:
                 self.explosions.remove(explosion)
                     
     def place_quad_damage_powerup(self):        
-        if (pygame.time.get_ticks() - self.game_start_time) >= QUAD_DAMAGE_DELAY*1000:  # 2 minutes
+        if (pygame.time.get_ticks() - self.game_start_time) >= self.prep_qd_delay*1000:
             if not any(pu.type == "quad_damage" for pu in self.powerups):
                 empty_cells = [(x, y) for y in range(GRID_HEIGHT) for x in range(GRID_WIDTH) if self.board[y][x] == EMPTY]
-                if empty_cells and random.random() < QUAD_DAMAGE_PROBABILITY:
+                if empty_cells and random.random() < self.prep_qd_probability:
                     x, y = random.choice(empty_cells)
                     self.powerups.append(PowerUp(x, y, "quad_damage"))
                                 
@@ -603,7 +619,11 @@ class Game:
                 elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                     print(f"ENTER pressed, game_state={self.game_state}")
                     if self.game_state == "startup":
-                        self.game_state = "game_prep"
+                        if not self.prep_screen_completed:
+                            self.game_state = "game_prep"
+                        else:
+                            self.init_game()
+                            self.game_state = "get_ready"
                     elif self.game_state == "game_prep":
                         self.handle_prep_enter_key()
                     elif self.game_state in ["win", "champion"]:
@@ -630,27 +650,33 @@ class Game:
             self.prep_editing_name = False
             self.prep_custom_name = ""
             return
-            
-        if self.prep_cursor_row == 0:
-            # Number of players row - nothing special on ENTER
-            pass
-        elif 1 <= self.prep_cursor_row <= self.prep_num_players:
-            # Player row
-            player_idx = self.prep_cursor_row - 1
-            if self.prep_cursor_col == 0:  # Name
-                # Start custom name input
-                self.prep_editing_name = True
-                self.prep_custom_name = self.prep_player_names[player_idx]
-            elif self.prep_cursor_col == 1:  # Color
-                # Nothing special - use left/right to change
-                pass
-            elif self.prep_cursor_col == 2:  # Controls
-                # Start controls editing
-                self.prep_editing_control = 'up'
-        elif self.prep_cursor_row == self.prep_num_players + 1:
-            # Start game
+        
+        # Handle "Start Game" option
+        if self.prep_section == 'game' and self.prep_game_cursor == 9:  # "Start Game" is the 10th item (index 9)
+            self.prep_screen_completed = True
             self.init_game()
             self.game_state = "get_ready"
+            return
+        
+        # Toggle editing mode
+        if self.prep_section == 'players':
+            if self.prep_cursor_row == 0:
+                # Number of players - toggle editing
+                self.prep_editing_mode = not self.prep_editing_mode
+            elif 1 <= self.prep_cursor_row <= self.prep_num_players:
+                # Player row
+                if self.prep_cursor_col == 0:  # Name
+                    self.prep_editing_name = True
+                    player_idx = self.prep_cursor_row - 1
+                    self.prep_custom_name = self.prep_player_names[player_idx]
+                elif self.prep_cursor_col == 1:  # Color
+                    self.prep_editing_mode = not self.prep_editing_mode
+                elif self.prep_cursor_col == 2:  # Controls
+                    self.prep_editing_control = 'up'
+        else:
+            # Game settings section
+            if self.prep_game_cursor < 9:  # Not "Start Game"
+                self.prep_editing_mode = not self.prep_editing_mode
     
     def handle_prep_key_event(self, event):
         """Handle key events for game prep screen navigation"""
@@ -686,89 +712,112 @@ class Game:
                 self.prep_editing_control = None
             return
         
-        # Simple row/column navigation
-        if event.key == pygame.K_UP:
-            # Move up one row
-            if self.prep_cursor_row > 0:
-                self.prep_cursor_row -= 1
-                # Reset column to 0 when moving to number of players row
-                if self.prep_cursor_row == 0:
-                    self.prep_cursor_col = 0
-        
-        elif event.key == pygame.K_DOWN:
-            # Move down one row
-            max_row = self.prep_num_players + 1  # +1 for start game row
-            if self.prep_cursor_row < max_row:
-                self.prep_cursor_row += 1
-                # Reset column to 0 when moving to start game row
-                if self.prep_cursor_row == max_row:
-                    self.prep_cursor_col = 0
-        
-        elif event.key == pygame.K_LEFT:
-            if self.prep_cursor_row == 0:
-                # Number of players row - decrease number
-                self.prep_num_players = max(2, self.prep_num_players - 1)
-                self.create_players()
-                # Adjust cursor if it's beyond the new number of players
-                if self.prep_cursor_row > self.prep_num_players:
-                    self.prep_cursor_row = self.prep_num_players
-            elif 1 <= self.prep_cursor_row <= self.prep_num_players:
-                # Player row - move left or change value
-                player_idx = self.prep_cursor_row - 1
-                if self.prep_cursor_col == 0:  # Name
-                    # Change to previous name
-                    try:
-                        current_idx = player_names.index(self.prep_player_names[player_idx])
-                        new_idx = (current_idx - 1) % len(player_names)
-                        self.prep_player_names[player_idx] = player_names[new_idx]
+        # Switch section
+        if event.key == pygame.K_TAB:
+            self.prep_section = 'game' if self.prep_section == 'players' else 'players'
+            return
+
+        if self.prep_section == 'players':
+            if event.key == pygame.K_UP:
+                if not self.prep_editing_mode:
+                    if self.prep_cursor_row > 0:
+                        self.prep_cursor_row -= 1
+                        if self.prep_cursor_row == 0:
+                            self.prep_cursor_col = 0
+            elif event.key == pygame.K_DOWN:
+                if not self.prep_editing_mode:
+                    if self.prep_cursor_row < self.prep_num_players:
+                        self.prep_cursor_row += 1
+            elif event.key == pygame.K_LEFT:
+                if self.prep_editing_mode:
+                    # Edit values
+                    if self.prep_cursor_row == 0:
+                        self.prep_num_players = max(2, self.prep_num_players - 1)
                         self.create_players()
-                    except ValueError:
-                        # Custom name, cycle to last predefined name
-                        self.prep_player_names[player_idx] = player_names[-1]
+                        if self.prep_cursor_row > self.prep_num_players:
+                            self.prep_cursor_row = self.prep_num_players
+                    elif 1 <= self.prep_cursor_row <= self.prep_num_players:
+                        player_idx = self.prep_cursor_row - 1
+                        if self.prep_cursor_col == 0:
+                            try:
+                                current_idx = player_names.index(self.prep_player_names[player_idx])
+                                new_idx = (current_idx - 1) % len(player_names)
+                                self.prep_player_names[player_idx] = player_names[new_idx]
+                                self.create_players()
+                            except ValueError:
+                                self.prep_player_names[player_idx] = player_names[-1]
+                                self.create_players()
+                        elif self.prep_cursor_col == 1:
+                            current_color = self.prep_player_colors[player_idx]
+                            self.prep_player_colors[player_idx] = (current_color - 1) % len(colors)
+                            self.create_players()
+                else:
+                    # Navigate columns
+                    if 1 <= self.prep_cursor_row <= self.prep_num_players and self.prep_cursor_col > 0:
+                        self.prep_cursor_col -= 1
+            elif event.key == pygame.K_RIGHT:
+                if self.prep_editing_mode:
+                    # Edit values
+                    if self.prep_cursor_row == 0:
+                        self.prep_num_players = min(6, self.prep_num_players + 1)
                         self.create_players()
-                elif self.prep_cursor_col == 1:  # Color
-                    # Change to previous color
-                    current_color = self.prep_player_colors[player_idx]
-                    self.prep_player_colors[player_idx] = (current_color - 1) % len(colors)
-                    self.create_players()
-                elif self.prep_cursor_col > 0:
-                    # Move to previous column
-                    self.prep_cursor_col -= 1
+                    elif 1 <= self.prep_cursor_row <= self.prep_num_players:
+                        player_idx = self.prep_cursor_row - 1
+                        if self.prep_cursor_col == 0:
+                            try:
+                                current_idx = player_names.index(self.prep_player_names[player_idx])
+                                new_idx = (current_idx + 1) % len(player_names)
+                                self.prep_player_names[player_idx] = player_names[new_idx]
+                                self.create_players()
+                            except ValueError:
+                                self.prep_player_names[player_idx] = player_names[0]
+                                self.create_players()
+                        elif self.prep_cursor_col == 1:
+                            current_color = self.prep_player_colors[player_idx]
+                            self.prep_player_colors[player_idx] = (current_color + 1) % len(colors)
+                            self.create_players()
+                else:
+                    # Navigate columns
+                    if 1 <= self.prep_cursor_row <= self.prep_num_players and self.prep_cursor_col < 2:
+                        self.prep_cursor_col += 1
+
+        else:
+            # Game settings navigation
+            settings = [
+                ('prep_initial_bomb_capacity', 1, 10, 1),
+                ('prep_initial_fire_power', 1, 10, 1),
+                ('prep_player_speed', 100, 600, 10),
+                ('prep_powerup_probability', 0.0, 1.0, 0.05),
+                ('prep_qd_probability', 0.0, 0.02, 0.0005),
+                ('prep_qd_delay', 0, 600, 5),
+                ('prep_crushing_delay', 0, 600, 5),
+                ('prep_crushing_min_destroyable', 0, 200, 1),
+                ('prep_trophy_threshold', 1, 10, 1),
+            ]
+
+            if event.key == pygame.K_UP:
+                if not self.prep_editing_mode:
+                    if self.prep_game_cursor > 0:
+                        self.prep_game_cursor -= 1
+            elif event.key == pygame.K_DOWN:
+                if not self.prep_editing_mode:
+                    # Allow navigation to "Start Game" (index 9)
+                    if self.prep_game_cursor < 9:
+                        self.prep_game_cursor += 1
+            elif event.key in (pygame.K_LEFT, pygame.K_RIGHT):
+                if self.prep_editing_mode and self.prep_game_cursor < len(settings):
+                    attr, mn, mx, step = settings[self.prep_game_cursor]
+                    val = getattr(self, attr)
+                    if isinstance(val, float):
+                        delta = step if event.key == pygame.K_RIGHT else -step
+                        val = max(mn, min(mx, float(val) + delta))
+                        setattr(self, attr, round(val, 4))
+                    else:
+                        delta = step if event.key == pygame.K_RIGHT else -step
+                        val = max(mn, min(mx, int(val) + delta))
+                        setattr(self, attr, val)
         
-        elif event.key == pygame.K_RIGHT:
-            if self.prep_cursor_row == 0:
-                # Number of players row - increase number
-                self.prep_num_players = min(6, self.prep_num_players + 1)
-                self.create_players()
-            elif 1 <= self.prep_cursor_row <= self.prep_num_players:
-                # Player row - move right or change value
-                player_idx = self.prep_cursor_row - 1
-                if self.prep_cursor_col == 0:  # Name
-                    # Change to next name
-                    try:
-                        current_idx = player_names.index(self.prep_player_names[player_idx])
-                        new_idx = (current_idx + 1) % len(player_names)
-                        self.prep_player_names[player_idx] = player_names[new_idx]
-                        self.create_players()
-                    except ValueError:
-                        # Custom name, cycle to first predefined name
-                        self.prep_player_names[player_idx] = player_names[0]
-                        self.create_players()
-                elif self.prep_cursor_col == 1:  # Color
-                    # Change to next color
-                    current_color = self.prep_player_colors[player_idx]
-                    self.prep_player_colors[player_idx] = (current_color + 1) % len(colors)
-                    self.create_players()
-                elif self.prep_cursor_col < 2:
-                    # Move to next column
-                    self.prep_cursor_col += 1
-        
-        elif event.key == pygame.K_TAB:
-            if 1 <= self.prep_cursor_row <= self.prep_num_players:
-                # Quick switch between columns in player rows
-                self.prep_cursor_col = (self.prep_cursor_col + 1) % 3
-        
-        elif event.key == pygame.K_ESCAPE:
+        if event.key == pygame.K_ESCAPE:
             # Go back to startup
             self.game_state = "startup"
             self.startup_start_time = pygame.time.get_ticks()
@@ -861,6 +910,7 @@ class Game:
                         qd_sound.play()
                     self.powerups.remove(pu)
                     
+        # Use adjustable powerup logic
         self.place_quad_damage_powerup()
         
         # Handle crushing walls feature
@@ -870,7 +920,7 @@ class Game:
         if len(alive_players) <= 1:
             if alive_players:
                 alive_players[0].trophies += 1
-                if alive_players[0].trophies >= TROPHY_WIN_THRESHOLD:
+                if alive_players[0].trophies >= self.prep_trophy_threshold:
                     self.game_state = "champion"
                 else:
                     self.game_state = "win"
@@ -901,130 +951,81 @@ class Screen:
             self.surface.blit(start_text, start_rect)
             
     def draw_game_prep(self, Game):
-        # Simple background
-        self.surface.fill((40, 45, 50))
-        
-        # Title
-        title_font = pygame.font.SysFont("arial", 48, bold=True)
-        title_text = title_font.render("🎮 GAME SETUP", True, (255, 255, 255))
-        title_rect = title_text.get_rect(center=(BASE_WIDTH // 2, 60))
-        self.surface.blit(title_text, title_rect)
-        
-        y_start = 140
-        row_height = 60
-        
-        # Row 0: Number of players
-        row_y = y_start
-        is_selected = (Game.prep_cursor_row == 0)
-        bg_color = (70, 90, 120) if is_selected else (50, 55, 60)
-        
-        row_rect = pygame.Rect(50, row_y - 5, BASE_WIDTH - 100, row_height - 10)
-        pygame.draw.rect(self.surface, bg_color, row_rect, border_radius=10)
-        if is_selected:
-            pygame.draw.rect(self.surface, (255, 255, 100), row_rect, 3, border_radius=10)
-        
-        text_color = (255, 255, 100) if is_selected else (255, 255, 255)
-        num_text = font_small.render(f"Number of Players: {Game.prep_num_players}", True, text_color)
-        self.surface.blit(num_text, (70, row_y + 15))
-        
-        if is_selected:
-            hint_text = font_small.render("← → to change  ENTER to confirm", True, (255, 255, 100))
-            self.surface.blit(hint_text, (BASE_WIDTH - 300, row_y + 15))
-        
-        # Player rows
+        # Gray background panels and minimalist UI
+        self.surface.fill(COLOR_BG)
+
+        left_panel = pygame.Rect(40, 80, BASE_WIDTH//2 - 60, BASE_HEIGHT - 160)
+        right_panel = pygame.Rect(BASE_WIDTH//2 + 20, 80, BASE_WIDTH//2 - 60, BASE_HEIGHT - 160)
+        pygame.draw.rect(self.surface, (70,70,70), left_panel)
+        pygame.draw.rect(self.surface, (70,70,70), right_panel)
+        pygame.draw.rect(self.surface, (120,120,120), left_panel, 1)
+        pygame.draw.rect(self.surface, (120,120,120), right_panel, 1)
+
+        title_font = pygame.font.SysFont("arial", 32, bold=True)
+        self.surface.blit(title_font.render("Players", True, (255,255,255)), (left_panel.x+10, left_panel.y-36))
+        self.surface.blit(title_font.render("Game Settings", True, (255,255,255)), (right_panel.x+10, right_panel.y-36))
+
+        # Left: players section
+        y = left_panel.y + 10
+        line_h = 34
+        sel_color = (255,255,160)
+        norm = (255,255,255)
+        # Number of players
+        selected = (Game.prep_section=='players' and Game.prep_cursor_row==0)
+        self.surface.blit(font_small.render(f"Players: {Game.prep_num_players}", True, sel_color if selected else norm), (left_panel.x+12, y))
+        pygame.draw.line(self.surface, (110,110,110), (left_panel.x+10, y+line_h-8), (left_panel.right-10, y+line_h-8), 1)
+        y += line_h
+
         for i in range(Game.prep_num_players):
-            row_y = y_start + (i + 1) * row_height
-            is_selected = (Game.prep_cursor_row == i + 1)
-            
-            # Row background
-            bg_color = (70, 90, 120) if is_selected else (50, 55, 60)
-            row_rect = pygame.Rect(50, row_y - 5, BASE_WIDTH - 100, row_height - 10)
-            pygame.draw.rect(self.surface, bg_color, row_rect, border_radius=10)
-            if is_selected:
-                pygame.draw.rect(self.surface, (255, 255, 100), row_rect, 3, border_radius=10)
-            
-            # Player number badge
-            color_idx = Game.prep_player_colors[i % len(Game.prep_player_colors)]
-            badge_color = colors[color_idx % len(colors)]
-            badge_rect = pygame.Rect(70, row_y + 10, 35, 30)
-            pygame.draw.rect(self.surface, badge_color, badge_rect, border_radius=5)
-            pygame.draw.rect(self.surface, (255, 255, 255), badge_rect, 2, border_radius=5)
-            
-            num_text = font_small.render(str(i + 1), True, (255, 255, 255))
-            num_rect = num_text.get_rect(center=(87, row_y + 25))
-            self.surface.blit(num_text, num_rect)
-            
-            # Player name
-            name_x = 120
+            row_sel = (Game.prep_section=='players' and Game.prep_cursor_row==i+1)
+            name_c = sel_color if (row_sel and Game.prep_cursor_col==0) else norm
+            col_c = sel_color if (row_sel and Game.prep_cursor_col==1) else norm
+            ctrl_c = sel_color if (row_sel and Game.prep_cursor_col==2) else norm
             name = Game.prep_player_names[i % len(Game.prep_player_names)]
-            
-            if Game.prep_editing_name and is_selected and Game.prep_cursor_col == 0:
-                display_name = Game.prep_custom_name + "|"
-                name_color = (255, 255, 100)
-            else:
-                display_name = name
-                name_color = (255, 255, 100) if is_selected and Game.prep_cursor_col == 0 else (255, 255, 255)
-            
-            name_text = font_small.render(display_name, True, name_color)
-            self.surface.blit(name_text, (name_x, row_y + 15))
-            
-            # Color circles
-            color_start_x = 300
-            for c_idx, color in enumerate(colors):
-                circle_x = color_start_x + c_idx * 30
-                circle_pos = (circle_x, row_y + 25)
-                pygame.draw.circle(self.surface, color, circle_pos, 8)
-                
-                # Highlight current color
-                if color_idx == c_idx:
-                    pygame.draw.circle(self.surface, (255, 255, 255), circle_pos, 10, 3)
-                    if is_selected and Game.prep_cursor_col == 1:
-                        pygame.draw.circle(self.surface, (255, 255, 100), circle_pos, 12, 2)
-                else:
-                    pygame.draw.circle(self.surface, (150, 150, 150), circle_pos, 8, 1)
-            
-            # Controls
-            controls_x = 500
-            controls = Game.prep_controls[i % len(Game.prep_controls)]
-            controls_color = (255, 255, 100) if is_selected and Game.prep_cursor_col == 2 else (200, 200, 200)
-            
-            up_key = pygame.key.name(controls['up']).upper()
-            bomb_key = pygame.key.name(controls['bomb']).upper()
-            controls_text = f"Controls: {up_key}..."
-            controls_surface = font_small.render(controls_text, True, controls_color)
-            self.surface.blit(controls_surface, (controls_x, row_y + 15))
-            
-            # Column indicators for selected row
-            if is_selected:
-                if Game.prep_cursor_col == 0:  # Name
-                    pygame.draw.line(self.surface, (255, 255, 100), (name_x, row_y + 40), (name_x + 150, row_y + 40), 2)
-                elif Game.prep_cursor_col == 1:  # Color
-                    pygame.draw.line(self.surface, (255, 255, 100), (color_start_x - 10, row_y + 40), (color_start_x + len(colors) * 30, row_y + 40), 2)
-                elif Game.prep_cursor_col == 2:  # Controls
-                    pygame.draw.line(self.surface, (255, 255, 100), (controls_x, row_y + 40), (controls_x + 150, row_y + 40), 2)
+            name_disp = Game.prep_custom_name + '|' if (row_sel and Game.prep_editing_name and Game.prep_cursor_col==0) else name
+            self.surface.blit(font_small.render(f"{i+1}. Name: {name_disp}", True, name_c), (left_panel.x+12, y))
+            self.surface.blit(font_small.render("Color:", True, col_c), (left_panel.x+280, y))
+            color_idx = Game.prep_player_colors[i % len(Game.prep_player_colors)]
+            sw = pygame.Rect(left_panel.x+350, y+6, 26, 20)
+            pygame.draw.rect(self.surface, colors[color_idx % len(colors)], sw)
+            pygame.draw.rect(self.surface, (255,255,255), sw, 1)
+            self.surface.blit(font_small.render("Controls", True, ctrl_c), (left_panel.x+410, y))
+            pygame.draw.line(self.surface, (110,110,110), (left_panel.x+10, y+line_h-8), (left_panel.right-10, y+line_h-8), 1)
+            y += line_h
+
+        # Right: game settings
+        settings = [
+            ("Initial Bomb Capacity", 'prep_initial_bomb_capacity', 1, 10, 1),
+            ("Initial Fire Power", 'prep_initial_fire_power', 1, 10, 1),
+            ("Player Speed", 'prep_player_speed', 100, 600, 10),
+            ("Powerup Probability", 'prep_powerup_probability', 0.0, 1.0, 0.05),
+            ("QD Probability", 'prep_qd_probability', 0.0, 0.02, 0.0005),
+            ("QD Delay (s)", 'prep_qd_delay', 0, 600, 5),
+            ("Crush Delay (s)", 'prep_crushing_delay', 0, 600, 5),
+            ("Crush Min Destroyable", 'prep_crushing_min_destroyable', 0, 200, 1),
+            ("Trophy Threshold", 'prep_trophy_threshold', 1, 10, 1),
+        ]
+
+        y = right_panel.y + 10
+        for idx, (label, attr, _mn, _mx, _st) in enumerate(settings):
+            val = getattr(Game, attr)
+            sel = (Game.prep_section=='game' and Game.prep_game_cursor==idx)
+            edit_indicator = " [EDIT]" if (sel and Game.prep_editing_mode) else ""
+            self.surface.blit(font_small.render(f"{label}: {val}{edit_indicator}", True, sel_color if sel else norm), (right_panel.x+12, y))
+            pygame.draw.line(self.surface, (110,110,110), (right_panel.x+10, y+line_h-8), (right_panel.right-10, y+line_h-8), 1)
+            y += line_h
+
+        # Add "Start Game" option
+        start_sel = (Game.prep_section=='game' and Game.prep_game_cursor==9)
+        start_text = ">>> START GAME <<<"
+        start_color = (120, 255, 120) if start_sel else (200, 200, 200)
+        self.surface.blit(font_small.render(start_text, True, start_color), (right_panel.x+12, y))
         
-        # Start game button
-        start_row_y = y_start + (Game.prep_num_players + 1) * row_height
-        is_selected = (Game.prep_cursor_row == Game.prep_num_players + 1)
-        
-        start_rect = pygame.Rect(BASE_WIDTH // 2 - 100, start_row_y, 200, 50)
-        start_color = (100, 150, 100) if is_selected else (60, 80, 60)
-        pygame.draw.rect(self.surface, start_color, start_rect, border_radius=15)
-        
-        border_color = (255, 255, 100) if is_selected else (100, 150, 100)
-        pygame.draw.rect(self.surface, border_color, start_rect, 3, border_radius=15)
-        
-        start_text_color = (255, 255, 255)
-        start_text = font_small.render("🚀 START GAME", True, start_text_color)
-        start_text_rect = start_text.get_rect(center=start_rect.center)
-        self.surface.blit(start_text, start_text_rect)
-        
-        # Instructions
-        instr_y = BASE_HEIGHT - 50
-        instructions = "↑↓ Navigate  ←→ Change values  ENTER Edit/Confirm  ESC Back"
-        instr_text = font_small.render(instructions, True, (200, 200, 255))
-        instr_rect = instr_text.get_rect(center=(BASE_WIDTH // 2, instr_y))
-        self.surface.blit(instr_text, instr_rect)
+        # Footer with mode indication
+        mode_text = "[EDIT MODE]" if Game.prep_editing_mode else "[NAVIGATE]"
+        footer_text = f"{mode_text}   TAB: Switch   Arrows: Navigate/Change   ENTER: Edit/Start   ESC: Back"
+        footer = pygame.font.SysFont("arial", 20).render(footer_text, True, (255,255,255))
+        self.surface.blit(footer, (40, BASE_HEIGHT-46))
 
 def browser_key_to_pygame(key):
     """
