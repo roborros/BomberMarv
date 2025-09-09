@@ -1,5 +1,9 @@
 from bm_params import *
 import random
+import numpy as np
+from timing_abstraction import get_ticks
+
+
 
 
 def clear_safe_zone(board, sx, sy, offsets):
@@ -55,7 +59,7 @@ def automate_player(player, dt, board, bombs):
     if not hasattr(player, "automation_timer"):
         player.automation_timer = 0
     if not hasattr(player, "automation_direction"):
-        player.automation_direction = pygame.math.Vector2(0, 0)
+        player.automation_direction = np.array([0.0, 0.0], dtype=np.float64)
     
     # Decrement the timer by the elapsed time
     player.automation_timer -= dt
@@ -64,11 +68,11 @@ def automate_player(player, dt, board, bombs):
         player.automation_timer = random.randint(500, 1500)
         # Choose a random direction; sometimes the bot stops.
         possible_directions = [
-            pygame.math.Vector2(0, 0),
-            pygame.math.Vector2(1, 0),
-            pygame.math.Vector2(-1, 0),
-            pygame.math.Vector2(0, 1),
-            pygame.math.Vector2(0, -1)
+            np.array([0.0, 0.0], dtype=np.float64),
+            np.array([1.0, 0.0], dtype=np.float64),
+            np.array([-1.0, 0.0], dtype=np.float64),
+            np.array([0.0, 1.0], dtype=np.float64),
+            np.array([0.0, -1.0], dtype=np.float64)
         ]
         player.automation_direction = random.choice(possible_directions)
     
@@ -77,7 +81,7 @@ def automate_player(player, dt, board, bombs):
     original_pos = player.pos.copy()
     # Compute the change in position (dt is in ms)
     delta_move = player.automation_direction * spd * (dt / 1000.0)
-    player.pos += delta_move
+    player.pos = player.pos + delta_move
     
     # If the new position would result in a collision, revert.
     if player.collides_with_walls(board) or player.collides_with_bombs(bombs, original_pos):
@@ -85,4 +89,4 @@ def automate_player(player, dt, board, bombs):
 
     # Occasionally drop a bomb (e.g. ~1% chance each frame)
     if random.random() < 0.01:
-        player.drop_bomb(bombs, pygame.time.get_ticks())
+        player.drop_bomb(bombs, get_ticks())

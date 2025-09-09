@@ -1,18 +1,21 @@
 import pygame
+import numpy as np
 from bm_params import *
+from input_abstraction import get_key_name
+from timing_abstraction import get_ticks
 
 def draw_brick_pattern(rect, surface):
-    brick_height = rect.height // 4
-    brick_width = rect.width // 3
+    brick_height = rect[3] // 4
+    brick_width = rect[2] // 3
     mortar_color = (80, 80, 80)
     rows = 2
     for row in range(rows):
         offset = brick_width // 2 if row % 2 == 1 else 0
-        y = rect.top + row * (rect.height // rows)
-        x = rect.left + offset
+        y = rect[1] + row * (rect[3] // rows)
+        x = rect[0] + offset
         # Prevent infinite loop: ensure x always increases
-        while x < rect.right:
-            brick_rect = pygame.Rect(x, y, brick_width, rect.height // rows)
+        while x < rect[0] + rect[2]:
+            brick_rect = np.array([x, y, brick_width, rect[3] // rows], dtype=np.float64)
             pygame.draw.rect(surface, mortar_color, brick_rect, 1)
             x += brick_width  # <-- increment x to avoid infinite loop
             
@@ -63,19 +66,19 @@ def draw_trophy_icon(surface, pos, size):
     width = size
     height = size
     # Draw a dome (ellipse) for the top of the trophy
-    dome_rect = pygame.Rect(x, y, width, int(height * 0.6))
+    dome_rect = np.array([x, y, width, int(height * 0.6)], dtype=np.float64)
     pygame.draw.ellipse(surface, trophy_color, dome_rect)
     # Draw the cup
-    cup_rect = pygame.Rect(x + int(width * 0.2), y + int(height * 0.5), int(width * 0.6), int(height * 0.3))
+    cup_rect = np.array([x + int(width * 0.2), y + int(height * 0.5), int(width * 0.6), int(height * 0.3)], dtype=np.float64)
     pygame.draw.rect(surface, trophy_color, cup_rect)
     # Draw a base
-    base_rect = pygame.Rect(x + int(width * 0.3), y + int(height * 0.85), int(width * 0.4), int(height * 0.15))
+    base_rect = np.array([x + int(width * 0.3), y + int(height * 0.85), int(width * 0.4), int(height * 0.15)], dtype=np.float64)
     pygame.draw.rect(surface, trophy_color, base_rect)
     
 def draw_board(surface,theGame):
     for y in range(GRID_HEIGHT):
         for x in range(GRID_WIDTH):
-            rect = pygame.Rect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+            rect = np.array([x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE], dtype=np.float64)
             if theGame.board[y][x] == EMPTY:
                 pygame.gfxdraw.box(surface, rect, COLOR_BG)
             elif theGame.board[y][x] == INDESTRUCTIBLE:
@@ -104,7 +107,7 @@ def draw_powerup_icon(surface, center, size, powerup_type):
 
 def draw_bomb_powerup_icon(surface, center, size):
     size = int(size * 1.3)
-    rect = pygame.Rect(center[0] - size//2, center[1] - size//2, size, size)
+    rect = np.array([center[0] - size//2, center[1] - size//2, size, size], dtype=np.float64)
     blue_border = (0, 255, 255)
     pygame.draw.rect(surface, blue_border, rect, 4)
     bomb_r = size // 3
@@ -120,7 +123,7 @@ def draw_bomb_powerup_icon(surface, center, size):
 
 def draw_fire_powerup_icon(surface, center, size):
     size2 = int(size * 1.3)
-    rect = pygame.Rect(center[0] - size2//2, center[1] - size2//2, size2, size2)
+    rect = np.array([center[0] - size2//2, center[1] - size2//2, size2, size2], dtype=np.float64)
     blue_border = (0, 255, 255)
     pygame.draw.rect(surface, blue_border, rect, 4)
     
@@ -149,24 +152,24 @@ def draw_trophy_icon(surface, pos, size):
     x, y = pos
     width = size
     height = size
-    dome_rect = pygame.Rect(x, y, width, int(height * 0.6))
+    dome_rect = np.array([x, y, width, int(height * 0.6)], dtype=np.float64)
     pygame.draw.ellipse(surface, trophy_color, dome_rect)
-    cup_rect = pygame.Rect(x + int(width * 0.2), y + int(height * 0.5), int(width * 0.6), int(height * 0.3))
+    cup_rect = np.array([x + int(width * 0.2), y + int(height * 0.5), int(width * 0.6), int(height * 0.3)], dtype=np.float64)
     pygame.draw.rect(surface, trophy_color, cup_rect)
-    base_rect = pygame.Rect(x + int(width * 0.3), y + int(height * 0.85), int(width * 0.4), int(height * 0.15))
+    base_rect = np.array([x + int(width * 0.3), y + int(height * 0.85), int(width * 0.4), int(height * 0.15)], dtype=np.float64)
     pygame.draw.rect(surface, trophy_color, base_rect)
 
 def draw_players(surface, players):
     for player in players:
         if not player.alive and player.death_animation_time <= 0:
             continue
-        pos = (int(player.pos.x), int(player.pos.y))
+        pos = (int(player.pos[0]), int(player.pos[1]))
         r = player.draw_radius
         if player.alive:
             pygame.gfxdraw.filled_circle(surface, pos[0], pos[1], r, player.color)
             pygame.gfxdraw.aacircle(surface, pos[0], pos[1], r, player.color)
             helmet_color = (min(player.color[0]+30,255), min(player.color[1]+30,255), min(player.color[2]+30,255))
-            rect_head = pygame.Rect(pos[0]-r, pos[1]-r, 2*r, 2*r)
+            rect_head = np.array([pos[0]-r, pos[1]-r, 2*r, 2*r], dtype=np.float64)
             pygame.draw.arc(surface, helmet_color, rect_head, math.pi, 2*math.pi, 3)
             eye_r = max(1, r//8)
             eye_offset_x = r//3
@@ -176,17 +179,17 @@ def draw_players(surface, players):
             leg_width = r//3
             leg_height = r//4
             leg_offset = int(6 * math.sin(player.animation_time / 150.0))
-            left_leg = pygame.Rect(pos[0] - r//2 - leg_width//2, pos[1] + r - 2 + leg_offset, leg_width, leg_height)
-            right_leg = pygame.Rect(pos[0] + r//2 - leg_width//2, pos[1] + r - 2 - leg_offset, leg_width, leg_height)
+            left_leg = np.array([pos[0] - r//2 - leg_width//2, pos[1] + r - 2 + leg_offset, leg_width, leg_height], dtype=np.float64)
+            right_leg = np.array([pos[0] + r//2 - leg_width//2, pos[1] + r - 2 - leg_offset, leg_width, leg_height], dtype=np.float64)
             leg_color = (player.color[0]//2, player.color[1]//2, player.color[2]//2)
             pygame.draw.rect(surface, leg_color, left_leg)
             pygame.draw.rect(surface, leg_color, right_leg)
         
             if player.quad_damage:
-                elapsed = pygame.time.get_ticks() - player.quad_damage_start_time
+                elapsed = get_ticks() - player.quad_damage_start_time
                 pulse = 1 + 0.1 * math.sin(2 * math.pi * (elapsed / 500.0))
                 rect_size = int((2 * r + 10) * pulse)
-                rect = pygame.Rect(pos[0] - rect_size // 2, pos[1] - rect_size // 2, rect_size, rect_size)
+                rect = np.array([pos[0] - rect_size // 2, pos[1] - rect_size // 2, rect_size, rect_size], dtype=np.float64)
                 pygame.draw.rect(surface, (0, 255, 255), rect, 4)
             
             # Draw player name
@@ -307,7 +310,7 @@ def draw_controls(surface, players):
     y_offset += 50
     for i, player in enumerate(players):
         controls = player.controls
-        control_text = f"{player.name}: {pygame.key.name(controls['up'])} - {pygame.key.name(controls['down'])} - {pygame.key.name(controls['left'])} - {pygame.key.name(controls['right'])} - {pygame.key.name(controls['bomb'])}"
+        control_text = f"{player.name}: {get_key_name(controls['up'])} - {get_key_name(controls['down'])} - {get_key_name(controls['left'])} - {get_key_name(controls['right'])} - {get_key_name(controls['bomb'])}"
         text = font.render(control_text, True, player.color)
         rect = text.get_rect(center=(BASE_WIDTH // 2, y_offset))
         surface.blit(text, rect)
@@ -370,14 +373,14 @@ def draw_player_directions(surface, players, theGame):
     for player in players:
         if not player.alive:
             continue
-        if hasattr(player, 'direction') and player.direction.length_squared() > 0:
-            start = (int(player.pos.x), int(player.pos.y))
-            end = (int(player.pos.x + player.direction.x * CELL_SIZE), int(player.pos.y + player.direction.y * CELL_SIZE))
+        if hasattr(player, 'direction') and np.dot(player.direction, player.direction) > 0:
+            start = (int(player.pos[0]), int(player.pos[1]))
+            end = (int(player.pos[0] + player.direction[0] * CELL_SIZE), int(player.pos[1] + player.direction[1] * CELL_SIZE))
             pygame.draw.line(surface, (255, 0, 0), start, end, 4)
             pygame.draw.circle(surface, (255, 0, 0), end, 7)
             # Highlight the cell the player is pointing at
-            cell_x = int((player.pos.x + player.direction.x * CELL_SIZE) // CELL_SIZE)
-            cell_y = int((player.pos.y + player.direction.y * CELL_SIZE) // CELL_SIZE)
+            cell_x = int((player.pos[0] + player.direction[0] * CELL_SIZE) // CELL_SIZE)
+            cell_y = int((player.pos[1] + player.direction[1] * CELL_SIZE) // CELL_SIZE)
             # Defensive: check bounds
             if 0 <= cell_y < len(theGame.board) and 0 <= cell_x < len(theGame.board[0]):
                 cell_empty = theGame.board[cell_y][cell_x] == EMPTY
@@ -385,27 +388,27 @@ def draw_player_directions(surface, players, theGame):
                 cell_empty = False
             if cell_empty:
                 highlight_color = (0, 255, 0, 120)  # semi-transparent green
-                dx, dy = int(player.direction.x), int(player.direction.y)
+                dx, dy = int(player.direction[0]), int(player.direction[1])
                 if (dx == 1 and dy == 0) or (dx == -1 and dy == 0) or (dx == 0 and dy == 1) or (dx == 0 and dy == -1):
                     cell_center = (cell_x * CELL_SIZE + CELL_SIZE // 2, cell_y * CELL_SIZE + CELL_SIZE // 2)
                     pygame.draw.line(surface, (0, 200, 0), start, cell_center, 4)
                     pygame.draw.circle(surface, (0, 200, 0), cell_center, 7)
             else:
                 highlight_color = (255, 0, 0, 120)  # semi-transparent red
-            highlight_rect = pygame.Rect(cell_x * CELL_SIZE, cell_y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+            highlight_rect = np.array([cell_x * CELL_SIZE, cell_y * CELL_SIZE, CELL_SIZE, CELL_SIZE], dtype=np.float64)
             highlight_surface = pygame.Surface((CELL_SIZE, CELL_SIZE), pygame.SRCALPHA)
             highlight_surface.fill(highlight_color)
-            surface.blit(highlight_surface, (highlight_rect.x, highlight_rect.y))
+            surface.blit(highlight_surface, (highlight_rect[0], highlight_rect[1]))
     
-def draw_adjust_screen_size(window_size, game_surface, window):
-    factor = min(window_size[0] / BASE_WIDTH, window_size[1] / BASE_HEIGHT)
+def draw_adjust_screen_size(screen):
+    factor = min(screen.window_size[0] / BASE_WIDTH, screen.window_size[1] / BASE_HEIGHT)
     new_width = int(BASE_WIDTH * factor)
     new_height = int(BASE_HEIGHT * factor)
-    scaled_surface = pygame.transform.smoothscale(game_surface, (new_width, new_height))
-    window.fill((0,0,0))
-    x_offset = (window_size[0] - new_width) // 2
-    y_offset = (window_size[1] - new_height) // 2
-    window.blit(scaled_surface, (x_offset, y_offset))
+    scaled_surface = pygame.transform.smoothscale(screen.surface, (new_width, new_height))
+    screen.window.fill((0,0,0))
+    x_offset = (screen.window_size[0] - new_width) // 2
+    y_offset = (screen.window_size[1] - new_height) // 2
+    screen.window.blit(scaled_surface, (x_offset, y_offset))
     pygame.display.flip()
     
 def draw_get_ready(surface):

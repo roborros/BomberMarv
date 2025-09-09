@@ -91,6 +91,8 @@ if __name__ == "__main__":
     theGame.init_game()
 
     theScreen = Screen()
+    theScreen.set_window(window)
+    theGame.screen = theScreen
 
     while True:
         theGame.tick()
@@ -141,5 +143,5 @@ if __name__ == "__main__":
             frame_queue.put(jpeg_bytes)
         
         
-        draw_adjust_screen_size(theGame.window_size, theScreen.surface, window)
+        draw_adjust_screen_size(theScreen)
 

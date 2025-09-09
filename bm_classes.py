@@ -1,9 +1,13 @@
 import pygame
+import math
+import numpy as np
 from bm_params import *
 from lib_collisions import *
 from lib_grid import *
 from bm_sounds import *
 from bm_drawing import *
+from input_abstraction import get_pressed_keys, is_key_pressed, Keys
+from timing_abstraction import get_ticks, Clock
 
 
 
@@ -11,8 +15,8 @@ class Player:
     def __init__(self, grid_x, grid_y, color, controls, name):
         self.start_grid_x = grid_x
         self.start_grid_y = grid_y
-        self.pos = pygame.math.Vector2(grid_x * CELL_SIZE + CELL_SIZE // 2,
-                                        grid_y * CELL_SIZE + CELL_SIZE // 2)
+        self.pos = np.array([grid_x * CELL_SIZE + CELL_SIZE // 2,
+                                        grid_y * CELL_SIZE + CELL_SIZE // 2], dtype=np.float64)
         self.color = color
         self.controls = controls
         self.bomb_capacity = 1
@@ -29,22 +33,22 @@ class Player:
         self.quad_damage_start_time = 0
         self.name = name
         self.death_animation_time = 0
-        self.direction = pygame.math.Vector2(0, 0)  # Initialize direction
+        self.direction = np.array([0.0, 0.0], dtype=np.float64)  # Initialize direction
 
     def get_circle(self):
         return (self.pos, self.draw_radius)
 
     def get_grid_pos(self):
-        return (int(self.pos.x // CELL_SIZE), int(self.pos.y // CELL_SIZE))
+        return (int(self.pos[0] // CELL_SIZE), int(self.pos[1] // CELL_SIZE))
 
     def update(self, dt, board, bombs, current_time, web_keys=None):
         if not self.alive:
             if self.death_animation_time > 0:
                 self.death_animation_time -= dt
-            self.direction = pygame.math.Vector2(0, 0)  # No direction if dead
+            self.direction = np.array([0.0, 0.0], dtype=np.float64)  # No direction if dead
             return
-        keys = pygame.key.get_pressed()
-        direction = pygame.math.Vector2(0, 0)
+        keys = get_pressed_keys()
+        direction = np.array([0.0, 0.0], dtype=np.float64)
         # Remap all web_keys using browser_key_to_pygame
         mapped_web_keys = set()
         if web_keys:
@@ -53,16 +57,18 @@ class Player:
                 if mapped:
                     mapped_web_keys.add(mapped.lower())
         # Use mapped_web_keys as an OR with local keys
-        if keys[self.controls['up']] or (mapped_web_keys and 'up' in mapped_web_keys):
-            direction.y -= 1
-        if keys[self.controls['down']] or (mapped_web_keys and 'down' in mapped_web_keys):
-            direction.y += 1
-        if keys[self.controls['left']] or (mapped_web_keys and 'left' in mapped_web_keys):
-            direction.x -= 1
-        if keys[self.controls['right']] or (mapped_web_keys and 'right' in mapped_web_keys):
-            direction.x += 1
-        if direction.length_squared() > 1:
-            direction = direction.normalize()
+        if is_key_pressed(self.controls['up']) or (mapped_web_keys and 'up' in mapped_web_keys):
+            direction[1] -= 1
+        if is_key_pressed(self.controls['down']) or (mapped_web_keys and 'down' in mapped_web_keys):
+            direction[1] += 1
+        if is_key_pressed(self.controls['left']) or (mapped_web_keys and 'left' in mapped_web_keys):
+            direction[0] -= 1
+        if is_key_pressed(self.controls['right']) or (mapped_web_keys and 'right' in mapped_web_keys):
+            direction[0] += 1
+        if np.dot(direction, direction) > 1:
+            length = np.linalg.norm(direction)
+            if length > 0:
+                direction = direction / length
             self.animation_time += dt
         else:
             self.animation_time = 0
@@ -72,10 +78,10 @@ class Player:
         self.direction = direction  # Always store the current direction vector
 
         # Corner sliding assistance - help when trying to move toward green cells but hitting corners
-        if original_direction.length_squared() > 0:  # Player is trying to move
+        if np.dot(original_direction, original_direction) > 0:  # Player is trying to move
             # Check if target cell would be green (same logic as draw_player_directions)
-            cell_x = int((self.pos.x + original_direction.x * CELL_SIZE) // CELL_SIZE)
-            cell_y = int((self.pos.y + original_direction.y * CELL_SIZE) // CELL_SIZE)
+            cell_x = int((self.pos[0] + original_direction[0] * CELL_SIZE) // CELL_SIZE)
+            cell_y = int((self.pos[1] + original_direction[1] * CELL_SIZE) // CELL_SIZE)
             
             # Check if target cell is empty and in bounds
             target_is_empty = (0 <= cell_y < len(board) and 0 <= cell_x < len(board[0]) and 
@@ -83,7 +89,7 @@ class Player:
             
             # Only help with pure cardinal directions when target is empty (green)
             if target_is_empty:
-                dx, dy = int(original_direction.x), int(original_direction.y)
+                dx, dy = int(original_direction[0]), int(original_direction[1])
                 is_cardinal = (dx == 1 and dy == 0) or (dx == -1 and dy == 0) or (dx == 0 and dy == 1) or (dx == 0 and dy == -1)
                 
                 if is_cardinal:
@@ -99,37 +105,39 @@ class Player:
                     
                     # If the direct movement would be blocked, apply corner sliding
                     if would_collide:
-                        slide_direction = pygame.math.Vector2(0, 0)
+                        slide_direction = np.array([0.0, 0.0], dtype=np.float64)
                         
                         # Get position within current cell
-                        cell_pos_x = (self.pos.x % CELL_SIZE) / CELL_SIZE
-                        cell_pos_y = (self.pos.y % CELL_SIZE) / CELL_SIZE
+                        cell_pos_x = (self.pos[0] % CELL_SIZE) / CELL_SIZE
+                        cell_pos_y = (self.pos[1] % CELL_SIZE) / CELL_SIZE
                         
                         # Apply corner sliding based on position within cell
                         if dx != 0:  # Moving horizontally
                             if cell_pos_y < 0.4:  # Upper part - slide up
-                                slide_direction.y = 0.6
+                                slide_direction[1] = 0.6
                             elif cell_pos_y > 0.6:  # Lower part - slide down  
-                                slide_direction.y = -0.6
+                                slide_direction[1] = -0.6
                         
                         if dy != 0:  # Moving vertically
                             if cell_pos_x < 0.4:  # Left part - slide left
-                                slide_direction.x = 0.6
+                                slide_direction[0] = 0.6
                             elif cell_pos_x > 0.6:  # Right part - slide right
-                                slide_direction.x = -0.6
+                                slide_direction[0] = -0.6
                         
                         # Apply the corner sliding
-                        if slide_direction.length_squared() > 0:
+                        if np.dot(slide_direction, slide_direction) > 0:
                             direction = original_direction + slide_direction
-                            if direction.length_squared() > 1:
-                                direction = direction.normalize()
+                            if np.dot(direction, direction) > 1:
+                                length = np.linalg.norm(direction)
+                                if length > 0:
+                                    direction = direction / length
 
-        if keys[self.controls['bomb']] or (mapped_web_keys and 'space' in mapped_web_keys):  
+        if is_key_pressed(self.controls['bomb']) or (mapped_web_keys and 'space' in mapped_web_keys):  
             self.drop_bomb(bombs, current_time)
 
         original_pos = self.pos.copy()
         spd = self.speed if not self.quad_damage else int(self.speed * QUAD_DAMAGE_SPEEDUP)
-        self.pos += direction * spd * (dt / 1000.0)
+        self.pos = self.pos + direction * spd * (dt / 1000.0)
 
         # Update bomb ownership if the player has left their bomb cell.
         for bomb in bombs:
@@ -140,18 +148,18 @@ class Player:
         # Use our new collision check.
         if self.collides_with_walls(board) or self.collides_with_bombs(bombs, original_pos):
             # Try moving only along x
-            self.pos = original_pos + pygame.math.Vector2(direction.x * spd * (dt / 1000.0), 0)
+            self.pos = original_pos + np.array([direction[0] * spd * (dt / 1000.0), 0], dtype=np.float64)
             if not (self.collides_with_walls(board) or self.collides_with_bombs(bombs, original_pos)):
                 return
             # Try moving only along y
-            self.pos = original_pos + pygame.math.Vector2(0, direction.y * spd * (dt / 1000.0))
+            self.pos = original_pos + np.array([0, direction[1] * spd * (dt / 1000.0)], dtype=np.float64)
             if not (self.collides_with_walls(board) or self.collides_with_bombs(bombs, original_pos)):
                 return
             # Both attempts failed, revert.
             self.pos = original_pos
 
         # Handle quad damage duration.
-        if self.quad_damage and pygame.time.get_ticks() - self.quad_damage_start_time > QUAD_DAMAGE_TIME * 1000:
+        if self.quad_damage and get_ticks() - self.quad_damage_start_time > QUAD_DAMAGE_TIME * 1000:
             self.quad_damage = False
             self.bomb_capacity -= QUAD_DAMAGE_POWER
             self.fire_power -= QUAD_DAMAGE_POWER
@@ -160,8 +168,8 @@ class Player:
         for y in range(GRID_HEIGHT):
             for x in range(GRID_WIDTH):
                 if board[y][x] in (INDESTRUCTIBLE, DESTRUCTIBLE):
-                    wall_rect = pygame.Rect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
-                    if circle_rect_collision((self.pos.x, self.pos.y), self.collision_radius, wall_rect):
+                    wall_rect = np.array([x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE], dtype=np.float64)
+                    if circle_rect_collision((self.pos[0], self.pos[1]), self.collision_radius, wall_rect):
                         return True
         return False
 
@@ -173,23 +181,23 @@ class Player:
 
             # Get bomb's cell and center.
             bomb_cell = (bomb.x, bomb.y)
-            bomb_center = pygame.math.Vector2(bomb.x * CELL_SIZE + CELL_SIZE / 2,
-                                                bomb.y * CELL_SIZE + CELL_SIZE / 2)
+            bomb_center = np.array([bomb.x * CELL_SIZE + CELL_SIZE / 2,
+                                                bomb.y * CELL_SIZE + CELL_SIZE / 2], dtype=np.float64)
             # If the player originally was in the bomb's cell:
-            if (int(original_pos.x // CELL_SIZE), int(original_pos.y // CELL_SIZE)) == bomb_cell:
+            if (int(original_pos[0] // CELL_SIZE), int(original_pos[1] // CELL_SIZE)) == bomb_cell:
                 # If the new position is further from the bomb center than the starting position, let the player exit:
-                if (self.pos - bomb_center).length()+int(CELL_SIZE/10) > (original_pos - bomb_center).length():
+                if np.linalg.norm(self.pos - bomb_center)+int(CELL_SIZE/10) > np.linalg.norm(original_pos - bomb_center):
                     continue  # allow the move out
 
             # Otherwise (or if not exiting), use a reduced bomb collision box.
             margin = CELL_SIZE * 0.35  # tweak margin as needed
-            bomb_rect = pygame.Rect(
+            bomb_rect = np.array([
                 bomb.x * CELL_SIZE + margin,
                 bomb.y * CELL_SIZE + margin,
                 CELL_SIZE - 2 * margin,
                 CELL_SIZE - 2 * margin
-            )
-            if circle_rect_collision((self.pos.x, self.pos.y), self.collision_radius, bomb_rect):
+            ], dtype=np.float64)
+            if circle_rect_collision((self.pos[0], self.pos[1]), self.collision_radius, bomb_rect):
                 return True
         return False
     
@@ -210,8 +218,8 @@ class Player:
         
 
     def reset(self):
-        self.pos = pygame.math.Vector2(self.start_grid_x * CELL_SIZE + CELL_SIZE // 2,
-                                        self.start_grid_y * CELL_SIZE + CELL_SIZE // 2)
+        self.pos = np.array([self.start_grid_x * CELL_SIZE + CELL_SIZE // 2,
+                                        self.start_grid_y * CELL_SIZE + CELL_SIZE // 2], dtype=np.float64)
         self.alive = True
         self.bomb_capacity = 1
         self.fire_power = 1
@@ -260,19 +268,17 @@ class Game:
         self.bombs = []
         self.explosions = []
         self.powerups = []
-        self.game_start_time = pygame.time.get_ticks()
+        self.game_start_time = get_ticks()
         self.players = []
         self.game_state = "startup"
-        self.startup_start_time = pygame.time.get_ticks()
+        self.startup_start_time = get_ticks()
         self.current_time = self.startup_start_time
-        self.window = pygame.display.set_mode(INITIAL_WINDOW_SIZE, pygame.RESIZABLE)
-        self.clock = pygame.time.Clock()
-        self.game_surface = pygame.Surface((BASE_WIDTH, BASE_HEIGHT))
+        self.clock = Clock()
         self.dt = 0
         
-        self.window_size = INITIAL_WINDOW_SIZE
         self.is_fullscreen = False
         self.web_keys = set()  # Track keys pressed from web client
+        self.screen = None  # Will be set by main game loop
         
         # Crushing walls feature variables
         self.crushing_walls_active = False
@@ -305,7 +311,6 @@ class Game:
         self.prep_initial_bomb_capacity = 1
         self.prep_initial_fire_power = 1
         self.prep_player_speed = PLAYER_SPEED
-        self.prep_powerup_probability = POWERUP_PROBABILITY
         self.prep_qd_probability = QUAD_DAMAGE_PROBABILITY
         self.prep_qd_delay = QUAD_DAMAGE_DELAY
         self.prep_crushing_delay = CRUSHING_WALLS_DELAY
@@ -365,7 +370,7 @@ class Game:
             player.bomb_capacity = max(1, int(self.prep_initial_bomb_capacity))
             player.fire_power = max(1, int(self.prep_initial_fire_power))
             player.speed = max(50, int(self.prep_player_speed))
-        self.game_start_time = pygame.time.get_ticks() + 2000  # Add a 2-second freeze time
+        self.game_start_time = get_ticks() + 2000  # Add a 2-second freeze time
         
         # Reset crushing walls state
         self.crushing_walls_active = False
@@ -447,10 +452,10 @@ class Game:
                         continue
                     
                     # Test if the player can be positioned in this cell
-                    test_pos = pygame.math.Vector2(
+                    test_pos = np.array([
                         new_grid_x * CELL_SIZE + CELL_SIZE // 2,
                         new_grid_y * CELL_SIZE + CELL_SIZE // 2
-                    )
+                    ], dtype=np.float64)
                     
                     # Temporarily set player position to test
                     original_pos = player.pos.copy()
@@ -521,10 +526,10 @@ class Game:
                             if (0 <= adj_x < GRID_WIDTH and 0 <= adj_y < GRID_HEIGHT and 
                                 self.board[adj_y][adj_x] == EMPTY):
                                 # Move player to adjacent empty cell
-                                player.pos = pygame.math.Vector2(
+                                player.pos = np.array([
                                     adj_x * CELL_SIZE + CELL_SIZE // 2,
                                     adj_y * CELL_SIZE + CELL_SIZE // 2
-                                )
+                                ], dtype=np.float64)
                                 break
                     
                     # Replace whatever is in the cell with an indestructible wall
@@ -580,8 +585,8 @@ class Game:
                 for player in self.players:
                     if player.alive:
                         for cell in explosion.cells:
-                            explosion_rect = pygame.Rect(cell[0]*CELL_SIZE, cell[1]*CELL_SIZE, CELL_SIZE, CELL_SIZE)
-                            if circle_rect_collision((player.pos.x, player.pos.y), player.collision_radius, explosion_rect):
+                            explosion_rect = np.array([cell[0]*CELL_SIZE, cell[1]*CELL_SIZE, CELL_SIZE, CELL_SIZE], dtype=np.float64)
+                            if circle_rect_collision((player.pos[0], player.pos[1]), player.collision_radius, explosion_rect):
                                 player.alive = False
                                 player.death_animation_time = 1000  # 1 second death animation
                                 death_sound.play()
@@ -589,7 +594,7 @@ class Game:
                 self.explosions.remove(explosion)
                     
     def place_quad_damage_powerup(self):        
-        if (pygame.time.get_ticks() - self.game_start_time) >= self.prep_qd_delay*1000:
+        if (get_ticks() - self.game_start_time) >= self.prep_qd_delay*1000:
             if not any(pu.type == "quad_damage" for pu in self.powerups):
                 empty_cells = [(x, y) for y in range(GRID_HEIGHT) for x in range(GRID_WIDTH) if self.board[y][x] == EMPTY]
                 if empty_cells and random.random() < self.prep_qd_probability:
@@ -598,7 +603,7 @@ class Game:
                                 
     def tick(self):
         self.dt = self.clock.tick(FPS)
-        self.current_time = pygame.time.get_ticks()                
+        self.current_time = get_ticks()                
                     
     def handle_window_events(self):
         for event in pygame.event.get():
@@ -606,17 +611,20 @@ class Game:
                 pygame.quit()
                 sys.exit()
             elif event.type == pygame.VIDEORESIZE:
-                self.window_size = event.size
+                if self.screen:
+                    self.screen.update_window_size(event.size)
             elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_F11:
+                if event.key == Keys.F11:
                     self.is_fullscreen = not self.is_fullscreen
                     if self.is_fullscreen:
                         window = pygame.display.set_mode((0,0), pygame.FULLSCREEN)
-                        self.window_size = window.get_size()
+                        if self.screen:
+                            self.screen.update_window_size(window.get_size())
                     else:
                         window = pygame.display.set_mode(INITIAL_WINDOW_SIZE, pygame.RESIZABLE)
-                        self.window_size = INITIAL_WINDOW_SIZE
-                elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                        if self.screen:
+                            self.screen.update_window_size(INITIAL_WINDOW_SIZE)
+                elif event.key in (Keys.ENTER, Keys.KP_ENTER):
                     print(f"ENTER pressed, game_state={self.game_state}")
                     if self.game_state == "startup":
                         if not self.prep_screen_completed:
@@ -682,9 +690,9 @@ class Game:
         """Handle key events for game prep screen navigation"""
         # Handle text input for custom names
         if self.prep_editing_name:
-            if event.key == pygame.K_BACKSPACE:
+            if event.key == Keys.BACKSPACE:
                 self.prep_custom_name = self.prep_custom_name[:-1]
-            elif event.key == pygame.K_ESCAPE:
+            elif event.key == Keys.ESCAPE:
                 # Cancel name editing
                 self.prep_editing_name = False
                 self.prep_custom_name = ""
@@ -694,7 +702,7 @@ class Game:
         
         if self.prep_editing_control:
             # We're editing a control key
-            if event.key != pygame.K_ESCAPE:  # Don't allow ESC as a control key
+            if event.key != Keys.ESCAPE:  # Don't allow ESC as a control key
                 player_idx = self.prep_cursor_row - 1
                 controls = self.prep_controls[player_idx % len(self.prep_controls)]
                 controls[self.prep_editing_control] = event.key
@@ -713,22 +721,22 @@ class Game:
             return
         
         # Switch section
-        if event.key == pygame.K_TAB:
+        if event.key == Keys.TAB:
             self.prep_section = 'game' if self.prep_section == 'players' else 'players'
             return
 
         if self.prep_section == 'players':
-            if event.key == pygame.K_UP:
+            if event.key == Keys.UP:
                 if not self.prep_editing_mode:
                     if self.prep_cursor_row > 0:
                         self.prep_cursor_row -= 1
                         if self.prep_cursor_row == 0:
                             self.prep_cursor_col = 0
-            elif event.key == pygame.K_DOWN:
+            elif event.key == Keys.DOWN:
                 if not self.prep_editing_mode:
                     if self.prep_cursor_row < self.prep_num_players:
                         self.prep_cursor_row += 1
-            elif event.key == pygame.K_LEFT:
+            elif event.key == Keys.LEFT:
                 if self.prep_editing_mode:
                     # Edit values
                     if self.prep_cursor_row == 0:
@@ -755,7 +763,7 @@ class Game:
                     # Navigate columns
                     if 1 <= self.prep_cursor_row <= self.prep_num_players and self.prep_cursor_col > 0:
                         self.prep_cursor_col -= 1
-            elif event.key == pygame.K_RIGHT:
+            elif event.key == Keys.RIGHT:
                 if self.prep_editing_mode:
                     # Edit values
                     if self.prep_cursor_row == 0:
@@ -787,7 +795,6 @@ class Game:
                 ('prep_initial_bomb_capacity', 1, 10, 1),
                 ('prep_initial_fire_power', 1, 10, 1),
                 ('prep_player_speed', 100, 600, 10),
-                ('prep_powerup_probability', 0.0, 1.0, 0.05),
                 ('prep_qd_probability', 0.0, 0.02, 0.0005),
                 ('prep_qd_delay', 0, 600, 5),
                 ('prep_crushing_delay', 0, 600, 5),
@@ -795,32 +802,32 @@ class Game:
                 ('prep_trophy_threshold', 1, 10, 1),
             ]
 
-            if event.key == pygame.K_UP:
+            if event.key == Keys.UP:
                 if not self.prep_editing_mode:
                     if self.prep_game_cursor > 0:
                         self.prep_game_cursor -= 1
-            elif event.key == pygame.K_DOWN:
+            elif event.key == Keys.DOWN:
                 if not self.prep_editing_mode:
                     # Allow navigation to "Start Game" (index 9)
                     if self.prep_game_cursor < 9:
                         self.prep_game_cursor += 1
-            elif event.key in (pygame.K_LEFT, pygame.K_RIGHT):
+            elif event.key in (Keys.LEFT, Keys.RIGHT):
                 if self.prep_editing_mode and self.prep_game_cursor < len(settings):
                     attr, mn, mx, step = settings[self.prep_game_cursor]
                     val = getattr(self, attr)
                     if isinstance(val, float):
-                        delta = step if event.key == pygame.K_RIGHT else -step
+                        delta = step if event.key == Keys.RIGHT else -step
                         val = max(mn, min(mx, float(val) + delta))
                         setattr(self, attr, round(val, 4))
                     else:
-                        delta = step if event.key == pygame.K_RIGHT else -step
+                        delta = step if event.key == Keys.RIGHT else -step
                         val = max(mn, min(mx, int(val) + delta))
                         setattr(self, attr, val)
         
-        if event.key == pygame.K_ESCAPE:
+        if event.key == Keys.ESCAPE:
             # Go back to startup
             self.game_state = "startup"
-            self.startup_start_time = pygame.time.get_ticks()
+            self.startup_start_time = get_ticks()
                 
     def handle_web_key_event(self, event):
         # event: dict with 'type', 'key', 'code', 'ts', 'player_id'
@@ -930,6 +937,14 @@ class Game:
 class Screen:
     def __init__(self):
         self.surface = pygame.Surface((BASE_WIDTH, BASE_HEIGHT))
+        self.window_size = INITIAL_WINDOW_SIZE
+        self.window = None
+    
+    def set_window(self, window):
+        self.window = window
+    
+    def update_window_size(self, window_size):
+        self.window_size = window_size
     
     def draw_startup(self,Game):
         elapsed = Game.current_time - Game.startup_start_time
@@ -954,26 +969,26 @@ class Screen:
         # Gray background panels and minimalist UI
         self.surface.fill(COLOR_BG)
 
-        left_panel = pygame.Rect(40, 80, BASE_WIDTH//2 - 60, BASE_HEIGHT - 160)
-        right_panel = pygame.Rect(BASE_WIDTH//2 + 20, 80, BASE_WIDTH//2 - 60, BASE_HEIGHT - 160)
+        left_panel = np.array([40, 80, BASE_WIDTH//2 - 60, BASE_HEIGHT - 160], dtype=np.float64)
+        right_panel = np.array([BASE_WIDTH//2 + 20, 80, BASE_WIDTH//2 - 60, BASE_HEIGHT - 160], dtype=np.float64)
         pygame.draw.rect(self.surface, (70,70,70), left_panel)
         pygame.draw.rect(self.surface, (70,70,70), right_panel)
         pygame.draw.rect(self.surface, (120,120,120), left_panel, 1)
         pygame.draw.rect(self.surface, (120,120,120), right_panel, 1)
 
         title_font = pygame.font.SysFont("arial", 32, bold=True)
-        self.surface.blit(title_font.render("Players", True, (255,255,255)), (left_panel.x+10, left_panel.y-36))
-        self.surface.blit(title_font.render("Game Settings", True, (255,255,255)), (right_panel.x+10, right_panel.y-36))
+        self.surface.blit(title_font.render("Players", True, (255,255,255)), (left_panel[0]+10, left_panel[1]-36))
+        self.surface.blit(title_font.render("Game Settings", True, (255,255,255)), (right_panel[0]+10, right_panel[1]-36))
 
         # Left: players section
-        y = left_panel.y + 10
+        y = left_panel[1] + 10
         line_h = 34
         sel_color = (255,255,160)
         norm = (255,255,255)
         # Number of players
         selected = (Game.prep_section=='players' and Game.prep_cursor_row==0)
-        self.surface.blit(font_small.render(f"Players: {Game.prep_num_players}", True, sel_color if selected else norm), (left_panel.x+12, y))
-        pygame.draw.line(self.surface, (110,110,110), (left_panel.x+10, y+line_h-8), (left_panel.right-10, y+line_h-8), 1)
+        self.surface.blit(font_small.render(f"Players: {Game.prep_num_players}", True, sel_color if selected else norm), (left_panel[0]+12, y))
+        pygame.draw.line(self.surface, (110,110,110), (left_panel[0]+10, y+line_h-8), (left_panel[0]+left_panel[2]-10, y+line_h-8), 1)
         y += line_h
 
         for i in range(Game.prep_num_players):
@@ -983,14 +998,14 @@ class Screen:
             ctrl_c = sel_color if (row_sel and Game.prep_cursor_col==2) else norm
             name = Game.prep_player_names[i % len(Game.prep_player_names)]
             name_disp = Game.prep_custom_name + '|' if (row_sel and Game.prep_editing_name and Game.prep_cursor_col==0) else name
-            self.surface.blit(font_small.render(f"{i+1}. Name: {name_disp}", True, name_c), (left_panel.x+12, y))
-            self.surface.blit(font_small.render("Color:", True, col_c), (left_panel.x+280, y))
+            self.surface.blit(font_small.render(f"{i+1}. Name: {name_disp}", True, name_c), (left_panel[0]+12, y))
+            self.surface.blit(font_small.render("Color:", True, col_c), (left_panel[0]+280, y))
             color_idx = Game.prep_player_colors[i % len(Game.prep_player_colors)]
-            sw = pygame.Rect(left_panel.x+350, y+6, 26, 20)
+            sw = np.array([left_panel[0]+350, y+6, 26, 20], dtype=np.float64)
             pygame.draw.rect(self.surface, colors[color_idx % len(colors)], sw)
             pygame.draw.rect(self.surface, (255,255,255), sw, 1)
-            self.surface.blit(font_small.render("Controls", True, ctrl_c), (left_panel.x+410, y))
-            pygame.draw.line(self.surface, (110,110,110), (left_panel.x+10, y+line_h-8), (left_panel.right-10, y+line_h-8), 1)
+            self.surface.blit(font_small.render("Controls", True, ctrl_c), (left_panel[0]+410, y))
+            pygame.draw.line(self.surface, (110,110,110), (left_panel[0]+10, y+line_h-8), (left_panel[0]+left_panel[2]-10, y+line_h-8), 1)
             y += line_h
 
         # Right: game settings
@@ -998,7 +1013,6 @@ class Screen:
             ("Initial Bomb Capacity", 'prep_initial_bomb_capacity', 1, 10, 1),
             ("Initial Fire Power", 'prep_initial_fire_power', 1, 10, 1),
             ("Player Speed", 'prep_player_speed', 100, 600, 10),
-            ("Powerup Probability", 'prep_powerup_probability', 0.0, 1.0, 0.05),
             ("QD Probability", 'prep_qd_probability', 0.0, 0.02, 0.0005),
             ("QD Delay (s)", 'prep_qd_delay', 0, 600, 5),
             ("Crush Delay (s)", 'prep_crushing_delay', 0, 600, 5),
@@ -1006,20 +1020,20 @@ class Screen:
             ("Trophy Threshold", 'prep_trophy_threshold', 1, 10, 1),
         ]
 
-        y = right_panel.y + 10
+        y = right_panel[1] + 10
         for idx, (label, attr, _mn, _mx, _st) in enumerate(settings):
             val = getattr(Game, attr)
             sel = (Game.prep_section=='game' and Game.prep_game_cursor==idx)
             edit_indicator = " [EDIT]" if (sel and Game.prep_editing_mode) else ""
-            self.surface.blit(font_small.render(f"{label}: {val}{edit_indicator}", True, sel_color if sel else norm), (right_panel.x+12, y))
-            pygame.draw.line(self.surface, (110,110,110), (right_panel.x+10, y+line_h-8), (right_panel.right-10, y+line_h-8), 1)
+            self.surface.blit(font_small.render(f"{label}: {val}{edit_indicator}", True, sel_color if sel else norm), (right_panel[0]+12, y))
+            pygame.draw.line(self.surface, (110,110,110), (right_panel[0]+10, y+line_h-8), (right_panel[0]+right_panel[2]-10, y+line_h-8), 1)
             y += line_h
 
         # Add "Start Game" option
         start_sel = (Game.prep_section=='game' and Game.prep_game_cursor==9)
         start_text = ">>> START GAME <<<"
         start_color = (120, 255, 120) if start_sel else (200, 200, 200)
-        self.surface.blit(font_small.render(start_text, True, start_color), (right_panel.x+12, y))
+        self.surface.blit(font_small.render(start_text, True, start_color), (right_panel[0]+12, y))
         
         # Footer with mode indication
         mode_text = "[EDIT MODE]" if Game.prep_editing_mode else "[NAVIGATE]"
