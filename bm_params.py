@@ -118,9 +118,9 @@ font_small = pygame.font.SysFont("arial", 32)
 
 display_info = pygame.display.Info()
 INITIAL_WINDOW_SIZE = (int(display_info.current_w * 0.7), int(display_info.current_h * 0.7))
-pygame.display.set_icon(logo_image)
-
-window = pygame.display.set_mode(INITIAL_WINDOW_SIZE, pygame.RESIZABLE)
-pygame.display.set_caption("BomberMarv")
-game_surface = pygame.Surface((BASE_WIDTH, BASE_HEIGHT))
+# Window creation is managed by the game at runtime to avoid duplicate windows
+# pygame.display.set_icon(logo_image)  # Set in Game when window is created
+# window = pygame.display.set_mode(INITIAL_WINDOW_SIZE, pygame.RESIZABLE)
+# pygame.display.set_caption("BomberMarv")
+# game_surface = pygame.Surface((BASE_WIDTH, BASE_HEIGHT))
 

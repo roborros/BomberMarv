@@ -1,4 +1,5 @@
 import pygame
+import os
 from bm_params import *
 from lib_collisions import *
 from lib_grid import *
@@ -265,11 +266,17 @@ class Game:
         self.game_state = "startup"
         self.startup_start_time = pygame.time.get_ticks()
         self.current_time = self.startup_start_time
+        # Center the window on first creation
+        try:
+            os.environ.setdefault('SDL_VIDEO_CENTERED', '1')
+        except Exception:
+            pass
+        pygame.display.set_icon(logo_image)
         self.window = pygame.display.set_mode(INITIAL_WINDOW_SIZE, pygame.RESIZABLE)
         self.clock = pygame.time.Clock()
         self.game_surface = pygame.Surface((BASE_WIDTH, BASE_HEIGHT))
         self.dt = 0
-        
+        self.show_fps = False
         self.window_size = INITIAL_WINDOW_SIZE
         self.is_fullscreen = False
         self.web_keys = set()  # Track keys pressed from web client
@@ -619,17 +626,23 @@ class Game:
                 elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                     print(f"ENTER pressed, game_state={self.game_state}")
                     if self.game_state == "startup":
-                        if not self.prep_screen_completed:
-                            self.game_state = "game_prep"
-                        else:
-                            self.init_game()
-                            self.game_state = "get_ready"
+                        # Simplify: pressing Enter from startup immediately starts a game
+                        self.prep_screen_completed = True
+                        self.init_game()
+                        self.game_state = "get_ready"
                     elif self.game_state == "game_prep":
-                        self.handle_prep_enter_key()
+                        # Simplify: pressing Enter starts the game regardless of selection
+                        self.prep_screen_completed = True
+                        self.init_game()
+                        self.game_state = "get_ready"
                     elif self.game_state in ["win", "champion"]:
                         self.init_game()
                         self.game_state = "get_ready"
                 
+                elif event.key == pygame.K_F3:
+                    # Toggle FPS overlay
+                    self.show_fps = not self.show_fps
+
                 # Handle prep screen navigation
                 elif self.game_state == "game_prep":
                     self.handle_prep_key_event(event)
@@ -859,7 +872,12 @@ class Game:
             if hasattr(self, 'web_keys_by_player') and player in self.web_keys_by_player:
                 web_keys = self.web_keys_by_player[player]
                 if idx in (0, 1):
-                    allowed = {'arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' ', 'space'}
+                    # Allow both Arrow keys and WASD + Space for first two players
+                    allowed = {
+                        'arrowup', 'arrowdown', 'arrowleft', 'arrowright',
+                        'w', 'a', 's', 'd',
+                        ' ', 'space'
+                    }
                     web_keys = set(k for k in web_keys if k.lower() in allowed)
             player.update(self.dt, self.board, self.bombs, self.current_time, web_keys)
         
@@ -1041,8 +1059,10 @@ def browser_key_to_pygame(key):
         'arrowright': 'right',
         # Space and enter
         ' ': 'space',
+        'spacebar': 'space',
         'space': 'space',
         'enter': 'return',
+        'return': 'return',
         # Control keys
         'control': 'left ctrl',  # Default to left ctrl for generic 'control'
         'ctrl': 'left ctrl',
@@ -1078,6 +1098,11 @@ def browser_key_to_pygame(key):
         'numpad8': 'kp8',
         'numpad9': 'kp9',
         'numpaddivide': 'kp_divide',
+        # WASD convenience mapping for browser keys
+        'w': 'up',
+        'a': 'left',
+        's': 'down',
+        'd': 'right',
         # Letters and numbers
     }
     if key in mapping:
