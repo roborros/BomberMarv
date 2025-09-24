@@ -112,15 +112,12 @@ BOMB_BASE_RADIUS = int((CELL_SIZE * BOMB_DRAW_SCALE) / 2)
 
 
 
-pygame.init()
-arcade_font = pygame.font.SysFont('Comic Sans MS', 90)  # Using a common font
-font_small = pygame.font.SysFont("arial", 32)
+# Font initialization moved to frontend
+arcade_font = None  # Will be initialized in frontend
+font_small = None   # Will be initialized in frontend
 
-display_info = pygame.display.Info()
-INITIAL_WINDOW_SIZE = (int(display_info.current_w * 0.7), int(display_info.current_h * 0.7))
-pygame.display.set_icon(logo_image)
-
-window = pygame.display.set_mode(INITIAL_WINDOW_SIZE, pygame.RESIZABLE)
-pygame.display.set_caption("BomberMarv")
-game_surface = pygame.Surface((BASE_WIDTH, BASE_HEIGHT))
+# Window initialization moved to frontend
+INITIAL_WINDOW_SIZE = (1200, 800)  # Default size, will be updated by frontend
+window = None  # Will be set by frontend
+game_surface = None  # Will be set by frontend
 

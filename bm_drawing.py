@@ -4,6 +4,14 @@ from bm_params import *
 from input_abstraction import get_key_name
 from timing_abstraction import get_ticks
 
+def _ensure_fonts_initialized():
+    """Ensure fonts are initialized before use"""
+    global arcade_font, font_small
+    if arcade_font is None:
+        arcade_font = pygame.font.SysFont('Comic Sans MS', 90)
+    if font_small is None:
+        font_small = pygame.font.SysFont("arial", 32)
+
 def draw_brick_pattern(rect, surface):
     brick_height = rect[3] // 4
     brick_width = rect[2] // 3
@@ -21,6 +29,9 @@ def draw_brick_pattern(rect, surface):
             
             
 def draw_title_page(surface, alpha=255):
+    # Ensure fonts are initialized
+    _ensure_fonts_initialized()
+    
     surface.fill(COLOR_BG) 
     
     # Get the original dimensions of the logo
@@ -160,6 +171,7 @@ def draw_trophy_icon(surface, pos, size):
     pygame.draw.rect(surface, trophy_color, base_rect)
 
 def draw_players(surface, players):
+    _ensure_fonts_initialized()
     for player in players:
         if not player.alive and player.death_animation_time <= 0:
             continue
@@ -317,6 +329,7 @@ def draw_controls(surface, players):
         y_offset += 50
 
 def draw_stat_screen(surface, winner, players):
+    _ensure_fonts_initialized()
     font = pygame.font.SysFont("arial", 48, bold=True)
     draw_title_page(surface, alpha=255)
     if winner:
@@ -412,7 +425,86 @@ def draw_adjust_screen_size(screen):
     pygame.display.flip()
     
 def draw_get_ready(surface):
+    _ensure_fonts_initialized()
     start_text = arcade_font.render("Get Ready!", True, (180, 60, 120))
     start_rect = start_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT- 500))
     surface.blit(start_text, start_rect)
+
+def draw_game_prep(surface, Game):
+    """Draw the game preparation screen"""
+    _ensure_fonts_initialized()
+    # Gray background panels and minimalist UI
+    surface.fill(COLOR_BG)
+
+    left_panel = np.array([40, 80, BASE_WIDTH//2 - 60, BASE_HEIGHT - 160], dtype=np.float64)
+    right_panel = np.array([BASE_WIDTH//2 + 20, 80, BASE_WIDTH//2 - 60, BASE_HEIGHT - 160], dtype=np.float64)
+    pygame.draw.rect(surface, (70,70,70), left_panel)
+    pygame.draw.rect(surface, (70,70,70), right_panel)
+    pygame.draw.rect(surface, (120,120,120), left_panel, 1)
+    pygame.draw.rect(surface, (120,120,120), right_panel, 1)
+
+    title_font = pygame.font.SysFont("arial", 32, bold=True)
+    surface.blit(title_font.render("Players", True, (255,255,255)), (left_panel[0]+10, left_panel[1]-36))
+    surface.blit(title_font.render("Game Settings", True, (255,255,255)), (right_panel[0]+10, right_panel[1]-36))
+
+    # Left: players section
+    y = left_panel[1] + 10
+    line_h = 34
+    sel_color = (255,255,160)
+    norm = (255,255,255)
+    # Number of players
+    selected = (Game.prep_section=='players' and Game.prep_cursor_row==0)
+    surface.blit(font_small.render(f"Players: {Game.prep_num_players}", True, sel_color if selected else norm), (left_panel[0]+12, y))
+    pygame.draw.line(surface, (110,110,110), (left_panel[0]+10, y+line_h-8), (left_panel[0]+left_panel[2]-10, y+line_h-8), 1)
+    y += line_h
+
+    for i in range(Game.prep_num_players):
+        row_sel = (Game.prep_section=='players' and Game.prep_cursor_row==i+1)
+        name_c = sel_color if (row_sel and Game.prep_cursor_col==0) else norm
+        col_c = sel_color if (row_sel and Game.prep_cursor_col==1) else norm
+        ctrl_c = sel_color if (row_sel and Game.prep_cursor_col==2) else norm
+        name = Game.prep_player_names[i % len(Game.prep_player_names)]
+        name_disp = Game.prep_custom_name + '|' if (row_sel and Game.prep_editing_name and Game.prep_cursor_col==0) else name
+        surface.blit(font_small.render(f"{i+1}. Name: {name_disp}", True, name_c), (left_panel[0]+12, y))
+        surface.blit(font_small.render("Color:", True, col_c), (left_panel[0]+280, y))
+        color_idx = Game.prep_player_colors[i % len(Game.prep_player_colors)]
+        sw = np.array([left_panel[0]+350, y+6, 26, 20], dtype=np.float64)
+        pygame.draw.rect(surface, colors[color_idx % len(colors)], sw)
+        pygame.draw.rect(surface, (255,255,255), sw, 1)
+        surface.blit(font_small.render("Controls", True, ctrl_c), (left_panel[0]+410, y))
+        pygame.draw.line(surface, (110,110,110), (left_panel[0]+10, y+line_h-8), (left_panel[0]+left_panel[2]-10, y+line_h-8), 1)
+        y += line_h
+
+    # Right: game settings
+    settings = [
+        ("Initial Bomb Capacity", 'prep_initial_bomb_capacity', 1, 10, 1),
+        ("Initial Fire Power", 'prep_initial_fire_power', 1, 10, 1),
+        ("Player Speed", 'prep_player_speed', 100, 600, 10),
+        ("QD Probability", 'prep_qd_probability', 0.0, 0.02, 0.0005),
+        ("QD Delay (s)", 'prep_qd_delay', 0, 600, 5),
+        ("Crush Delay (s)", 'prep_crushing_delay', 0, 600, 5),
+        ("Crush Min Destroyable", 'prep_crushing_min_destroyable', 0, 200, 1),
+        ("Trophy Threshold", 'prep_trophy_threshold', 1, 10, 1),
+    ]
+
+    y = right_panel[1] + 10
+    for idx, (label, attr, _mn, _mx, _st) in enumerate(settings):
+        val = getattr(Game, attr)
+        sel = (Game.prep_section=='game' and Game.prep_game_cursor==idx)
+        edit_indicator = " [EDIT]" if (sel and Game.prep_editing_mode) else ""
+        surface.blit(font_small.render(f"{label}: {val}{edit_indicator}", True, sel_color if sel else norm), (right_panel[0]+12, y))
+        pygame.draw.line(surface, (110,110,110), (right_panel[0]+10, y+line_h-8), (right_panel[0]+right_panel[2]-10, y+line_h-8), 1)
+        y += line_h
+
+    # Add "Start Game" option
+    start_sel = (Game.prep_section=='game' and Game.prep_game_cursor==9)
+    start_text = ">>> START GAME <<<"
+    start_color = (120, 255, 120) if start_sel else (200, 200, 200)
+    surface.blit(font_small.render(start_text, True, start_color), (right_panel[0]+12, y))
+    
+    # Footer with mode indication
+    mode_text = "[EDIT MODE]" if Game.prep_editing_mode else "[NAVIGATE]"
+    footer_text = f"{mode_text}   TAB: Switch   Arrows: Navigate/Change   ENTER: Edit/Start   ESC: Back"
+    footer = pygame.font.SysFont("arial", 20).render(footer_text, True, (255,255,255))
+    surface.blit(footer, (40, BASE_HEIGHT-46))
 

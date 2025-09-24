@@ -1,4 +1,3 @@
-import pygame
 import math
 import numpy as np
 from bm_params import *
@@ -8,6 +7,8 @@ from bm_sounds import *
 from bm_drawing import *
 from input_abstraction import get_pressed_keys, is_key_pressed, Keys
 from timing_abstraction import get_ticks, Clock
+from frontend import FrontendManager
+from backend_game_logic import BackendGameLogic
 
 
 
@@ -279,6 +280,10 @@ class Game:
         self.is_fullscreen = False
         self.web_keys = set()  # Track keys pressed from web client
         self.screen = None  # Will be set by main game loop
+        
+        # Initialize event handling system
+        self.frontend = None  # Will be set after frontend is available
+        self.backend_logic = BackendGameLogic(self)
         
         # Crushing walls feature variables
         self.crushing_walls_active = False
@@ -606,41 +611,16 @@ class Game:
         self.current_time = get_ticks()                
                     
     def handle_window_events(self):
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
-            elif event.type == pygame.VIDEORESIZE:
-                if self.screen:
-                    self.screen.update_window_size(event.size)
-            elif event.type == pygame.KEYDOWN:
-                if event.key == Keys.F11:
-                    self.is_fullscreen = not self.is_fullscreen
-                    if self.is_fullscreen:
-                        window = pygame.display.set_mode((0,0), pygame.FULLSCREEN)
-                        if self.screen:
-                            self.screen.update_window_size(window.get_size())
-                    else:
-                        window = pygame.display.set_mode(INITIAL_WINDOW_SIZE, pygame.RESIZABLE)
-                        if self.screen:
-                            self.screen.update_window_size(INITIAL_WINDOW_SIZE)
-                elif event.key in (Keys.ENTER, Keys.KP_ENTER):
-                    print(f"ENTER pressed, game_state={self.game_state}")
-                    if self.game_state == "startup":
-                        if not self.prep_screen_completed:
-                            self.game_state = "game_prep"
-                        else:
-                            self.init_game()
-                            self.game_state = "get_ready"
-                    elif self.game_state == "game_prep":
-                        self.handle_prep_enter_key()
-                    elif self.game_state in ["win", "champion"]:
-                        self.init_game()
-                        self.game_state = "get_ready"
-                
-                # Handle prep screen navigation
-                elif self.game_state == "game_prep":
-                    self.handle_prep_key_event(event)
+        """Handle window events using the new frontend/backend separation"""
+        if self.frontend is None:
+            self.frontend = FrontendManager(self)
+        
+        self.frontend.process_events()
+    
+    def set_frontend(self, frontend):
+        """Set the frontend reference"""
+        self.frontend = frontend
+        self.screen = frontend.screen
     
     def handle_prep_enter_key(self):
         """Handle ENTER key presses in the game prep screen"""
@@ -934,112 +914,7 @@ class Game:
             else:
                 self.game_state = "win"   
             
-class Screen:
-    def __init__(self):
-        self.surface = pygame.Surface((BASE_WIDTH, BASE_HEIGHT))
-        self.window_size = INITIAL_WINDOW_SIZE
-        self.window = None
-    
-    def set_window(self, window):
-        self.window = window
-    
-    def update_window_size(self, window_size):
-        self.window_size = window_size
-    
-    def draw_startup(self,Game):
-        elapsed = Game.current_time - Game.startup_start_time
-        if elapsed < 2000:
-            alpha = 255
-        elif elapsed < 2800:
-            alpha = int(255 * (2500 - elapsed) / 500)
-        else:
-            alpha = 0
-            
-        draw_title_page(self.surface, alpha)
-        
-        if int(elapsed) >= 2200:
-            draw_controls(self.surface, Game.players)
-
-            # Display "Press Enter to start the game" message
-            start_text = font_small.render("Press Enter to start the game", True, (255, 255, 255))
-            start_rect = start_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT - 50))
-            self.surface.blit(start_text, start_rect)
-            
-    def draw_game_prep(self, Game):
-        # Gray background panels and minimalist UI
-        self.surface.fill(COLOR_BG)
-
-        left_panel = np.array([40, 80, BASE_WIDTH//2 - 60, BASE_HEIGHT - 160], dtype=np.float64)
-        right_panel = np.array([BASE_WIDTH//2 + 20, 80, BASE_WIDTH//2 - 60, BASE_HEIGHT - 160], dtype=np.float64)
-        pygame.draw.rect(self.surface, (70,70,70), left_panel)
-        pygame.draw.rect(self.surface, (70,70,70), right_panel)
-        pygame.draw.rect(self.surface, (120,120,120), left_panel, 1)
-        pygame.draw.rect(self.surface, (120,120,120), right_panel, 1)
-
-        title_font = pygame.font.SysFont("arial", 32, bold=True)
-        self.surface.blit(title_font.render("Players", True, (255,255,255)), (left_panel[0]+10, left_panel[1]-36))
-        self.surface.blit(title_font.render("Game Settings", True, (255,255,255)), (right_panel[0]+10, right_panel[1]-36))
-
-        # Left: players section
-        y = left_panel[1] + 10
-        line_h = 34
-        sel_color = (255,255,160)
-        norm = (255,255,255)
-        # Number of players
-        selected = (Game.prep_section=='players' and Game.prep_cursor_row==0)
-        self.surface.blit(font_small.render(f"Players: {Game.prep_num_players}", True, sel_color if selected else norm), (left_panel[0]+12, y))
-        pygame.draw.line(self.surface, (110,110,110), (left_panel[0]+10, y+line_h-8), (left_panel[0]+left_panel[2]-10, y+line_h-8), 1)
-        y += line_h
-
-        for i in range(Game.prep_num_players):
-            row_sel = (Game.prep_section=='players' and Game.prep_cursor_row==i+1)
-            name_c = sel_color if (row_sel and Game.prep_cursor_col==0) else norm
-            col_c = sel_color if (row_sel and Game.prep_cursor_col==1) else norm
-            ctrl_c = sel_color if (row_sel and Game.prep_cursor_col==2) else norm
-            name = Game.prep_player_names[i % len(Game.prep_player_names)]
-            name_disp = Game.prep_custom_name + '|' if (row_sel and Game.prep_editing_name and Game.prep_cursor_col==0) else name
-            self.surface.blit(font_small.render(f"{i+1}. Name: {name_disp}", True, name_c), (left_panel[0]+12, y))
-            self.surface.blit(font_small.render("Color:", True, col_c), (left_panel[0]+280, y))
-            color_idx = Game.prep_player_colors[i % len(Game.prep_player_colors)]
-            sw = np.array([left_panel[0]+350, y+6, 26, 20], dtype=np.float64)
-            pygame.draw.rect(self.surface, colors[color_idx % len(colors)], sw)
-            pygame.draw.rect(self.surface, (255,255,255), sw, 1)
-            self.surface.blit(font_small.render("Controls", True, ctrl_c), (left_panel[0]+410, y))
-            pygame.draw.line(self.surface, (110,110,110), (left_panel[0]+10, y+line_h-8), (left_panel[0]+left_panel[2]-10, y+line_h-8), 1)
-            y += line_h
-
-        # Right: game settings
-        settings = [
-            ("Initial Bomb Capacity", 'prep_initial_bomb_capacity', 1, 10, 1),
-            ("Initial Fire Power", 'prep_initial_fire_power', 1, 10, 1),
-            ("Player Speed", 'prep_player_speed', 100, 600, 10),
-            ("QD Probability", 'prep_qd_probability', 0.0, 0.02, 0.0005),
-            ("QD Delay (s)", 'prep_qd_delay', 0, 600, 5),
-            ("Crush Delay (s)", 'prep_crushing_delay', 0, 600, 5),
-            ("Crush Min Destroyable", 'prep_crushing_min_destroyable', 0, 200, 1),
-            ("Trophy Threshold", 'prep_trophy_threshold', 1, 10, 1),
-        ]
-
-        y = right_panel[1] + 10
-        for idx, (label, attr, _mn, _mx, _st) in enumerate(settings):
-            val = getattr(Game, attr)
-            sel = (Game.prep_section=='game' and Game.prep_game_cursor==idx)
-            edit_indicator = " [EDIT]" if (sel and Game.prep_editing_mode) else ""
-            self.surface.blit(font_small.render(f"{label}: {val}{edit_indicator}", True, sel_color if sel else norm), (right_panel[0]+12, y))
-            pygame.draw.line(self.surface, (110,110,110), (right_panel[0]+10, y+line_h-8), (right_panel[0]+right_panel[2]-10, y+line_h-8), 1)
-            y += line_h
-
-        # Add "Start Game" option
-        start_sel = (Game.prep_section=='game' and Game.prep_game_cursor==9)
-        start_text = ">>> START GAME <<<"
-        start_color = (120, 255, 120) if start_sel else (200, 200, 200)
-        self.surface.blit(font_small.render(start_text, True, start_color), (right_panel[0]+12, y))
-        
-        # Footer with mode indication
-        mode_text = "[EDIT MODE]" if Game.prep_editing_mode else "[NAVIGATE]"
-        footer_text = f"{mode_text}   TAB: Switch   Arrows: Navigate/Change   ENTER: Edit/Start   ESC: Back"
-        footer = pygame.font.SysFont("arial", 20).render(footer_text, True, (255,255,255))
-        self.surface.blit(footer, (40, BASE_HEIGHT-46))
+# Screen class and methods moved to frontend.py
 
 def browser_key_to_pygame(key):
     """

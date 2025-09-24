@@ -10,6 +10,8 @@ import ws_stream_server  # Import as a module
 import psutil
 from turbojpeg import TurboJPEG, TJPF_RGB
 import numpy as np
+from frontend import FrontendManager
+from bm_drawing import draw_game_screen, draw_get_ready, draw_title_page, draw_stat_screen, draw_champion_screen
 
 
 ## TODO
@@ -90,9 +92,10 @@ if __name__ == "__main__":
     theGame = Game()
     theGame.init_game()
 
-    theScreen = Screen()
-    theScreen.set_window(window)
-    theGame.screen = theScreen
+    # Create frontend and initialize
+    frontend = FrontendManager(theGame)
+    window = frontend.initialize()
+    theGame.set_frontend(frontend)
 
     while True:
         theGame.tick()
@@ -108,29 +111,51 @@ if __name__ == "__main__":
                 break
         
                 
+        # Get the game surface from frontend
+        game_surface = frontend.screen.get_surface()
+        
         if theGame.game_state == "startup":
-            theScreen.draw_startup(theGame)
+            # Draw startup screen
+            from bm_drawing import draw_title_page, draw_controls
+            elapsed = theGame.current_time - theGame.startup_start_time
+            if elapsed < 2000:
+                alpha = 255
+            elif elapsed < 2800:
+                alpha = int(255 * (2500 - elapsed) / 500)
+            else:
+                alpha = 0
+            draw_title_page(game_surface, alpha)
+            if int(elapsed) >= 2200:
+                draw_controls(game_surface, theGame.players)
+                # Display "Press Enter to start the game" message
+                from bm_drawing import font_small
+                from bm_params import BASE_WIDTH, BASE_HEIGHT
+                start_text = font_small.render("Press Enter to start the game", True, (255, 255, 255))
+                start_rect = start_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT - 50))
+                game_surface.blit(start_text, start_rect)
         elif theGame.game_state == "game_prep":
-            theScreen.draw_game_prep(theGame)
+            # Draw game prep screen
+            from bm_drawing import draw_game_prep
+            draw_game_prep(game_surface, theGame)
         elif theGame.game_state == "get_ready":
             if theGame.current_time < theGame.game_start_time:
-                draw_game_screen(theScreen.surface, theGame)
-                draw_get_ready(theScreen.surface)
+                draw_game_screen(game_surface, theGame)
+                draw_get_ready(game_surface)
             else:
                 theGame.game_state = "playing"  
         elif theGame.game_state == "playing":
             theGame.update()
-            draw_game_screen(theScreen.surface, theGame)
+            draw_game_screen(game_surface, theGame)
         elif theGame.game_state == "win":
-            draw_title_page(theScreen.surface, alpha=255)
+            draw_title_page(game_surface, alpha=255)
             alive_players = [p for p in theGame.players if p.alive]
-            draw_stat_screen(theScreen.surface, alive_players[0] if alive_players else None, theGame.players)
+            draw_stat_screen(game_surface, alive_players[0] if alive_players else None, theGame.players)
         elif theGame.game_state == "champion":
             alive_players = [p for p in theGame.players if p.alive]
-            draw_champion_screen(theScreen.surface, alive_players[0] if alive_players else None)
+            draw_champion_screen(game_surface, alive_players[0] if alive_players else None)
 
         
-        jpeg_bytes = save_surface_as_jpeg(theScreen.surface)
+        jpeg_bytes = save_surface_as_jpeg(game_surface)
         
         
         if jpeg_bytes is not None:
@@ -143,5 +168,6 @@ if __name__ == "__main__":
             frame_queue.put(jpeg_bytes)
         
         
-        draw_adjust_screen_size(theScreen)
+        # Use frontend renderer
+        frontend.render()
 
