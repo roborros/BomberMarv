@@ -48,7 +48,7 @@ HTTP_SERVER_VERSION = "1.1.0"
 # Only call setup_logging at the top-level, not inside run_server_with_queue (to avoid double setup)
 setup_logging("ws_server.log")
 
-def run_server_with_queue(frame_queue, input_queue, log_path=None):
+def run_server_with_queue(input_queue, log_path=None):
     import asyncio
     import websockets
     import threading
@@ -62,8 +62,6 @@ def run_server_with_queue(frame_queue, input_queue, log_path=None):
     HTTP_PORT = 8080
     CLIENT_HTML = "client.html"
 
-    latest_frame = None
-    latest_frame_lock = threading.Lock()
     client_id_counter = 0
     client_id_lock = threading.Lock()
     client_ids = set()
@@ -73,19 +71,7 @@ def run_server_with_queue(frame_queue, input_queue, log_path=None):
     players = {}  # {player_id: {client_id, keys: {up, down, left, right, bomb}}}
     tracking_lock = threading.Lock()
 
-    def frame_updater():
-        nonlocal latest_frame
-        while True:
-            try:
-                frame = frame_queue.get(timeout=1)
-                with latest_frame_lock:
-                    latest_frame = frame
-            except Exception:
-                continue
-
-    threading.Thread(target=frame_updater, daemon=True).start()
-
-    async def stream_frames(websocket):
+    async def handle_client(websocket):
         nonlocal client_id_counter
         # Assign a unique client_id to this client
         with client_id_lock:
@@ -197,8 +183,8 @@ def run_server_with_queue(frame_queue, input_queue, log_path=None):
         except websockets.ConnectionClosed as cc:
             print(f"WebSocket connection closed: {cc}")
         except Exception as e:
-            print(f"Error in stream_frames: {e}")
-        print(f"Exiting stream_frames for {websocket.remote_address}, client_id: {client_id}")
+            print(f"Error in handle_client: {e}")
+        print(f"Exiting handle_client for {websocket.remote_address}, client_id: {client_id}")
         with client_id_lock:
             client_ids.discard(client_id)
         
@@ -283,7 +269,7 @@ def run_server_with_queue(frame_queue, input_queue, log_path=None):
 
     async def main():
         print(f"Starting WebSocket server on port {PORT}")
-        ws_server = websockets.serve(stream_frames, "0.0.0.0", PORT, max_size=2**22)
+        ws_server = websockets.serve(handle_client, "0.0.0.0", PORT, max_size=2**22)
         threading.Thread(target=start_http_server, daemon=True).start()
         await ws_server
         await asyncio.Future()  # run forever
