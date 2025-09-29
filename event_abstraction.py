@@ -25,6 +25,7 @@ class GameCommand(Enum):
     
     # Game state commands
     START_GAME = "start_game"
+    QUICK_START_GAME = "quick_start_game"
     ENTER_PREP_SCREEN = "enter_prep_screen"
     EXIT_PREP_SCREEN = "exit_prep_screen"
     RESTART_GAME = "restart_game"
@@ -105,6 +106,12 @@ class EventProcessor:
             return GameEvent(
                 event_type=EventType.KEY_PRESS,
                 command=GameCommand.START_GAME
+            )
+        
+        elif event.key == Keys.SPACE:
+            return GameEvent(
+                event_type=EventType.KEY_PRESS,
+                command=GameCommand.QUICK_START_GAME
             )
         
         # Navigation controls
@@ -188,6 +195,9 @@ class GameCommandHandler:
         elif command == GameCommand.START_GAME:
             return self._handle_start_game()
         
+        elif command == GameCommand.QUICK_START_GAME:
+            return self._handle_quick_start_game()
+        
         # Prep screen commands
         elif command in [GameCommand.NAVIGATE_UP, GameCommand.NAVIGATE_DOWN, 
                         GameCommand.NAVIGATE_LEFT, GameCommand.NAVIGATE_RIGHT,
@@ -221,7 +231,9 @@ class GameCommandHandler:
     
     def _handle_close_window(self):
         """Handle window close"""
-        pygame.quit()
+        # Signal the frontend to quit instead of calling pygame.quit() directly
+        if hasattr(self.game, 'frontend') and self.game.frontend:
+            self.game.frontend.should_quit = True
         import sys
         sys.exit()
     
@@ -242,6 +254,16 @@ class GameCommandHandler:
             self.game.init_game()
             self.game.game_state = "get_ready"
             return True
+        
+        return False
+    
+    def _handle_quick_start_game(self):
+        """Handle quick start game command"""
+        if self.game.game_state == "game_prep":
+            # Use the backend logic for quick start
+            from backend_game_logic import BackendGameLogic
+            backend = BackendGameLogic(self.game)
+            return backend._quick_start_game()
         
         return False
     

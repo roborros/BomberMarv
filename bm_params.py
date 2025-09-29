@@ -44,7 +44,9 @@ GRID_SIZE = 15
 BOMB_TIMER = 3000
 EXPLOSION_DURATION = 400
 
-SHOW_PLAYER_DIRECTIONS = True  # Set to False to disable direction arrows
+
+SHOW_PLAYER_DIRECTIONS = False  # Set to False to disable direction arrows
+SHOW_EXPLOSION_COLLISION_DEBUG = False  # Set to False to disable red collision boxes
 
 # Web client input throttling
 KEY_SEND_FREQUENCY_LIMIT = 20  # Minimum milliseconds between key events (20ms = 50Hz max)

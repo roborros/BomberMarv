@@ -138,6 +138,7 @@ class FrontendManager:
     
     def __init__(self, game_instance):
         self.game = game_instance
+        self.should_quit = False
         
         # Initialize pygame first
         pygame.init()

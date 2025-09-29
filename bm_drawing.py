@@ -1,9 +1,11 @@
 import pygame
 import numpy as np
 import time
+import math
 from bm_params import *
 from input_abstraction import get_key_name
 from timing_abstraction import get_ticks
+from lib_collisions import circle_rect_collision
 
 def _ensure_fonts_initialized():
     """Ensure fonts are initialized before use"""
@@ -279,6 +281,83 @@ def draw_explosions(surface, current_time, explosions):
         if right_length > 0:
             draw_blast_arm(surface, center_pixel, (right_length, 0), img)
 
+def draw_explosion_collision_debug(surface, current_time, explosions, players=None):
+    """Draw red rectangles showing the collision boxes of explosion arms for debugging"""
+    for explosion in explosions:
+        # Calculate animation timing (same as in handle_explosions and draw_explosions)
+        norm = (current_time - explosion.start_time) / EXPLOSION_DURATION
+        norm = min(norm, 1)
+        if norm < 0.2:
+            arm_factor = norm / 0.2
+        elif norm <= 0.7:
+            arm_factor = 1
+        else:
+            arm_factor = (1 - (norm - 0.7) / 0.3)
+        
+        # Only draw collision boxes when explosion arms are active (arm_factor > 0)
+        if arm_factor > 0:
+            # Get explosion center
+            cx, cy = explosion.cells[0]
+            
+            # Calculate maximum arm lengths in each direction
+            up_max = max([cy - cell[1] for cell in explosion.cells if cell[0] == cx and cell[1] < cy] or [0])
+            down_max = max([cell[1] - cy for cell in explosion.cells if cell[0] == cx and cell[1] > cy] or [0])
+            left_max = max([cx - cell[0] for cell in explosion.cells if cell[1] == cy and cell[0] < cx] or [0])
+            right_max = max([cell[0] - cx for cell in explosion.cells if cell[1] == cy and cell[0] > cx] or [0])
+            
+            # Calculate current arm lengths based on animation
+            up_length = int(arm_factor * up_max)
+            down_length = int(arm_factor * down_max)
+            left_length = int(arm_factor * left_max)
+            right_length = int(arm_factor * right_max)
+            
+            # Determine which cells are currently active based on arm lengths
+            active_cells = []
+            
+            # Add center cell
+            active_cells.append((cx, cy))
+            
+            # Add cells in each direction based on current arm length
+            for i in range(1, up_length + 1):
+                active_cells.append((cx, cy - i))
+            for i in range(1, down_length + 1):
+                active_cells.append((cx, cy + i))
+            for i in range(1, left_length + 1):
+                active_cells.append((cx - i, cy))
+            for i in range(1, right_length + 1):
+                active_cells.append((cx + i, cy))
+            
+            # Draw collision boxes only for currently active cells
+            for cell in active_cells:
+                x, y = cell
+                # Calculate the collision rectangle (EXACT same as in handle_explosions line 622)
+                collision_rect = np.array([x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE], dtype=np.float64)
+                
+                # Draw only the border/edge of the collision box, not the filled area
+                border_width = max(2, int(4 * arm_factor))  # Thicker border when explosion is stronger
+                border_color = (255, 0, 0) if arm_factor > 0.5 else (200, 50, 50)
+                
+                # Draw the collision box border
+                pygame.draw.rect(surface, border_color, (collision_rect[0], collision_rect[1], CELL_SIZE, CELL_SIZE), border_width)
+                
+                # Draw cell coordinates for debugging
+                if arm_factor > 0.5:  # Only show coordinates when explosion is strong
+                    coord_text = f"{x},{y}"
+                    coord_surface = font_small.render(coord_text, True, (255, 255, 255))
+                    coord_rect = coord_surface.get_rect(center=(collision_rect[0] + CELL_SIZE//2, collision_rect[1] + CELL_SIZE//2))
+                    # Draw black background for text readability
+                    pygame.draw.rect(surface, (0, 0, 0, 128), coord_rect.inflate(4, 2))
+                    surface.blit(coord_surface, coord_rect)
+                
+                # Show collision info for players in this cell
+                if players and arm_factor > 0.5:
+                    for player in players:
+                        if player.alive:
+                            # Check if player would collide with this explosion cell (same logic as handle_explosions)
+                            if circle_rect_collision((player.pos[0], player.pos[1]), player.collision_radius, collision_rect):
+                                # Draw player collision circle in this cell
+                                pygame.draw.circle(surface, (255, 255, 0), (int(player.pos[0]), int(player.pos[1])), int(player.collision_radius), 2)
+
 def draw_blast_arm(surface, start_pos, end_offset, image):
     x1, y1 = start_pos
     x2, y2 = x1 + end_offset[0], y1 + end_offset[1]
@@ -376,6 +455,8 @@ def draw_game_screen(surface, theGame):
     draw_powerups(surface, theGame)
     draw_bombs(surface, theGame.current_time, theGame.bombs)
     draw_explosions(surface, theGame.current_time, theGame.explosions)
+    if SHOW_EXPLOSION_COLLISION_DEBUG:
+        draw_explosion_collision_debug(surface, theGame.current_time, theGame.explosions, theGame.players)
     draw_players(surface, theGame.players)
     if SHOW_PLAYER_DIRECTIONS:
         draw_player_directions(surface, theGame.players, theGame)
@@ -561,9 +642,16 @@ def draw_game_prep(surface, Game):
     except Exception as e:
         surface.blit(font_small.render("No server connection", True, (255, 120, 120)), (right_panel[0]+12, y))
     
-    # Footer with mode indication
+    # Footer with mode indication and quick start
     mode_text = "[EDIT MODE]" if Game.prep_editing_mode else "[NAVIGATE]"
-    footer_text = f"{mode_text}   TAB: Switch   Arrows: Navigate/Change   ENTER: Edit/Start   ESC: Back"
+    footer_text = f"{mode_text}   TAB: Switch   Arrows: Navigate/Change   ENTER: Edit/Start   SPACE: Quick Start   ESC: Back"
     footer = pygame.font.SysFont("arial", 20).render(footer_text, True, (255,255,255))
     surface.blit(footer, (40, BASE_HEIGHT-46))
+    
+    # Quick start indicator
+    quick_start_text = "SPACE - Quick Start (4 players, default settings)"
+    quick_start_color = (255, 255, 160)  # Yellow-ish color to make it stand out
+    quick_start_font = pygame.font.SysFont("arial", 18, bold=True)
+    quick_start_surface = quick_start_font.render(quick_start_text, True, quick_start_color)
+    surface.blit(quick_start_surface, (40, BASE_HEIGHT-70))
 

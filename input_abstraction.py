@@ -19,13 +19,43 @@ class Keys:
     
     # Action keys
     ENTER = pygame.K_RETURN
+    RETURN = pygame.K_RETURN  # Alias for ENTER
     KP_ENTER = pygame.K_KP_ENTER
+    SPACE = pygame.K_SPACE
     ESCAPE = pygame.K_ESCAPE
     TAB = pygame.K_TAB
     BACKSPACE = pygame.K_BACKSPACE
     
     # Function keys
     F11 = pygame.K_F11
+    
+    # Letter keys
+    A = pygame.K_a
+    B = pygame.K_b
+    C = pygame.K_c
+    D = pygame.K_d
+    E = pygame.K_e
+    F = pygame.K_f
+    G = pygame.K_g
+    H = pygame.K_h
+    I = pygame.K_i
+    J = pygame.K_j
+    K = pygame.K_k
+    L = pygame.K_l
+    M = pygame.K_m
+    N = pygame.K_n
+    O = pygame.K_o
+    P = pygame.K_p
+    Q = pygame.K_q
+    R = pygame.K_r
+    S = pygame.K_s
+    T = pygame.K_t
+    U = pygame.K_u
+    V = pygame.K_v
+    W = pygame.K_w
+    X = pygame.K_x
+    Y = pygame.K_y
+    Z = pygame.K_z
 
 class InputBackend(ABC):
     """Abstract base class for input backends"""

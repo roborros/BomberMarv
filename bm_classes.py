@@ -572,6 +572,61 @@ class Game:
     def handle_explosions(self):
         
         for explosion in self.explosions[:]:
+            # Calculate animation timing (same as in draw_explosions)
+            norm = (self.current_time - explosion.start_time) / EXPLOSION_DURATION
+            norm = min(norm, 1)
+            if norm < 0.2:
+                arm_factor = norm / 0.2
+            elif norm <= 0.7:
+                arm_factor = 1
+            else:
+                arm_factor = (1 - (norm - 0.7) / 0.3)
+            
+            # Only check for kills when explosion arms are active
+            if arm_factor > 0:
+                # Get explosion center
+                cx, cy = explosion.cells[0]
+                
+                # Calculate maximum arm lengths in each direction
+                up_max = max([cy - cell[1] for cell in explosion.cells if cell[0] == cx and cell[1] < cy] or [0])
+                down_max = max([cell[1] - cy for cell in explosion.cells if cell[0] == cx and cell[1] > cy] or [0])
+                left_max = max([cx - cell[0] for cell in explosion.cells if cell[1] == cy and cell[0] < cx] or [0])
+                right_max = max([cell[0] - cx for cell in explosion.cells if cell[1] == cy and cell[0] > cx] or [0])
+                
+                # Calculate current arm lengths based on animation
+                up_length = int(arm_factor * up_max)
+                down_length = int(arm_factor * down_max)
+                left_length = int(arm_factor * left_max)
+                right_length = int(arm_factor * right_max)
+                
+                # Determine which cells are currently active based on arm lengths
+                active_cells = []
+                
+                # Add center cell
+                active_cells.append((cx, cy))
+                
+                # Add cells in each direction based on current arm length
+                for i in range(1, up_length + 1):
+                    active_cells.append((cx, cy - i))
+                for i in range(1, down_length + 1):
+                    active_cells.append((cx, cy + i))
+                for i in range(1, left_length + 1):
+                    active_cells.append((cx - i, cy))
+                for i in range(1, right_length + 1):
+                    active_cells.append((cx + i, cy))
+                
+                # Check for player deaths only in currently active cells
+                for player in self.players:
+                    if player.alive:
+                        for cell in active_cells:
+                            explosion_rect = np.array([cell[0]*CELL_SIZE, cell[1]*CELL_SIZE, CELL_SIZE, CELL_SIZE], dtype=np.float64)
+                            if circle_rect_collision((player.pos[0], player.pos[1]), player.collision_radius, explosion_rect):
+                                player.alive = False
+                                player.death_animation_time = 1000  # 1 second death animation
+                                death_sound.play()
+                                break
+            
+            # Remove explosion when it ends
             if not explosion.is_active(self.current_time):
                 if explosion.quad_damage:
                     explosion_sound_qd.play()
@@ -587,15 +642,6 @@ class Game:
                 for pu in self.powerups[:]:
                     if pu.spawn_time < explosion.start_time and (pu.x, pu.y) in explosion.cells:
                         self.powerups.remove(pu)
-                for player in self.players:
-                    if player.alive:
-                        for cell in explosion.cells:
-                            explosion_rect = np.array([cell[0]*CELL_SIZE, cell[1]*CELL_SIZE, CELL_SIZE, CELL_SIZE], dtype=np.float64)
-                            if circle_rect_collision((player.pos[0], player.pos[1]), player.collision_radius, explosion_rect):
-                                player.alive = False
-                                player.death_animation_time = 1000  # 1 second death animation
-                                death_sound.play()
-                                break           
                 self.explosions.remove(explosion)
                     
     def place_quad_damage_powerup(self):        

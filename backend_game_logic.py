@@ -5,6 +5,7 @@ This contains all game state management separated from frontend concerns.
 
 from typing import Optional, Dict, Any
 from event_abstraction import GameCommand, GameEvent
+from input_abstraction import Keys
 
 class BackendGameLogic:
     """Handles all backend game logic and state management"""
@@ -27,6 +28,7 @@ class BackendGameLogic:
             },
             "game_prep": {
                 GameCommand.START_GAME: self._transition_prep_to_ready,
+                GameCommand.QUICK_START_GAME: self._transition_prep_to_ready,
                 GameCommand.EXIT_PREP_SCREEN: self._transition_prep_to_startup,
             },
             "get_ready": {
@@ -65,8 +67,32 @@ class BackendGameLogic:
     
     def _transition_prep_to_ready(self, data: Dict[str, Any]) -> bool:
         """Transition from prep screen to ready state"""
-        # This will be handled by the existing prep enter key logic
-        return self.game.handle_prep_enter_key()
+        # Check if this is a quick start command
+        if data and data.get('command') == GameCommand.QUICK_START_GAME:
+            return self._quick_start_game()
+        else:
+            # This will be handled by the existing prep enter key logic
+            return self.game.handle_prep_enter_key()
+    
+    def _quick_start_game(self) -> bool:
+        """Quick start game with default settings"""
+        # Set default values for quick start
+        self.game.prep_num_players = 4
+        self.game.prep_player_names = ["Player 1", "Player 2", "Player 3", "Player 4"]
+        self.game.prep_player_colors = [0, 1, 2, 3]  # Default colors
+        self.game.prep_controls = [
+            {'up': Keys.W, 'down': Keys.S, 'left': Keys.A, 'right': Keys.D, 'bomb': Keys.SPACE},
+            {'up': Keys.UP, 'down': Keys.DOWN, 'left': Keys.LEFT, 'right': Keys.RIGHT, 'bomb': Keys.RETURN},
+            {'up': Keys.I, 'down': Keys.K, 'left': Keys.J, 'right': Keys.L, 'bomb': Keys.U},
+            {'up': Keys.T, 'down': Keys.G, 'left': Keys.F, 'right': Keys.H, 'bomb': Keys.R}
+        ]
+        
+        # Create players and start game
+        self.game.create_players()
+        self.game.prep_screen_completed = True
+        self.game.init_game()
+        self.game.game_state = "get_ready"
+        return True
     
     def _transition_prep_to_startup(self, data: Dict[str, Any]) -> bool:
         """Transition from prep screen back to startup"""

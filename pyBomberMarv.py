@@ -1,9 +1,6 @@
 # internal imports
 
 from PIL import Image
-import io
-import threading
-import subprocess
 import socket
 import multiprocessing
 import ws_stream_server  # Import as a module
@@ -34,16 +31,6 @@ from bm_drawing import draw_game_screen, draw_get_ready, draw_title_page, draw_s
 # remove bomb owner lesf tate from the bomb class and related collision checks
 # abstract state changes to the game class method
 
-# BUG
-
-# test version for web deployment using piglet
-
-def save_surface_as_jpeg(surface):
-    data = pygame.image.tostring(surface, 'RGB')
-    width, height = surface.get_size()
-    arr = np.frombuffer(data, dtype=np.uint8).reshape((height, width, 3))   
-    jpeg_bytes = jpeg.encode(arr, quality=85, pixel_format=TJPF_RGB)
-    return jpeg_bytes
 
 
 
@@ -72,7 +59,6 @@ def kill_existing_ws_server_processes():
 
 if __name__ == "__main__":
     
-    jpeg = TurboJPEG("C:\\libjpeg-turbo-gcc64\\bin\\libturbojpeg.dll")
     
     from bm_params import *
     from bm_sounds import *
@@ -80,7 +66,6 @@ if __name__ == "__main__":
     from lib_grid import *
     from bm_drawing import *
     from bm_classes import *
-    #import profiler
     
     kill_existing_ws_server_processes()
     
@@ -155,19 +140,11 @@ if __name__ == "__main__":
             draw_champion_screen(game_surface, alive_players[0] if alive_players else None)
 
         
-        jpeg_bytes = save_surface_as_jpeg(game_surface)
-        
-        
-        if jpeg_bytes is not None:
-            # Only keep the latest frame in the queue
-            while not frame_queue.empty():
-                try:
-                    frame_queue.get_nowait()
-                except:
-                    break
-            frame_queue.put(jpeg_bytes)
-        
         
         # Use frontend renderer
         frontend.render()
+        
+        # Check if we should quit
+        if frontend.should_quit:
+            break
 
