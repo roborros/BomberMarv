@@ -1,5 +1,6 @@
 import pygame
 import numpy as np
+import time
 from bm_params import *
 from input_abstraction import get_key_name
 from timing_abstraction import get_ticks
@@ -436,16 +437,23 @@ def draw_game_prep(surface, Game):
     # Gray background panels and minimalist UI
     surface.fill(COLOR_BG)
 
-    left_panel = np.array([40, 80, BASE_WIDTH//2 - 60, BASE_HEIGHT - 160], dtype=np.float64)
-    right_panel = np.array([BASE_WIDTH//2 + 20, 80, BASE_WIDTH//2 - 60, BASE_HEIGHT - 160], dtype=np.float64)
+    # Three panels: clients/players, game settings, and client status
+    panel_width = (BASE_WIDTH - 100) // 3
+    left_panel = np.array([40, 80, panel_width, BASE_HEIGHT - 160], dtype=np.float64)
+    middle_panel = np.array([40 + panel_width + 10, 80, panel_width, BASE_HEIGHT - 160], dtype=np.float64)
+    right_panel = np.array([40 + 2*(panel_width + 10), 80, panel_width, BASE_HEIGHT - 160], dtype=np.float64)
+    
     pygame.draw.rect(surface, (70,70,70), left_panel)
+    pygame.draw.rect(surface, (70,70,70), middle_panel)
     pygame.draw.rect(surface, (70,70,70), right_panel)
     pygame.draw.rect(surface, (120,120,120), left_panel, 1)
+    pygame.draw.rect(surface, (120,120,120), middle_panel, 1)
     pygame.draw.rect(surface, (120,120,120), right_panel, 1)
 
     title_font = pygame.font.SysFont("arial", 32, bold=True)
     surface.blit(title_font.render("Players", True, (255,255,255)), (left_panel[0]+10, left_panel[1]-36))
-    surface.blit(title_font.render("Game Settings", True, (255,255,255)), (right_panel[0]+10, right_panel[1]-36))
+    surface.blit(title_font.render("Game Settings", True, (255,255,255)), (middle_panel[0]+10, middle_panel[1]-36))
+    surface.blit(title_font.render("Clients & Players", True, (255,255,255)), (right_panel[0]+10, right_panel[1]-36))
 
     # Left: players section
     y = left_panel[1] + 10
@@ -475,7 +483,7 @@ def draw_game_prep(surface, Game):
         pygame.draw.line(surface, (110,110,110), (left_panel[0]+10, y+line_h-8), (left_panel[0]+left_panel[2]-10, y+line_h-8), 1)
         y += line_h
 
-    # Right: game settings
+    # Middle: game settings
     settings = [
         ("Initial Bomb Capacity", 'prep_initial_bomb_capacity', 1, 10, 1),
         ("Initial Fire Power", 'prep_initial_fire_power', 1, 10, 1),
@@ -487,20 +495,71 @@ def draw_game_prep(surface, Game):
         ("Trophy Threshold", 'prep_trophy_threshold', 1, 10, 1),
     ]
 
-    y = right_panel[1] + 10
+    y = middle_panel[1] + 10
     for idx, (label, attr, _mn, _mx, _st) in enumerate(settings):
         val = getattr(Game, attr)
         sel = (Game.prep_section=='game' and Game.prep_game_cursor==idx)
         edit_indicator = " [EDIT]" if (sel and Game.prep_editing_mode) else ""
-        surface.blit(font_small.render(f"{label}: {val}{edit_indicator}", True, sel_color if sel else norm), (right_panel[0]+12, y))
-        pygame.draw.line(surface, (110,110,110), (right_panel[0]+10, y+line_h-8), (right_panel[0]+right_panel[2]-10, y+line_h-8), 1)
+        surface.blit(font_small.render(f"{label}: {val}{edit_indicator}", True, sel_color if sel else norm), (middle_panel[0]+12, y))
+        pygame.draw.line(surface, (110,110,110), (middle_panel[0]+10, y+line_h-8), (middle_panel[0]+middle_panel[2]-10, y+line_h-8), 1)
         y += line_h
 
     # Add "Start Game" option
     start_sel = (Game.prep_section=='game' and Game.prep_game_cursor==9)
     start_text = ">>> START GAME <<<"
     start_color = (120, 255, 120) if start_sel else (200, 200, 200)
-    surface.blit(font_small.render(start_text, True, start_color), (right_panel[0]+12, y))
+    surface.blit(font_small.render(start_text, True, start_color), (middle_panel[0]+12, y))
+    
+    # Right: Client and Player Status Table
+    y = right_panel[1] + 10
+    
+    # Try to get client status from server
+    try:
+        import requests
+        response = requests.get('http://localhost:8080/status', timeout=0.5)
+        if response.status_code == 200:
+            status_data = response.json()
+            
+            # Display clients
+            surface.blit(font_small.render("Connected Clients:", True, (200, 255, 200)), (right_panel[0]+12, y))
+            y += line_h
+            
+            for client_id, client_info in status_data.get('clients', {}).items():
+                last_seen = client_info.get('last_seen', 0)
+                time_since = time.time() - last_seen
+                status_color = (120, 255, 120) if time_since < 5 else (255, 200, 120) if time_since < 30 else (255, 120, 120)
+                
+                # Show client info with latency
+                avg_latency = client_info.get('avg_latency', 0)
+                latency_samples = client_info.get('latency_samples', 0)
+                latency_text = f" (avg: {avg_latency}ms, {latency_samples} samples)" if latency_samples > 0 else " (no latency data)"
+                
+                surface.blit(font_small.render(f"Client {client_id}: {len(client_info.get('players', []))} players{latency_text}", True, status_color), (right_panel[0]+12, y))
+                y += line_h - 5
+                
+                # Display players for this client
+                for player_id in client_info.get('players', []):
+                    player_info = status_data.get('players', {}).get(str(player_id), {})
+                    keys = player_info.get('keys', {})
+                    
+                    # Show pressed keys
+                    pressed_keys = []
+                    if keys.get('up'): pressed_keys.append('↑')
+                    if keys.get('down'): pressed_keys.append('↓')
+                    if keys.get('left'): pressed_keys.append('←')
+                    if keys.get('right'): pressed_keys.append('→')
+                    if keys.get('bomb'): pressed_keys.append('💣')
+                    
+                    keys_display = ''.join(pressed_keys) if pressed_keys else '---'
+                    surface.blit(font_small.render(f"  Player {player_id}: {keys_display}", True, (255, 255, 255)), (right_panel[0]+12, y))
+                    y += line_h - 5
+                
+                pygame.draw.line(surface, (110,110,110), (right_panel[0]+10, y-3), (right_panel[0]+right_panel[2]-10, y-3), 1)
+                y += 5
+        else:
+            surface.blit(font_small.render("Server not responding", True, (255, 120, 120)), (right_panel[0]+12, y))
+    except Exception as e:
+        surface.blit(font_small.render("No server connection", True, (255, 120, 120)), (right_panel[0]+12, y))
     
     # Footer with mode indication
     mode_text = "[EDIT MODE]" if Game.prep_editing_mode else "[NAVIGATE]"

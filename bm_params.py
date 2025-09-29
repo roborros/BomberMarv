@@ -46,6 +46,12 @@ EXPLOSION_DURATION = 400
 
 SHOW_PLAYER_DIRECTIONS = True  # Set to False to disable direction arrows
 
+# Web client input throttling
+KEY_SEND_FREQUENCY_LIMIT = 20  # Minimum milliseconds between key events (20ms = 50Hz max)
+# Lower values = more responsive but higher server load
+# Higher values = less responsive but lower server load
+# Recommended range: 10-50ms (100Hz-20Hz)
+
 player_names = ["Tom", "Adel", "Marv", "Hanka", "Sobi", "Sasa"]
 #players = []
 colors = [
@@ -120,4 +126,11 @@ font_small = None   # Will be initialized in frontend
 INITIAL_WINDOW_SIZE = (1200, 800)  # Default size, will be updated by frontend
 window = None  # Will be set by frontend
 game_surface = None  # Will be set by frontend
+
+# Input sending configuration
+KEY_SEND_FREQUENCY_LIMIT = 20  # Default frequency limit in milliseconds
+SEND_ON_CHANGE = True  # Send input immediately when it changes
+PERIODIC_SENDING = True  # Send input periodically even without changes
+MIN_SEND_FREQUENCY = 1  # Minimum allowed frequency (ms)
+MAX_SEND_FREQUENCY = 1000  # Maximum allowed frequency (ms)
 
