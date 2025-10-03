@@ -58,14 +58,27 @@ class Player:
                 if mapped:
                     mapped_web_keys.add(mapped.lower())
         # Use mapped_web_keys as an OR with local keys
-        if is_key_pressed(self.controls['up']) or (mapped_web_keys and 'up' in mapped_web_keys):
-            direction[1] -= 1
-        if is_key_pressed(self.controls['down']) or (mapped_web_keys and 'down' in mapped_web_keys):
-            direction[1] += 1
-        if is_key_pressed(self.controls['left']) or (mapped_web_keys and 'left' in mapped_web_keys):
-            direction[0] -= 1
-        if is_key_pressed(self.controls['right']) or (mapped_web_keys and 'right' in mapped_web_keys):
-            direction[0] += 1
+        # Handle both local players (with controls) and client players (web_keys only)
+        if self.controls is not None:
+            # Local player - use local controls + web keys
+            if is_key_pressed(self.controls['up']) or (mapped_web_keys and 'up' in mapped_web_keys):
+                direction[1] -= 1
+            if is_key_pressed(self.controls['down']) or (mapped_web_keys and 'down' in mapped_web_keys):
+                direction[1] += 1
+            if is_key_pressed(self.controls['left']) or (mapped_web_keys and 'left' in mapped_web_keys):
+                direction[0] -= 1
+            if is_key_pressed(self.controls['right']) or (mapped_web_keys and 'right' in mapped_web_keys):
+                direction[0] += 1
+        else:
+            # Client player - use web keys only
+            if mapped_web_keys and 'up' in mapped_web_keys:
+                direction[1] -= 1
+            if mapped_web_keys and 'down' in mapped_web_keys:
+                direction[1] += 1
+            if mapped_web_keys and 'left' in mapped_web_keys:
+                direction[0] -= 1
+            if mapped_web_keys and 'right' in mapped_web_keys:
+                direction[0] += 1
         if np.dot(direction, direction) > 1:
             length = np.linalg.norm(direction)
             if length > 0:
@@ -133,8 +146,15 @@ class Player:
                                 if length > 0:
                                     direction = direction / length
 
-        if is_key_pressed(self.controls['bomb']) or (mapped_web_keys and 'space' in mapped_web_keys):  
-            self.drop_bomb(bombs, current_time)
+        # Handle bomb placement for both local and client players
+        if self.controls is not None:
+            # Local player - use local controls + web keys
+            if is_key_pressed(self.controls['bomb']) or (mapped_web_keys and 'space' in mapped_web_keys):  
+                self.drop_bomb(bombs, current_time)
+        else:
+            # Client player - use web keys only
+            if mapped_web_keys and 'space' in mapped_web_keys:  
+                self.drop_bomb(bombs, current_time)
 
         original_pos = self.pos.copy()
         spd = self.speed if not self.quad_damage else int(self.speed * QUAD_DAMAGE_SPEEDUP)
@@ -271,7 +291,8 @@ class Game:
         self.powerups = []
         self.game_start_time = get_ticks()
         self.players = []
-        self.game_state = "startup"
+        self.game_state = "game_prep"  # Start directly in prep mode for testing
+        print(f"Game initialized with state: {self.game_state}")
         self.startup_start_time = get_ticks()
         self.current_time = self.startup_start_time
         self.clock = Clock()
@@ -297,47 +318,111 @@ class Game:
         self.prep_player_colors = list(range(len(colors)))  # Store color indices instead of colors
         self.prep_controls = [controls.copy() for controls in controls_list]
         
-        # Simple navigation system
-        self.prep_cursor_row = 0  # 0=num_players, 1-N=players, N+1=start_game
-        self.prep_cursor_col = 0  # 0=name, 1=color, 2=controls (only when on player rows)
-        self.prep_section = 'players'  # 'players' or 'game'
-        self.prep_game_cursor = 0  # index within game settings list
-        self.prep_editing_mode = False  # True when editing values, False when navigating
-        
-        # Editing states
-        self.prep_editing_control = None  # Which control key we're currently changing
-        self.prep_editing_name = False  # Whether we're typing a custom name
-        self.prep_custom_name = ""  # Buffer for custom name input
+        # Lobby navigation system
+        self.prep_cursor_row = 0  # Row in current section
+        self.prep_cursor_col = max(0, self.prep_num_players - 1)  # Column in current section (0-based, so -1)
+        self.prep_section = 'local_players'  # 'local_players' or 'start_game'
+        self.prep_editing_name = False  # Whether we're editing a player name
+        self.prep_name_edit_index = 0  # Which player name we're editing
+        self.prep_web_player_names = {}  # Store web player names {global_id: name}
+        self.prep_web_player_colors = {}  # Store web player colors {global_id: color_index}
         
         # Track if prep screen has been shown
         self.prep_screen_completed = False
-
-        # Gameplay settings (can be edited in prep screen)
-        self.prep_initial_bomb_capacity = 1
-        self.prep_initial_fire_power = 1
-        self.prep_player_speed = PLAYER_SPEED
-        self.prep_qd_probability = QUAD_DAMAGE_PROBABILITY
-        self.prep_qd_delay = QUAD_DAMAGE_DELAY
-        self.prep_crushing_delay = CRUSHING_WALLS_DELAY
-        self.prep_crushing_min_destroyable = CRUSHING_WALLS_MIN_DESTROYABLE
-        self.prep_trophy_threshold = TROPHY_WIN_THRESHOLD
         
         # Create initial players based on current settings
         self.create_players()
     
-    def create_players(self):
-        """Create players based on current prep screen settings"""
-        self.players = []
+    def get_all_players_info(self):
+        """Get all players (local + client) information"""
+        all_players = []
+        global_player_id = 1
+        
+        # Add local players first
         for i in range(self.prep_num_players):
+            player_name = self.prep_player_names[i % len(self.prep_player_names)]
             color_idx = self.prep_player_colors[i % len(self.prep_player_colors)]
-            p = Player(1, 1, 
-                      colors[color_idx % len(colors)], 
-                      self.prep_controls[i % len(self.prep_controls)], 
-                      self.prep_player_names[i % len(self.prep_player_names)])
+            all_players.append({
+                'id': global_player_id,
+                'name': player_name,
+                'color': color_idx,
+                'type': 'local',
+                'source': i,  # Index for local player data
+                'controls': self.prep_controls[i % len(self.prep_controls)]
+            })
+            global_player_id += 1
+        
+        # Add client players
+        if hasattr(self, '_cached_status') and self._cached_status:
+            status_data = self._cached_status
+            clients = status_data.get('clients', {})
+            players = status_data.get('players', {})
+            
+            for client_id, client_info in clients.items():
+                if client_info.get('registered', False):
+                    client_players = client_info.get('players', [])
+                    for player_id in client_players:
+                        # Use stored name and color if available, otherwise use defaults
+                        stored_name = self.prep_web_player_names.get(global_player_id, f"Client {client_id} P{player_id}")
+                        stored_color = self.prep_web_player_colors.get(global_player_id, global_player_id % len(colors))
+                        
+                        all_players.append({
+                            'id': global_player_id,
+                            'name': stored_name,
+                            'color': stored_color,
+                            'type': 'client',
+                            'source': (client_id, player_id),  # Client and player ID
+                            'controls': None  # Client players don't use local controls
+                        })
+                        global_player_id += 1
+        
+        return all_players
+    
+    def create_players(self):
+        """Create players based on current prep screen settings and client players"""
+        self.players = []
+        all_players_info = self.get_all_players_info()
+        
+        for player_info in all_players_info:
+            if player_info['type'] == 'local':
+                # Create local player
+                p = Player(1, 1, 
+                          colors[player_info['color'] % len(colors)], 
+                          player_info['controls'], 
+                          player_info['name'])
+                p.is_local = True
+                p.client_id = None
+                p.client_player_id = None
+            else:
+                # Create client player
+                p = Player(1, 1, 
+                          colors[player_info['color'] % len(colors)], 
+                          None,  # No local controls for client players
+                          player_info['name'])
+                p.is_local = False
+                p.client_id = player_info['source'][0]
+                p.client_player_id = player_info['source'][1]
+            
+            p.global_id = player_info['id']
             self.players.append(p)
     
+    def _refresh_client_status(self):
+        """Refresh client status from server"""
+        try:
+            import requests
+            response = requests.get('http://localhost:8080/status', timeout=0.5)
+            if response.status_code == 200:
+                self._cached_status = response.json()
+            else:
+                self._cached_status = None
+        except Exception as e:
+            self._cached_status = None
+    
     def init_game(self):
-        # Recreate players based on current prep settings
+        # Refresh client status before creating players
+        self._refresh_client_status()
+        
+        # Recreate players based on current prep settings and client players
         self.create_players()
         
         self.board = generate_maze()
@@ -371,10 +456,10 @@ class Game:
             
             clear_safe_zone(self.board, player.start_grid_x, player.start_grid_y, offsets)
             player.reset()
-            # Apply initial gameplay params
-            player.bomb_capacity = max(1, int(self.prep_initial_bomb_capacity))
-            player.fire_power = max(1, int(self.prep_initial_fire_power))
-            player.speed = max(50, int(self.prep_player_speed))
+            # Apply initial gameplay params (use defaults)
+            player.bomb_capacity = 1
+            player.fire_power = 1
+            player.speed = PLAYER_SPEED
         self.game_start_time = get_ticks() + 2000  # Add a 2-second freeze time
         
         # Reset crushing walls state
@@ -497,9 +582,13 @@ class Game:
         alive_players = [p for p in self.players if p.alive]
         
         # Check if conditions are met to activate crushing walls
+        # Use default values for crushing walls
+        crushing_delay = 60  # 60 seconds delay
+        crushing_min_destroyable = 20  # Minimum destroyable cells
+        
         if len(alive_players) == 2 and \
-           (self.current_time - self.game_start_time) >= self.prep_crushing_delay * 1000 and \
-           self.count_destroyable_cells() < self.prep_crushing_min_destroyable:
+           (self.current_time - self.game_start_time) >= crushing_delay * 1000 and \
+           self.count_destroyable_cells() < crushing_min_destroyable:
             
             if not self.crushing_walls_active:
                 # Initialize crushing walls
@@ -645,10 +734,16 @@ class Game:
                 self.explosions.remove(explosion)
                     
     def place_quad_damage_powerup(self):        
-        if (get_ticks() - self.game_start_time) >= self.prep_qd_delay*1000:
+        # Use parameters from bm_params
+        from bm_params import QUAD_DAMAGE_DELAY, QUAD_DAMAGE_PROBABILITY
+        
+        # Check if enough time has passed since game start
+        if (get_ticks() - self.game_start_time) >= QUAD_DAMAGE_DELAY * 1000:
+            # Only place if no quad damage powerup already exists
             if not any(pu.type == "quad_damage" for pu in self.powerups):
+                # Find empty cells
                 empty_cells = [(x, y) for y in range(GRID_HEIGHT) for x in range(GRID_WIDTH) if self.board[y][x] == EMPTY]
-                if empty_cells and random.random() < self.prep_qd_probability:
+                if empty_cells and random.random() < QUAD_DAMAGE_PROBABILITY:
                     x, y = random.choice(empty_cells)
                     self.powerups.append(PowerUp(x, y, "quad_damage"))
                                 
@@ -668,208 +763,151 @@ class Game:
         self.frontend = frontend
         self.screen = frontend.screen
     
-    def handle_prep_enter_key(self):
-        """Handle ENTER key presses in the game prep screen"""
-        if self.prep_editing_control:
-            # Cancel control editing
-            self.prep_editing_control = None
-            return
-        
-        if self.prep_editing_name:
-            # Save custom name
-            if self.prep_custom_name.strip():
-                player_idx = self.prep_cursor_row - 1
-                self.prep_player_names[player_idx] = self.prep_custom_name.strip()
-                self.create_players()
-            self.prep_editing_name = False
-            self.prep_custom_name = ""
-            return
-        
-        # Handle "Start Game" option
-        if self.prep_section == 'game' and self.prep_game_cursor == 9:  # "Start Game" is the 10th item (index 9)
-            self.prep_screen_completed = True
-            self.init_game()
-            self.game_state = "get_ready"
-            return
-        
-        # Toggle editing mode
-        if self.prep_section == 'players':
-            if self.prep_cursor_row == 0:
-                # Number of players - toggle editing
-                self.prep_editing_mode = not self.prep_editing_mode
-            elif 1 <= self.prep_cursor_row <= self.prep_num_players:
-                # Player row
-                if self.prep_cursor_col == 0:  # Name
-                    self.prep_editing_name = True
-                    player_idx = self.prep_cursor_row - 1
-                    self.prep_custom_name = self.prep_player_names[player_idx]
-                elif self.prep_cursor_col == 1:  # Color
-                    self.prep_editing_mode = not self.prep_editing_mode
-                elif self.prep_cursor_col == 2:  # Controls
-                    self.prep_editing_control = 'up'
-        else:
-            # Game settings section
-            if self.prep_game_cursor < 9:  # Not "Start Game"
-                self.prep_editing_mode = not self.prep_editing_mode
-    
     def handle_prep_key_event(self, event):
-        """Handle key events for game prep screen navigation"""
-        # Handle text input for custom names
-        if self.prep_editing_name:
-            if event.key == Keys.BACKSPACE:
-                self.prep_custom_name = self.prep_custom_name[:-1]
-            elif event.key == Keys.ESCAPE:
-                # Cancel name editing
-                self.prep_editing_name = False
-                self.prep_custom_name = ""
-            elif event.unicode and event.unicode.isprintable() and len(self.prep_custom_name) < 12:
-                self.prep_custom_name += event.unicode
-            return
-        
-        if self.prep_editing_control:
-            # We're editing a control key
-            if event.key != Keys.ESCAPE:  # Don't allow ESC as a control key
-                player_idx = self.prep_cursor_row - 1
-                controls = self.prep_controls[player_idx % len(self.prep_controls)]
-                controls[self.prep_editing_control] = event.key
-                
-                # Move to next control or finish
-                control_order = ['up', 'down', 'left', 'right', 'bomb']
-                current_idx = control_order.index(self.prep_editing_control)
-                if current_idx < len(control_order) - 1:
-                    self.prep_editing_control = control_order[current_idx + 1]
-                else:
-                    self.prep_editing_control = None
-                    self.create_players()
-            else:
-                # ESC cancels control editing
-                self.prep_editing_control = None
-            return
-        
-        # Switch section
+        """Handle key events for game lobby navigation"""
+        # Switch between sections
         if event.key == Keys.TAB:
-            self.prep_section = 'game' if self.prep_section == 'players' else 'players'
+            self.prep_section = 'start_game' if self.prep_section == 'local_players' else 'local_players'
+            self.prep_cursor_row = 0
+            self.prep_cursor_col = 0
+            self.prep_editing_name = False
             return
-
-        if self.prep_section == 'players':
-            if event.key == Keys.UP:
-                if not self.prep_editing_mode:
-                    if self.prep_cursor_row > 0:
-                        self.prep_cursor_row -= 1
-                        if self.prep_cursor_row == 0:
-                            self.prep_cursor_col = 0
-            elif event.key == Keys.DOWN:
-                if not self.prep_editing_mode:
-                    if self.prep_cursor_row < self.prep_num_players:
-                        self.prep_cursor_row += 1
-            elif event.key == Keys.LEFT:
-                if self.prep_editing_mode:
-                    # Edit values
-                    if self.prep_cursor_row == 0:
-                        self.prep_num_players = max(2, self.prep_num_players - 1)
-                        self.create_players()
-                        if self.prep_cursor_row > self.prep_num_players:
-                            self.prep_cursor_row = self.prep_num_players
-                    elif 1 <= self.prep_cursor_row <= self.prep_num_players:
-                        player_idx = self.prep_cursor_row - 1
-                        if self.prep_cursor_col == 0:
-                            try:
-                                current_idx = player_names.index(self.prep_player_names[player_idx])
-                                new_idx = (current_idx - 1) % len(player_names)
-                                self.prep_player_names[player_idx] = player_names[new_idx]
-                                self.create_players()
-                            except ValueError:
-                                self.prep_player_names[player_idx] = player_names[-1]
-                                self.create_players()
-                        elif self.prep_cursor_col == 1:
-                            current_color = self.prep_player_colors[player_idx]
-                            self.prep_player_colors[player_idx] = (current_color - 1) % len(colors)
-                            self.create_players()
-                else:
-                    # Navigate columns
-                    if 1 <= self.prep_cursor_row <= self.prep_num_players and self.prep_cursor_col > 0:
-                        self.prep_cursor_col -= 1
-            elif event.key == Keys.RIGHT:
-                if self.prep_editing_mode:
-                    # Edit values
-                    if self.prep_cursor_row == 0:
-                        self.prep_num_players = min(6, self.prep_num_players + 1)
-                        self.create_players()
-                    elif 1 <= self.prep_cursor_row <= self.prep_num_players:
-                        player_idx = self.prep_cursor_row - 1
-                        if self.prep_cursor_col == 0:
-                            try:
-                                current_idx = player_names.index(self.prep_player_names[player_idx])
-                                new_idx = (current_idx + 1) % len(player_names)
-                                self.prep_player_names[player_idx] = player_names[new_idx]
-                                self.create_players()
-                            except ValueError:
-                                self.prep_player_names[player_idx] = player_names[0]
-                                self.create_players()
-                        elif self.prep_cursor_col == 1:
-                            current_color = self.prep_player_colors[player_idx]
-                            self.prep_player_colors[player_idx] = (current_color + 1) % len(colors)
-                            self.create_players()
-                else:
-                    # Navigate columns
-                    if 1 <= self.prep_cursor_row <= self.prep_num_players and self.prep_cursor_col < 2:
-                        self.prep_cursor_col += 1
-
-        else:
-            # Game settings navigation
-            settings = [
-                ('prep_initial_bomb_capacity', 1, 10, 1),
-                ('prep_initial_fire_power', 1, 10, 1),
-                ('prep_player_speed', 100, 600, 10),
-                ('prep_qd_probability', 0.0, 0.02, 0.0005),
-                ('prep_qd_delay', 0, 600, 5),
-                ('prep_crushing_delay', 0, 600, 5),
-                ('prep_crushing_min_destroyable', 0, 200, 1),
-                ('prep_trophy_threshold', 1, 10, 1),
-            ]
-
-            if event.key == Keys.UP:
-                if not self.prep_editing_mode:
-                    if self.prep_game_cursor > 0:
-                        self.prep_game_cursor -= 1
-            elif event.key == Keys.DOWN:
-                if not self.prep_editing_mode:
-                    # Allow navigation to "Start Game" (index 9)
-                    if self.prep_game_cursor < 9:
-                        self.prep_game_cursor += 1
-            elif event.key in (Keys.LEFT, Keys.RIGHT):
-                if self.prep_editing_mode and self.prep_game_cursor < len(settings):
-                    attr, mn, mx, step = settings[self.prep_game_cursor]
-                    val = getattr(self, attr)
-                    if isinstance(val, float):
-                        delta = step if event.key == Keys.RIGHT else -step
-                        val = max(mn, min(mx, float(val) + delta))
-                        setattr(self, attr, round(val, 4))
-                    else:
-                        delta = step if event.key == Keys.RIGHT else -step
-                        val = max(mn, min(mx, int(val) + delta))
-                        setattr(self, attr, val)
         
+        # Vertical navigation between sections
+        if event.key == Keys.UP:
+            if self.prep_section == 'start_game':
+                self.prep_section = 'local_players'
+                self.prep_cursor_row = self.prep_num_players  # Go to last player
+            elif self.prep_section == 'local_players':
+                # Navigate within player list (row 0 = player count buttons, row 1+ = players)
+                if self.prep_cursor_row > 0:
+                    self.prep_cursor_row -= 1
+            return
+        
+        if event.key == Keys.DOWN:
+            if self.prep_section == 'local_players':
+                # Navigate within player list (row 0 = player count buttons, row 1+ = players)
+                if self.prep_cursor_row < self.prep_num_players:  # Can go up to last player
+                    self.prep_cursor_row += 1
+                else:
+                    # Move to start game section
+                    self.prep_section = 'start_game'
+                    self.prep_cursor_row = 0
+                    self.prep_cursor_col = 0
+            return
+        
+        if self.prep_section == 'local_players':
+            # Handle player count buttons (when cursor_row is 0)
+            if self.prep_cursor_row == 0:
+                if event.key == Keys.LEFT:
+                    if self.prep_cursor_col > 0:
+                        self.prep_cursor_col -= 1
+                elif event.key == Keys.RIGHT:
+                    if self.prep_cursor_col < 5:  # 6 buttons (0-5)
+                        self.prep_cursor_col += 1
+                elif event.key == Keys.ENTER:
+                    # Select player count
+                    self.prep_num_players = self.prep_cursor_col + 1
+                    self.create_players()
+                    # Ensure cursor stays within bounds
+                    if self.prep_cursor_col >= self.prep_num_players:
+                        self.prep_cursor_col = self.prep_num_players - 1
+            
+            # Handle player editing (when cursor_row > 0)
+            elif self.prep_cursor_row > 0:
+                player_index = self.prep_cursor_row - 1  # Adjust for player count buttons (row 0)
+                if event.key == Keys.ENTER:
+                    # Start editing name
+                    self.prep_editing_name = True
+                    self.prep_name_edit_index = player_index
+                elif event.key == Keys.LEFT:
+                    # Change color (cycle through colors)
+                    all_players_info = self.get_all_players_info()
+                    if player_index < len(all_players_info):
+                        player_info = all_players_info[player_index]
+                        if player_info['type'] == 'local':
+                            # Change local player color
+                            self.prep_player_colors[player_info['source']] = (self.prep_player_colors[player_info['source']] + 1) % len(colors)
+                        else:
+                            # Change web player color
+                            current_color = self.prep_web_player_colors.get(player_info['id'], player_info['color'])
+                            self.prep_web_player_colors[player_info['id']] = (current_color + 1) % len(colors)
+                elif event.key == Keys.RIGHT:
+                    # Change color (cycle backwards)
+                    all_players_info = self.get_all_players_info()
+                    if player_index < len(all_players_info):
+                        player_info = all_players_info[player_index]
+                        if player_info['type'] == 'local':
+                            # Change local player color
+                            self.prep_player_colors[player_info['source']] = (self.prep_player_colors[player_info['source']] - 1) % len(colors)
+                        else:
+                            # Change web player color
+                            current_color = self.prep_web_player_colors.get(player_info['id'], player_info['color'])
+                            self.prep_web_player_colors[player_info['id']] = (current_color - 1) % len(colors)
+        
+        elif self.prep_section == 'start_game':
+            # Start game
+            if event.key == Keys.ENTER:
+                self.prep_screen_completed = True
+                self.init_game()
+                self.game_state = "get_ready"
+        
+        # Handle text input when editing names
+        if self.prep_editing_name and hasattr(event, 'unicode') and event.unicode:
+            # Get all players to find the one being edited
+            all_players_info = self.get_all_players_info()
+            if self.prep_name_edit_index < len(all_players_info):
+                player_info = all_players_info[self.prep_name_edit_index]
+                if player_info['type'] == 'local':
+                    # Edit local player name
+                    if len(self.prep_player_names[player_info['source']]) < 15:
+                        self.prep_player_names[player_info['source']] += event.unicode
+                else:
+                    # Edit web player name
+                    current_name = self.prep_web_player_names.get(player_info['id'], player_info['name'])
+                    if len(current_name) < 15:
+                        self.prep_web_player_names[player_info['id']] = current_name + event.unicode
+        
+        # Handle BACKSPACE when editing names
+        if self.prep_editing_name and event.key == Keys.BACKSPACE:
+            # Get all players to find the one being edited
+            all_players_info = self.get_all_players_info()
+            if self.prep_name_edit_index < len(all_players_info):
+                player_info = all_players_info[self.prep_name_edit_index]
+                if player_info['type'] == 'local':
+                    # Delete character from local player name
+                    if len(self.prep_player_names[player_info['source']]) > 0:
+                        self.prep_player_names[player_info['source']] = self.prep_player_names[player_info['source']][:-1]
+                else:
+                    # Delete character from web player name
+                    current_name = self.prep_web_player_names.get(player_info['id'], player_info['name'])
+                    if len(current_name) > 0:
+                        self.prep_web_player_names[player_info['id']] = current_name[:-1]
+        
+        # ESC goes back to main menu
         if event.key == Keys.ESCAPE:
-            # Go back to startup
-            self.game_state = "startup"
-            self.startup_start_time = get_ticks()
+            if self.prep_editing_name:
+                self.prep_editing_name = False
+            else:
+                self.game_state = "startup"
                 
     def handle_web_key_event(self, event):
-        # event: dict with 'type', 'key', 'code', 'ts', 'player_id'
+        # event: dict with 'type', 'key', 'code', 'ts', 'player_id', 'client_id'
         player_id = event.get('player_id', 0)
+        client_id = event.get('client_id', 0)
+        
         if not hasattr(self, 'web_keys_by_player'):
             self.web_keys_by_player = {}
-        if not hasattr(self, 'player_id_to_player'):
-            self.player_id_to_player = {}
-        # Assign player_id to next available Player if not already mapped
-        if player_id not in self.player_id_to_player:
-            assigned = set(self.player_id_to_player.values())
-            for player in self.players:
-                if player not in assigned:
-                    self.player_id_to_player[player_id] = player
-                    break
-        player_obj = self.player_id_to_player.get(player_id, None)
+        
+        # Find the corresponding player object
+        player_obj = None
+        for player in self.players:
+            if (not player.is_local and 
+                player.client_id == client_id and 
+                player.client_player_id == player_id):
+                player_obj = player
+                break
+        
         if player_obj is not None:
             if player_obj not in self.web_keys_by_player:
                 self.web_keys_by_player[player_obj] = set()
@@ -953,7 +991,9 @@ class Game:
         if len(alive_players) <= 1:
             if alive_players:
                 alive_players[0].trophies += 1
-                if alive_players[0].trophies >= self.prep_trophy_threshold:
+                # Use default trophy threshold
+                trophy_threshold = 3  # Need 3 wins to become champion
+                if alive_players[0].trophies >= trophy_threshold:
                     self.game_state = "champion"
                 else:
                     self.game_state = "win"

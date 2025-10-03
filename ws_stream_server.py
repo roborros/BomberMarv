@@ -45,8 +45,28 @@ CLIENT_HTML = "client.html"
 WS_SERVER_VERSION = "1.2.0"
 HTTP_SERVER_VERSION = "1.1.0"
 
-# Only call setup_logging at the top-level, not inside run_server_with_queue (to avoid double setup)
-setup_logging("ws_server.log")
+# Global game state tracking
+_current_game_state = "game_prep"  # Start in prep mode to allow immediate client registration
+_game_state_lock = threading.Lock()
+game_instance = None
+
+def update_game_state(new_state):
+    """Update the current game state (called from main game)"""
+    global _current_game_state
+    with _game_state_lock:
+        _current_game_state = new_state
+        #print(f"Game state changed to: {new_state}")
+
+def get_game_state():
+    """Get the current game state"""
+    global _current_game_state
+    with _game_state_lock:
+        return _current_game_state
+
+def set_game_instance(game):
+    """Set the game instance for input handling"""
+    global game_instance
+    game_instance = game
 
 def run_server_with_queue(input_queue, log_path=None):
     import asyncio
@@ -65,9 +85,9 @@ def run_server_with_queue(input_queue, log_path=None):
     client_id_counter = 0
     client_id_lock = threading.Lock()
     client_ids = set()
-    
+
     # Track clients and their players
-    clients = {}  # {client_id: {websocket, players: [player_ids], last_seen: timestamp, latency_samples: [latencies]}}
+    clients = {}  # {client_id: {websocket, players: [player_ids], last_seen: timestamp, latency_samples: [latencies], registered: bool}}
     players = {}  # {player_id: {client_id, keys: {up, down, left, right, bomb}}}
     tracking_lock = threading.Lock()
 
@@ -79,18 +99,19 @@ def run_server_with_queue(input_queue, log_path=None):
             client_id_counter += 1
             client_ids.add(client_id)
         
-        # Register client
+        # Create client entry but don't register yet
         with tracking_lock:
             clients[client_id] = {
                 'websocket': websocket,
                 'players': [],
                 'last_seen': time.time(),
-                'latency_samples': []
+                'latency_samples': [],
+                'registered': False
             }
         
         # Send client_id to client as a JSON message
         await websocket.send(json.dumps({"type": "client_id", "client_id": client_id}))
-        print(f"Client connected: {websocket.remote_address}, assigned client_id: {client_id}")
+        print(f"Client connected: {websocket.remote_address}, assigned client_id: {client_id} (not registered yet)")
         pressed_keys = set()
         try:
             while True:
@@ -101,7 +122,77 @@ def run_server_with_queue(input_queue, log_path=None):
                             data = json.loads(msg)
                             data['client_id'] = client_id  # Attach client_id to all events
                             
-                            if data.get('type') == 'game_input':
+                            if data.get('type') == 'register_client':
+                                # Handle explicit client registration
+                                current_state = get_game_state()
+                                if current_state == "game_prep":
+                                    with tracking_lock:
+                                        if client_id in clients:
+                                            clients[client_id]['registered'] = True
+                                            clients[client_id]['last_seen'] = time.time()
+                                            
+                                            # Assign player IDs based on requested number of players
+                                            requested_players = data.get('num_players', 1)
+                                            current_player_count = len(clients[client_id]['players'])
+                                            
+                                            # Only assign new players if we need more
+                                            if current_player_count < requested_players:
+                                                for i in range(current_player_count, requested_players):
+                                                    player_id = len(players) + 1
+                                                    players[player_id] = {
+                                                        'client_id': client_id,
+                                                        'keys': {'up': 0, 'down': 0, 'left': 0, 'right': 0, 'bomb': 0}
+                                                    }
+                                                    clients[client_id]['players'].append(player_id)
+                                                    print(f"Assigned player ID {player_id} to client {client_id}")
+                                            
+                                            # Remove excess players if fewer requested
+                                            elif current_player_count > requested_players:
+                                                excess_players = clients[client_id]['players'][requested_players:]
+                                                for player_id in excess_players:
+                                                    if player_id in players:
+                                                        del players[player_id]
+                                                        print(f"Removed player ID {player_id} from client {client_id}")
+                                                clients[client_id]['players'] = clients[client_id]['players'][:requested_players]
+                                            
+                                            # Send assigned player IDs back to client
+                                            assigned_player_ids = clients[client_id]['players']
+                                            await websocket.send(json.dumps({
+                                                "type": "player_ids_assigned",
+                                                "client_id": client_id,
+                                                "player_ids": assigned_player_ids
+                                            }))
+                                    
+                                    # Send registration confirmation
+                                    await websocket.send(json.dumps({
+                                        "type": "registration_confirmed",
+                                        "client_id": client_id,
+                                        "game_state": current_state,
+                                        "message": "Successfully registered for game"
+                                    }))
+                                    print(f"Client {client_id} registered successfully")
+                                else:
+                                    # Send registration rejection
+                                    await websocket.send(json.dumps({
+                                        "type": "registration_rejected",
+                                        "client_id": client_id,
+                                        "game_state": current_state,
+                                        "message": f"Registration not allowed in {current_state} state. Only allowed during game preparation."
+                                    }))
+                                    print(f"Client {client_id} registration rejected - game state: {current_state}")
+                                continue
+                            
+                            elif data.get('type') == 'game_input':
+                                # Only process game input from registered clients
+                                with tracking_lock:
+                                    if client_id not in clients or not clients[client_id]['registered']:
+                                        await websocket.send(json.dumps({
+                                            "type": "input_rejected",
+                                            "client_id": client_id,
+                                            "message": "Client not registered. Please register first."
+                                        }))
+                                        continue
+                                
                                 # New format: compact game input [client_id, player_id, up, down, left, right, bomb, ...]
                                 game_input = data.get('input', [])
                                 print(f"Client {client_id} game input: {game_input}")
@@ -115,25 +206,61 @@ def run_server_with_queue(input_queue, log_path=None):
                                         i = 1  # Skip client_id at index 0
                                         while i < len(game_input):
                                             if i + 5 < len(game_input):  # Need at least 6 values: player_id, up, down, left, right, bomb
-                                                player_id = game_input[i]
+                                                requested_player_id = game_input[i]
                                                 up, down, left, right, bomb = game_input[i+1:i+6]
                                                 
-                                                # Register player if not exists
-                                                if player_id not in players:
+                                                # Assign server-side player ID if not exists
+                                                if requested_player_id not in players:
+                                                    # Check if this client already has a player with this ID
+                                                    if requested_player_id in clients[client_id]['players']:
+                                                        # Client already has this player ID, use it
+                                                        player_id = requested_player_id
+                                                    else:
+                                                        # Assign new server-side player ID
+                                                        player_id = len(players) + 1
+                                                        print(f"Assigned server player ID {player_id} to client {client_id} (requested {requested_player_id})")
+                                                    
                                                     players[player_id] = {
                                                         'client_id': client_id,
                                                         'keys': {'up': 0, 'down': 0, 'left': 0, 'right': 0, 'bomb': 0}
                                                     }
                                                     clients[client_id]['players'].append(player_id)
+                                                else:
+                                                    player_id = requested_player_id
                                                 
                                                 # Update player keys
                                                 players[player_id]['keys'] = {
                                                     'up': up, 'down': down, 'left': left, 'right': right, 'bomb': bomb
                                                 }
                                                 
+                                                # Send input to game if available
+                                                if game_instance:
+                                                    # Convert binary input to key events
+                                                    key_events = []
+                                                    if up: key_events.append({'type': 'keydown', 'key': 'up', 'client_id': client_id, 'player_id': requested_player_id})
+                                                    if down: key_events.append({'type': 'keydown', 'key': 'down', 'client_id': client_id, 'player_id': requested_player_id})
+                                                    if left: key_events.append({'type': 'keydown', 'key': 'left', 'client_id': client_id, 'player_id': requested_player_id})
+                                                    if right: key_events.append({'type': 'keydown', 'key': 'right', 'client_id': client_id, 'player_id': requested_player_id})
+                                                    if bomb: key_events.append({'type': 'keydown', 'key': 'bomb', 'client_id': client_id, 'player_id': requested_player_id})
+                                                    
+                                                    # Send key events to game
+                                                    for key_event in key_events:
+                                                        try:
+                                                            game_instance.handle_web_key_event(key_event)
+                                                        except Exception as e:
+                                                            print(f"Error sending input to game: {e}")
+                                                
                                                 i += 6  # Move to next player
                                             else:
                                                 break
+                                        
+                                        # Send assigned player IDs back to client
+                                        assigned_player_ids = clients[client_id]['players']
+                                        await websocket.send(json.dumps({
+                                            "type": "player_ids_assigned",
+                                            "client_id": client_id,
+                                            "player_ids": assigned_player_ids
+                                        }))
                                 
                                 input_queue.put(data)
                             elif data.get('type') == 'keys_update':
@@ -151,7 +278,7 @@ def run_server_with_queue(input_queue, log_path=None):
                                 # Legacy format: individual key events
                                 pressed_keys.discard(data.get('key'))
                                 print(f"Client {client_id} pressed keys: {sorted(pressed_keys)}")
-                                input_queue.put(data)
+                            input_queue.put(data)
                             
                             # Send acknowledgment back to client for latency measurement
                             server_timestamp = time.time() * 1000  # Convert to milliseconds
@@ -237,7 +364,8 @@ def run_server_with_queue(input_queue, log_path=None):
                     'players': client_data['players'],
                     'last_seen': client_data['last_seen'],
                     'avg_latency': round(avg_latency, 2),
-                    'latency_samples': len(latency_samples)
+                    'latency_samples': len(latency_samples),
+                    'registered': client_data.get('registered', False)
                 }
             
             for player_id, player_data in players.items():
@@ -249,23 +377,32 @@ def run_server_with_queue(input_queue, log_path=None):
         return web.json_response(status)
 
     def start_http_server():
-        app = web.Application()
-        app.router.add_get('/', handle_root)
-        app.router.add_get('/{filename}', handle_static)
-        app.router.add_get('/versions', handle_versions)
-        app.router.add_get('/config', handle_config)
-        app.router.add_get('/status', handle_status)
-        runner = web.AppRunner(app)
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        async def run():
-            await runner.setup()
-            site = web.TCPSite(runner, '0.0.0.0', HTTP_PORT)
-            await site.start()
-            print(f"HTTP server started on port {HTTP_PORT}")
-            while True:
-                await asyncio.sleep(3600)
-        loop.run_until_complete(run())
+        try:
+            app = web.Application()
+            app.router.add_get('/', handle_root)
+            app.router.add_get('/{filename}', handle_static)
+            app.router.add_get('/versions', handle_versions)
+            app.router.add_get('/config', handle_config)
+            app.router.add_get('/status', handle_status)
+            runner = web.AppRunner(app)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            async def run():
+                try:
+                    await runner.setup()
+                    site = web.TCPSite(runner, '0.0.0.0', HTTP_PORT)
+                    await site.start()
+                    print(f"HTTP server started on port {HTTP_PORT}")
+                    while True:
+                        await asyncio.sleep(3600)
+                except Exception as e:
+                    print(f"HTTP server failed to start: {e}")
+                    raise
+            loop.run_until_complete(run())
+        except Exception as e:
+            print(f"HTTP server startup failed: {e}")
+            import traceback
+            traceback.print_exc()
 
     async def main():
         print(f"Starting WebSocket server on port {PORT}")

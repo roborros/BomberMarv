@@ -553,6 +553,7 @@
         const maxLatencyEl = document.getElementById('max-latency');
         const inputCountEl = document.getElementById('input-count');
         const clientIdEl = document.getElementById('client-id');
+        const clientIdDisplayEl = document.getElementById('client-id-display');
         const pressedKeysEl = document.getElementById('pressed-keys');
         const wsStatusEl = document.getElementById('ws-status');
         const serverInfoEl = document.getElementById('server-info');
@@ -612,6 +613,13 @@
             updateConnectionStatus(true);
             wsStatusEl.textContent = 'Connected';
             connectionFooterEl.className = 'connection-status status-connected';
+            
+            // Automatically try to register when connected
+            setTimeout(() => {
+                if (clientId !== null) {
+                    registerForGame();
+                }
+            }, 100);
         };
         
         ws.onerror = function(e) {
@@ -626,11 +634,41 @@
             if (typeof event.data === 'string') {
                 try {
                     const msg = JSON.parse(event.data);
-                    if (msg.type === 'client_id') {
-                        clientId = msg.client_id;
-                        clientIdEl.textContent = clientId;
-                        console.log('Assigned clientId:', clientId);
+                        if (msg.type === 'client_id') {
+                            clientId = msg.client_id;
+                            clientIdEl.textContent = clientId;
+                            clientIdDisplayEl.textContent = clientId;
+                            console.log('Assigned clientId:', clientId);
+                            // Try to register immediately after getting client ID
+                            setTimeout(() => registerForGame(), 50);
+                            return;
+                    } else if (msg.type === 'registration_confirmed') {
+                        console.log('Registration confirmed:', msg.message);
+                        document.getElementById('game-status-display').textContent = 'Registered';
+                        document.getElementById('game-status-display').style.color = '#4CAF50';
                         return;
+                    } else if (msg.type === 'registration_rejected') {
+                        console.log('Registration rejected:', msg.message);
+                        document.getElementById('game-status-display').textContent = `Rejected: ${msg.game_state}`;
+                        document.getElementById('game-status-display').style.color = '#f44336';
+                        // Retry registration after 2 seconds
+                        setTimeout(() => registerForGame(), 2000);
+                        return;
+                        } else if (msg.type === 'input_rejected') {
+                            console.log('Input rejected:', msg.message);
+                            // Try to re-register
+                            setTimeout(() => registerForGame(), 1000);
+                            return;
+                        } else if (msg.type === 'player_ids_assigned') {
+                            console.log('Player IDs assigned:', msg.player_ids);
+                            // Clear existing player IDs and update with server-assigned IDs
+                            playerIds = {};
+                            msg.player_ids.forEach((serverPlayerId, index) => {
+                                const localPlayerId = index + 1; // Local player IDs start from 1
+                                playerIds[localPlayerId] = serverPlayerId;
+                            });
+                            updatePlayerIdsDisplay();
+                            return;
                     } else if (msg.type === 'input_ack') {
                         // Handle server acknowledgment for latency measurement
                         const originalTimestamp = msg.original_timestamp;
@@ -752,6 +790,25 @@
         
         // Player registration
         let playerIds = {}; // {playerId: assignedId}
+        
+        function registerForGame() {
+            if (clientId === null) {
+                console.log('Cannot register: no client ID yet');
+                return;
+            }
+            
+            console.log('Attempting to register for game...');
+            const msg = {
+                type: 'register_client',
+                client_id: clientId,
+                num_players: numPlayers,
+                timestamp: Date.now()
+            };
+            
+            ws.send(JSON.stringify(msg));
+            document.getElementById('game-status-display').textContent = 'Registering...';
+            document.getElementById('game-status-display').style.color = '#ff9800';
+        }
         
         function registerPlayers() {
             // Assign unique player IDs for this client
@@ -1065,6 +1122,9 @@
                 e.target.classList.add('active');
                 numPlayers = parseInt(e.target.dataset.count);
                 initializePlayerControls();
+                // Re-register with new player count
+                registerPlayers();
+                registerForGame();
             } else if (e.target.classList.contains('control-key')) {
                 // Start key mapping
                 const playerId = parseInt(e.target.dataset.player);

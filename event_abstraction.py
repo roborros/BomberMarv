@@ -213,16 +213,14 @@ class GameCommandHandler:
     
     def _handle_toggle_fullscreen(self):
         """Handle fullscreen toggle"""
-        self.game.is_fullscreen = not self.game.is_fullscreen
-        if self.game.is_fullscreen:
-            window = pygame.display.set_mode((0,0), pygame.FULLSCREEN)
+        if hasattr(self.game, 'frontend') and self.game.frontend:
+            # Use the frontend window's toggle_fullscreen method
+            new_size = self.game.frontend.window.toggle_fullscreen()
+            self.game.is_fullscreen = self.game.frontend.window.is_fullscreen
+            
+            # Update the screen size
             if self.game.screen:
-                self.game.screen.update_window_size(window.get_size())
-        else:
-            from bm_params import INITIAL_WINDOW_SIZE
-            window = pygame.display.set_mode(INITIAL_WINDOW_SIZE, pygame.RESIZABLE)
-            if self.game.screen:
-                self.game.screen.update_window_size(INITIAL_WINDOW_SIZE)
+                self.game.screen.update_window_size(new_size)
     
     def _handle_resize_window(self, size):
         """Handle window resize"""
@@ -248,7 +246,14 @@ class GameCommandHandler:
             return True
         
         elif self.game.game_state == "game_prep":
-            return self.game.handle_prep_enter_key()
+            # Create a mock key event for ENTER
+            from input_abstraction import Keys
+            class MockEvent:
+                def __init__(self, key):
+                    self.key = key
+            mock_event = MockEvent(Keys.ENTER)
+            self.game.handle_prep_key_event(mock_event)
+            return True
         
         elif self.game.game_state in ["win", "champion"]:
             self.game.init_game()

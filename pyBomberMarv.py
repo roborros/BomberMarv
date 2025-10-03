@@ -72,9 +72,17 @@ if __name__ == "__main__":
     # Start the input server with a multiprocessing queue for input only
     input_queue = multiprocessing.Queue()
     ws_process = start_ws_server_with_queue(input_queue)
+    
+    # Get reference to server functions for game state updates
+    import ws_stream_server
+    update_game_state = ws_stream_server.update_game_state
 
     theGame = Game()
-    theGame.init_game()
+    # Don't call init_game() here - we want to start in prep mode
+    # theGame.init_game()
+
+    # Set game instance in WebSocket server for input handling
+    ws_stream_server.set_game_instance(theGame)
 
     # Create frontend and initialize
     frontend = FrontendManager(theGame)
@@ -98,6 +106,9 @@ if __name__ == "__main__":
         # Get the game surface from frontend
         game_surface = frontend.screen.get_surface()
         
+        # Update server with current game state (only when it changes)
+        update_game_state(theGame.game_state)
+
         if theGame.game_state == "startup":
             # Draw startup screen
             from bm_drawing import draw_title_page, draw_controls

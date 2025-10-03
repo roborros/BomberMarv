@@ -9,7 +9,7 @@ import math
 VERSION = "v1.2.0"
 
 # --- Configurable Constants ---
-NUM_PLAYERS = 4  # Default players (min 2, max 6)
+NUM_PLAYERS = 1  # Default players (min 1, max 6)
 #NUM_PLAYERS = max(2, min(NUM_PLAYERS, 6))
 
 CELL_SIZE = 100  # Cell size (overall resolution)
@@ -36,17 +36,23 @@ QUAD_DAMAGE_DELAY = 40  # Delay before Quad Damage powerup spawns (s)
 QUAD_DAMAGE_SPEEDUP = 1.5  # Speedup
 
 # Crushing walls feature
-CRUSHING_WALLS_DELAY = 5  # Delay before crushing walls activate (seconds)
-CRUSHING_WALLS_MIN_DESTROYABLE = 500  # Minimum destroyable cells before activation
+CRUSHING_WALLS_DELAY = 20  # Delay before crushing walls activate (seconds)
+CRUSHING_WALLS_MIN_DESTROYABLE = 5  # Minimum destroyable cells before activation
 
 GRID_SIZE = 15
 
 BOMB_TIMER = 3000
 EXPLOSION_DURATION = 400
 
+DEGUG = True
 
-SHOW_PLAYER_DIRECTIONS = False  # Set to False to disable direction arrows
-SHOW_EXPLOSION_COLLISION_DEBUG = False  # Set to False to disable red collision boxes
+if DEGUG:
+    SHOW_PLAYER_DIRECTIONS = True  # Set to False to disable direction arrows
+    SHOW_EXPLOSION_COLLISION_DEBUG = True  # Set to False to disable red collision boxes
+    EXPLOSION_DURATION = 4000
+else:
+    SHOW_PLAYER_DIRECTIONS = False  # Set to False to disable direction arrows
+    SHOW_EXPLOSION_COLLISION_DEBUG = False  # Set to False to disable red collision boxes
 
 # Web client input throttling
 KEY_SEND_FREQUENCY_LIMIT = 20  # Minimum milliseconds between key events (20ms = 50Hz max)
@@ -135,4 +141,8 @@ SEND_ON_CHANGE = True  # Send input immediately when it changes
 PERIODIC_SENDING = True  # Send input periodically even without changes
 MIN_SEND_FREQUENCY = 1  # Minimum allowed frequency (ms)
 MAX_SEND_FREQUENCY = 1000  # Maximum allowed frequency (ms)
+
+# Quad Damage Powerup Settings
+QUAD_DAMAGE_DELAY = 30  # Seconds before quad damage can start appearing
+QUAD_DAMAGE_PROBABILITY = 0.001  # Probability per game tick (0.1% chance per tick at 60 FPS = ~6% per second)
 

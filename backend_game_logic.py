@@ -71,21 +71,38 @@ class BackendGameLogic:
         if data and data.get('command') == GameCommand.QUICK_START_GAME:
             return self._quick_start_game()
         else:
-            # This will be handled by the existing prep enter key logic
-            return self.game.handle_prep_enter_key()
+            # Create a mock key event for ENTER
+            from input_abstraction import Keys
+            class MockEvent:
+                def __init__(self, key):
+                    self.key = key
+            mock_event = MockEvent(Keys.ENTER)
+            self.game.handle_prep_key_event(mock_event)
+            return True
     
     def _quick_start_game(self) -> bool:
         """Quick start game with default settings"""
-        # Set default values for quick start
-        self.game.prep_num_players = 4
-        self.game.prep_player_names = ["Player 1", "Player 2", "Player 3", "Player 4"]
-        self.game.prep_player_colors = [0, 1, 2, 3]  # Default colors
-        self.game.prep_controls = [
+        # Use current player count but ensure we have at least 1 player
+        if self.game.prep_num_players < 1:
+            self.game.prep_num_players = 1
+        
+        # Ensure we have enough names and colors
+        while len(self.game.prep_player_names) < self.game.prep_num_players:
+            self.game.prep_player_names.append(f"Player {len(self.game.prep_player_names) + 1}")
+        
+        while len(self.game.prep_player_colors) < self.game.prep_num_players:
+            self.game.prep_player_colors.append(len(self.game.prep_player_colors))
+        
+        # Ensure we have enough controls
+        default_controls = [
             {'up': Keys.W, 'down': Keys.S, 'left': Keys.A, 'right': Keys.D, 'bomb': Keys.SPACE},
             {'up': Keys.UP, 'down': Keys.DOWN, 'left': Keys.LEFT, 'right': Keys.RIGHT, 'bomb': Keys.RETURN},
             {'up': Keys.I, 'down': Keys.K, 'left': Keys.J, 'right': Keys.L, 'bomb': Keys.U},
             {'up': Keys.T, 'down': Keys.G, 'left': Keys.F, 'right': Keys.H, 'bomb': Keys.R}
         ]
+        
+        while len(self.game.prep_controls) < self.game.prep_num_players:
+            self.game.prep_controls.append(default_controls[len(self.game.prep_controls) % len(default_controls)])
         
         # Create players and start game
         self.game.create_players()
