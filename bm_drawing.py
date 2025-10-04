@@ -701,8 +701,27 @@ def draw_game_prep(surface, Game):
             status_color = (180, 180, 180)
         else:
             # Show real-time movement for client players
-            status_text = player['real_time_status']
-            status_color = (120, 255, 120) if player['real_time_status'] != '---' else (180, 180, 180)
+            # Get current key state from web_keys_by_player if available
+            current_keys = '---'
+            if hasattr(Game, 'web_keys_by_player'):
+                # Find the player object for this web player
+                for game_player in Game.players:
+                    if (not game_player.is_local and 
+                        game_player.client_id == player['source'][0] and 
+                        game_player.client_player_id == player['source'][1]):
+                        if game_player in Game.web_keys_by_player:
+                            pressed_keys = []
+                            web_keys = Game.web_keys_by_player[game_player]
+                            if 'up' in web_keys: pressed_keys.append('↑')
+                            if 'down' in web_keys: pressed_keys.append('↓')
+                            if 'left' in web_keys: pressed_keys.append('←')
+                            if 'right' in web_keys: pressed_keys.append('→')
+                            if 'bomb' in web_keys: pressed_keys.append('💣')
+                            current_keys = ''.join(pressed_keys) if pressed_keys else '---'
+                        break
+            
+            status_text = current_keys
+            status_color = (120, 255, 120) if current_keys != '---' else (180, 180, 180)
         
         surface.blit(font_small.render(status_text, True, status_color), (left_panel[0] + 240, y))
         

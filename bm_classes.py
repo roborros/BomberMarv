@@ -423,7 +423,16 @@ class Game:
         self._refresh_client_status()
         
         # Recreate players based on current prep settings and client players
+        # Preserve existing trophies by mapping old players to new by identity (local) or client ids
+        previous_players = {}
+        for p in getattr(self, 'players', []):
+            key = ('local', getattr(p, 'name', ''), getattr(p, 'color', None)) if getattr(p, 'is_local', False) else ('client', getattr(p, 'client_id', None), getattr(p, 'client_player_id', None))
+            previous_players[key] = p.trophies
         self.create_players()
+        for p in self.players:
+            key = ('local', getattr(p, 'name', ''), getattr(p, 'color', None)) if getattr(p, 'is_local', False) else ('client', getattr(p, 'client_id', None), getattr(p, 'client_player_id', None))
+            if key in previous_players:
+                p.trophies = previous_players[key]
         
         self.board = generate_maze()
         self.bombs = []
@@ -438,7 +447,7 @@ class Game:
             (GRID_WIDTH - 2, GRID_HEIGHT - 2): [(0,0), (-1,0), (0,-1)]
         }
         
-        #random.shuffle(self.players)
+        random.shuffle(self.players)
 
         for i, player in enumerate(self.players):
             if i < 4:
@@ -777,7 +786,9 @@ class Game:
         if event.key == Keys.UP:
             if self.prep_section == 'start_game':
                 self.prep_section = 'local_players'
-                self.prep_cursor_row = self.prep_num_players  # Go to last player
+                # Go to last player (local + web players)
+                all_players_info = self.get_all_players_info()
+                self.prep_cursor_row = len(all_players_info)  # Go to last player
             elif self.prep_section == 'local_players':
                 # Navigate within player list (row 0 = player count buttons, row 1+ = players)
                 if self.prep_cursor_row > 0:
@@ -787,7 +798,8 @@ class Game:
         if event.key == Keys.DOWN:
             if self.prep_section == 'local_players':
                 # Navigate within player list (row 0 = player count buttons, row 1+ = players)
-                if self.prep_cursor_row < self.prep_num_players:  # Can go up to last player
+                all_players_info = self.get_all_players_info()
+                if self.prep_cursor_row < len(all_players_info):  # Can go up to last player (local + web)
                     self.prep_cursor_row += 1
                 else:
                     # Move to start game section
@@ -893,8 +905,11 @@ class Game:
                 
     def handle_web_key_event(self, event):
         # event: dict with 'type', 'key', 'code', 'ts', 'player_id', 'client_id'
-        player_id = event.get('player_id', 0)
-        client_id = event.get('client_id', 0)
+        player_id = int(event.get('player_id', 0) or 0)
+        client_id = int(event.get('client_id', 0) or 0)
+        
+        print(f"DEBUG: handle_web_key_event called with event: {event}")
+        print(f"DEBUG: Looking for client_id={client_id}, player_id={player_id}")
         
         if not hasattr(self, 'web_keys_by_player'):
             self.web_keys_by_player = {}
@@ -902,26 +917,46 @@ class Game:
         # Find the corresponding player object
         player_obj = None
         for player in self.players:
+            print(f"DEBUG: Checking player: is_local={player.is_local}, client_id={getattr(player, 'client_id', None)}, client_player_id={getattr(player, 'client_player_id', None)}")
+            # Normalize stored ids to int for robust comparison
+            try:
+                stored_client = int(getattr(player, 'client_id', -1)) if getattr(player, 'client_id', None) is not None else -1
+            except Exception:
+                stored_client = -1
+            try:
+                stored_player = int(getattr(player, 'client_player_id', -1)) if getattr(player, 'client_player_id', None) is not None else -1
+            except Exception:
+                stored_player = -1
             if (not player.is_local and 
-                player.client_id == client_id and 
-                player.client_player_id == player_id):
+                stored_client == client_id and 
+                stored_player == player_id):
                 player_obj = player
+                print(f"DEBUG: Found matching player object!")
                 break
+        
+        if player_obj is None:
+            print(f"DEBUG: No matching player found for client_id={client_id}, player_id={player_id}")
+            print(f"DEBUG: Available players: {[(p.is_local, getattr(p, 'client_id', None), getattr(p, 'client_player_id', None)) for p in self.players]}")
         
         if player_obj is not None:
             if player_obj not in self.web_keys_by_player:
                 self.web_keys_by_player[player_obj] = set()
             if event['type'] == 'keydown':
-                self.web_keys_by_player[player_obj].add(event['key'])
+                # Normalize key to lowercase for consistent comparisons
+                keyname = str(event['key']).lower()
+                self.web_keys_by_player[player_obj].add(keyname)
+                print(f"DEBUG: Player {player_obj.client_id}:{player_obj.client_player_id} KEYS DOWN -> {sorted(list(self.web_keys_by_player[player_obj]))}")
                 # Allow Enter/Return to start the game from browser
-                if event['key'].lower() in ('enter', 'return'):
+                if keyname in ('enter', 'return'):
                     if self.game_state == "startup":
                         self.game_state = "game_prep"
                     if self.game_state in ["win", "champion", "game_prep"]:
                         self.init_game()
                         self.game_state = "get_ready"
             elif event['type'] == 'keyup':
-                self.web_keys_by_player[player_obj].discard(event['key'])
+                keyname = str(event['key']).lower()
+                self.web_keys_by_player[player_obj].discard(keyname)
+                print(f"DEBUG: Player {player_obj.client_id}:{player_obj.client_player_id} KEYS UP -> {sorted(list(self.web_keys_by_player[player_obj]))}")
 
     def update(self):
         # update players
@@ -992,7 +1027,7 @@ class Game:
             if alive_players:
                 alive_players[0].trophies += 1
                 # Use default trophy threshold
-                trophy_threshold = 3  # Need 3 wins to become champion
+                trophy_threshold = TROPHY_WIN_THRESHOLD  # Need N wins to become champion
                 if alive_players[0].trophies >= trophy_threshold:
                     self.game_state = "champion"
                 else:

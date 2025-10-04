@@ -537,7 +537,7 @@
         let playerControls = {};
         let keyMapping = {};
         let waitingForKey = null;
-        let gameStarted = false;
+        let gameStarted = true;
         
         // Mobile detection and touch controls
         let isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
@@ -742,7 +742,7 @@
         }
 
         function sendCurrentKeys() {
-            if (clientId === null || ws.readyState !== WebSocket.OPEN || !gameStarted) return;
+            if (clientId === null || ws.readyState !== WebSocket.OPEN) return;
             
             const currentTime = performance.now();
             const gameInput = generateGameInput();
@@ -767,7 +767,7 @@
             if (periodicSendInterval) return; // Already running
             
             periodicSendInterval = setInterval(() => {
-                if (clientId === null || ws.readyState !== WebSocket.OPEN || !gameStarted) {
+                if (clientId === null || ws.readyState !== WebSocket.OPEN) {
                     stopPeriodicSending();
                     return;
                 }
@@ -1047,7 +1047,6 @@
         }
         
         function generateGameInput() {
-            if (!gameStarted) return [];
             
             const input = [clientId];
             
@@ -1160,6 +1159,25 @@
             }
         });
         
+        // Send client-side key debug to server (for terminal visibility)
+        function sendClientKeyDebug(eventType, key) {
+            try {
+                const dbg = {
+                    type: 'client_key_debug',
+                    event: eventType,
+                    key: key,
+                    pressed_keys: Array.from(pressedKeys),
+                    client_id: clientId,
+                    client_timestamp: performance.now()
+                };
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify(dbg));
+                }
+            } catch (err) {
+                // no-op for debug
+            }
+        }
+
         // Handle key mapping
         window.addEventListener('keydown', function(e) {
             if (waitingForKey) {
@@ -1171,7 +1189,10 @@
             // Regular key handling for game input
             e.preventDefault(); // Prevent default browser behavior
             pressedKeys.add(e.key);
+            sendClientKeyDebug('keydown', e.key);
             updatePressedKeysDisplay();
+            // Ensure immediate send on change
+            try { sendCurrentKeysImmediate(performance.now()); } catch (err) {}
             sendCurrentKeys();
             inputCount++;
             inputCountEl.textContent = inputCount;
@@ -1180,7 +1201,9 @@
         window.addEventListener('keyup', function(e) {
             e.preventDefault(); // Prevent default browser behavior
             pressedKeys.delete(e.key);
+            sendClientKeyDebug('keyup', e.key);
             updatePressedKeysDisplay();
+            try { sendCurrentKeysImmediate(performance.now()); } catch (err) {}
             sendCurrentKeys();
         });
         

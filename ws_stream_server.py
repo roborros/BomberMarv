@@ -17,10 +17,10 @@ def setup_logging(logfile):
             if message.strip():
                 logging.log(self.level, message.strip())
         def flush(self): pass
-    sys.stdout = StreamToLogger(logging.INFO)
-    sys.stderr = StreamToLogger(logging.ERROR)
-    import builtins
-    builtins.print = lambda *args, **kwargs: logging.info(' '.join(str(a) for a in args))
+    # sys.stdout = StreamToLogger(logging.INFO)
+    # sys.stderr = StreamToLogger(logging.ERROR)
+    # import builtins
+    # builtins.print = lambda *args, **kwargs: logging.info(' '.join(str(a) for a in args))
 # --- End Logging Setup ---
 
 import asyncio
@@ -78,6 +78,10 @@ def run_server_with_queue(input_queue, log_path=None):
     import profiler
     import uuid
 
+    # Make input_queue globally accessible
+    globals()['input_queue'] = input_queue
+    print(f"DEBUG: Input queue set up in WebSocket server: {input_queue}")
+
     PORT = 8765
     HTTP_PORT = 8080
     CLIENT_HTML = "client.html"
@@ -120,6 +124,7 @@ def run_server_with_queue(input_queue, log_path=None):
                     if msg:
                         try:
                             data = json.loads(msg)
+                            print(f"DEBUG: Received message from client {client_id}: {data}")
                             data['client_id'] = client_id  # Attach client_id to all events
                             
                             if data.get('type') == 'register_client':
@@ -183,6 +188,7 @@ def run_server_with_queue(input_queue, log_path=None):
                                 continue
                             
                             elif data.get('type') == 'game_input':
+                                print(f"DEBUG: Received game_input message from client {client_id}")
                                 # Only process game input from registered clients
                                 with tracking_lock:
                                     if client_id not in clients or not clients[client_id]['registered']:
@@ -195,7 +201,7 @@ def run_server_with_queue(input_queue, log_path=None):
                                 
                                 # New format: compact game input [client_id, player_id, up, down, left, right, bomb, ...]
                                 game_input = data.get('input', [])
-                                print(f"Client {client_id} game input: {game_input}")
+                                print(f"DEBUG: Client {client_id} game input: {game_input}")
                                 
                                 # Update player tracking
                                 with tracking_lock:
@@ -203,11 +209,13 @@ def run_server_with_queue(input_queue, log_path=None):
                                     
                                     # Process each player's input
                                     if len(game_input) > 1:
+                                        print(f"DEBUG: Processing {len(game_input)} input values")
                                         i = 1  # Skip client_id at index 0
                                         while i < len(game_input):
                                             if i + 5 < len(game_input):  # Need at least 6 values: player_id, up, down, left, right, bomb
-                                                requested_player_id = game_input[i]
+                                                requested_player_id = int(game_input[i])
                                                 up, down, left, right, bomb = game_input[i+1:i+6]
+                                                print(f"DEBUG: Player {requested_player_id} keys: up={up}, down={down}, left={left}, right={right}, bomb={bomb}")
                                                 
                                                 # Assign server-side player ID if not exists
                                                 if requested_player_id not in players:
@@ -226,29 +234,49 @@ def run_server_with_queue(input_queue, log_path=None):
                                                     }
                                                     clients[client_id]['players'].append(player_id)
                                                 else:
-                                                    player_id = requested_player_id
+                                                    player_id = int(requested_player_id)
+                                            
+                                                # Compute key deltas vs previous state and emit keydown/keyup with browser-style names
+                                                previous_keys = players[player_id]['keys'] if player_id in players and 'keys' in players[player_id] else {'up': 0, 'down': 0, 'left': 0, 'right': 0, 'bomb': 0}
+                                                new_keys = {'up': up, 'down': down, 'left': left, 'right': right, 'bomb': bomb}
                                                 
-                                                # Update player keys
-                                                players[player_id]['keys'] = {
-                                                    'up': up, 'down': down, 'left': left, 'right': right, 'bomb': bomb
+                                                # Update stored keys
+                                                players[player_id]['keys'] = dict(new_keys)
+                                                
+                                                # Map internal actions to browser key names expected by the game
+                                                action_to_browser_key = {
+                                                    'up': 'arrowup',
+                                                    'down': 'arrowdown',
+                                                    'left': 'arrowleft',
+                                                    'right': 'arrowright',
+                                                    'bomb': 'space'
                                                 }
                                                 
-                                                # Send input to game if available
-                                                if game_instance:
-                                                    # Convert binary input to key events
-                                                    key_events = []
-                                                    if up: key_events.append({'type': 'keydown', 'key': 'up', 'client_id': client_id, 'player_id': requested_player_id})
-                                                    if down: key_events.append({'type': 'keydown', 'key': 'down', 'client_id': client_id, 'player_id': requested_player_id})
-                                                    if left: key_events.append({'type': 'keydown', 'key': 'left', 'client_id': client_id, 'player_id': requested_player_id})
-                                                    if right: key_events.append({'type': 'keydown', 'key': 'right', 'client_id': client_id, 'player_id': requested_player_id})
-                                                    if bomb: key_events.append({'type': 'keydown', 'key': 'bomb', 'client_id': client_id, 'player_id': requested_player_id})
-                                                    
-                                                    # Send key events to game
-                                                    for key_event in key_events:
-                                                        try:
-                                                            game_instance.handle_web_key_event(key_event)
-                                                        except Exception as e:
-                                                            print(f"Error sending input to game: {e}")
+                                                # Send input to game via input queue
+                                                print(f"DEBUG: Checking input_queue availability...")
+                                                if 'input_queue' in globals() and input_queue:
+                                                    print(f"DEBUG: Input queue available, processing key deltas...")
+                                                    # Generate keydown/keyup events based on deltas
+                                                    for action, new_val in new_keys.items():
+                                                        prev_val = int(previous_keys.get(action, 0))
+                                                        if new_val and not prev_val:
+                                                            # Key pressed
+                                                            evt = {'type': 'keydown', 'key': action_to_browser_key[action], 'client_id': client_id, 'player_id': requested_player_id}
+                                                            try:
+                                                                input_queue.put(evt)
+                                                                print(f"DEBUG: Client {client_id} Player {requested_player_id}: keydown {evt['key']} -> queue")
+                                                            except Exception as e:
+                                                                print(f"DEBUG: Error sending keydown to queue: {e}")
+                                                        elif (not new_val) and prev_val:
+                                                            # Key released
+                                                            evt = {'type': 'keyup', 'key': action_to_browser_key[action], 'client_id': client_id, 'player_id': requested_player_id}
+                                                            try:
+                                                                input_queue.put(evt)
+                                                                print(f"DEBUG: Client {client_id} Player {requested_player_id}: keyup {evt['key']} -> queue")
+                                                            except Exception as e:
+                                                                print(f"DEBUG: Error sending keyup to queue: {e}")
+                                                else:
+                                                    print(f"DEBUG: Input queue not available! globals: {'input_queue' in globals()}, queue: {input_queue}")
                                                 
                                                 i += 6  # Move to next player
                                             else:
@@ -278,7 +306,15 @@ def run_server_with_queue(input_queue, log_path=None):
                                 # Legacy format: individual key events
                                 pressed_keys.discard(data.get('key'))
                                 print(f"Client {client_id} pressed keys: {sorted(pressed_keys)}")
-                            input_queue.put(data)
+                                input_queue.put(data)
+                            elif data.get('type') == 'client_key_debug':
+                                # Client-side debug info: also forward to main process via queue
+                                print(f"DEBUG: CLIENT {client_id} {data.get('event')} key={data.get('key')} pressed={data.get('pressed_keys')}")
+                                try:
+                                    if 'input_queue' in globals() and input_queue:
+                                        input_queue.put(data)
+                                except Exception:
+                                    pass
                             
                             # Send acknowledgment back to client for latency measurement
                             server_timestamp = time.time() * 1000  # Convert to milliseconds

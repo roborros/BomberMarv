@@ -39,12 +39,12 @@ QUAD_DAMAGE_SPEEDUP = 1.5  # Speedup
 CRUSHING_WALLS_DELAY = 20  # Delay before crushing walls activate (seconds)
 CRUSHING_WALLS_MIN_DESTROYABLE = 5  # Minimum destroyable cells before activation
 
-GRID_SIZE = 15
+GRID_SIZE = 21
 
 BOMB_TIMER = 3000
 EXPLOSION_DURATION = 400
 
-DEGUG = True
+DEGUG = False
 
 if DEGUG:
     SHOW_PLAYER_DIRECTIONS = True  # Set to False to disable direction arrows
@@ -60,7 +60,7 @@ KEY_SEND_FREQUENCY_LIMIT = 20  # Minimum milliseconds between key events (20ms =
 # Higher values = less responsive but lower server load
 # Recommended range: 10-50ms (100Hz-20Hz)
 
-player_names = ["Tom", "Adel", "Marv", "Hanka", "Sobi", "Sasa"]
+player_names = ["Tom", "Sobi", "Marv", "Zelda", "Ondra", "Sasa"]
 #players = []
 colors = [
     (100, 150, 200),  # Light Blue
@@ -75,11 +75,11 @@ FPS = 60
 
 controls_list = [
     {'up': pygame.K_i, 'down': pygame.K_k, 'left': pygame.K_j, 'right': pygame.K_l, 'bomb': pygame.K_h},
-    {'up': pygame.K_w, 'down': pygame.K_s, 'left': pygame.K_a, 'right': pygame.K_d, 'bomb': pygame.K_LSHIFT},
+    {'up': pygame.K_w, 'down': pygame.K_s, 'left': pygame.K_a, 'right': pygame.K_d, 'bomb': pygame.K_LCTRL},
     {'up': pygame.K_f , 'down': pygame.K_v, 'left': pygame.K_c, 'right': pygame.K_b, 'bomb': pygame.K_SPACE},
-    {'up': pygame.K_KP5, 'down': pygame.K_KP2, 'left': pygame.K_KP1, 'right': pygame.K_KP3, 'bomb': pygame.K_KP0},
+    {'up': pygame.K_KP5, 'down': pygame.K_KP2, 'left': pygame.K_KP1, 'right': pygame.K_KP3, 'bomb': pygame.K_RCTRL},
     {'up': pygame.K_HOME, 'down': pygame.K_END, 'left': pygame.K_DELETE, 'right': pygame.K_PAGEDOWN, 'bomb': pygame.K_BACKSPACE},
-    {'up': pygame.K_KP_DIVIDE, 'down': pygame.K_KP8, 'left': pygame.K_KP7, 'right': pygame.K_KP9, 'bomb': pygame.K_RCTRL},
+    {'up': pygame.K_KP_DIVIDE, 'down': pygame.K_KP8, 'left': pygame.K_KP7, 'right': pygame.K_KP9, 'bomb': pygame.K_KP0},
     
 ]
 # https://www.pygame.org/docs/ref/key.html

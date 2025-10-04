@@ -3,12 +3,13 @@
 from PIL import Image
 import socket
 import multiprocessing
-import ws_stream_server  # Import as a module
 import psutil
+import queue
 from turbojpeg import TurboJPEG, TJPF_RGB
 import numpy as np
 from frontend import FrontendManager
 from bm_drawing import draw_game_screen, draw_get_ready, draw_title_page, draw_stat_screen, draw_champion_screen
+import ws_stream_server
 
 
 ## TODO
@@ -57,6 +58,25 @@ def kill_existing_ws_server_processes():
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
+def kill_processes_on_ports(ports):
+    """Kill any processes listening on the given TCP ports."""
+    try:
+        for proc in psutil.process_iter(['pid', 'name']):
+            try:
+                for conn in proc.connections(kind='inet'):
+                    laddr = getattr(conn, 'laddr', None)
+                    if not laddr:
+                        continue
+                    port = getattr(laddr, 'port', None)
+                    if port in ports:
+                        print(f"Killing process PID {proc.pid} ({proc.info.get('name')}) using port {port}")
+                        proc.kill()
+                        break
+            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                continue
+    except Exception as e:
+        print(f"DEBUG: Failed to enumerate processes for port cleanup: {e}")
+
 if __name__ == "__main__":
     
     
@@ -68,16 +88,19 @@ if __name__ == "__main__":
     from bm_classes import *
     
     kill_existing_ws_server_processes()
+    # Free the TCP ports if occupied
+    kill_processes_on_ports({8080, 8765})
     
     # Start the input server with a multiprocessing queue for input only
     input_queue = multiprocessing.Queue()
     ws_process = start_ws_server_with_queue(input_queue)
     
     # Get reference to server functions for game state updates
-    import ws_stream_server
     update_game_state = ws_stream_server.update_game_state
 
+    print("DEBUG: Creating Game instance...")
     theGame = Game()
+    print("DEBUG: Game instance created")
     # Don't call init_game() here - we want to start in prep mode
     # theGame.init_game()
 
@@ -85,21 +108,35 @@ if __name__ == "__main__":
     ws_stream_server.set_game_instance(theGame)
 
     # Create frontend and initialize
+    print("DEBUG: Creating frontend...")
     frontend = FrontendManager(theGame)
+    print("DEBUG: Initializing frontend...")
     window = frontend.initialize()
+    print("DEBUG: Setting frontend in game...")
     theGame.set_frontend(frontend)
+    print("DEBUG: Starting main game loop...")
 
     while True:
         theGame.tick()
         
         
         theGame.handle_window_events()
-        # Handle web key events from input_queue
-        while not input_queue.empty():
+        # Handle web key events from input_queue (use non-blocking drain)
+        processed_events = 0
+        while True:
             try:
                 event = input_queue.get_nowait()
+                processed_events += 1
+                print(f"DEBUG: Main game received event: {event}")
+                if isinstance(event, dict) and event.get('type') == 'client_key_debug':
+                    print(f"DEBUG: CLIENT DEBUG -> event={event.get('event')} key={event.get('key')} pressed={event.get('pressed_keys')}")
                 theGame.handle_web_key_event(event)
-            except Exception:
+            except queue.Empty:
+                if processed_events and processed_events > 0:
+                    print(f"DEBUG: Processed {processed_events} input events this tick")
+                break
+            except Exception as e:
+                print(f"DEBUG: Exception processing input queue: {e}")
                 break
         
                 
