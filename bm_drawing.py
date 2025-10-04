@@ -357,22 +357,25 @@ def draw_explosion_collision_debug(surface, current_time, explosions, players=No
             # Draw collision boxes only for currently active cells
             for cell in active_cells:
                 x, y = cell
-                # Calculate the collision rectangle (EXACT same as in handle_explosions line 622)
-                collision_rect = np.array([x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE], dtype=np.float64)
+                # Calculate the reduced collision rectangle (same as handle_explosions)
+                scale = EXPLOSION_COLLISION_SCALE
+                margin = CELL_SIZE * (1.0 - scale) / 2.0
+                hitbox_size = CELL_SIZE * scale
+                collision_rect = np.array([x * CELL_SIZE + margin, y * CELL_SIZE + margin, hitbox_size, hitbox_size], dtype=np.float64)
                 
-                # Draw only the border/edge of the collision box, not the filled area
-                border_width = max(2, int(4 * arm_factor))  # Thicker border when explosion is stronger
-                border_color = (255, 0, 0) if arm_factor > 0.5 else (200, 50, 50)
-                
-                # Draw the collision box border
-                pygame.draw.rect(surface, border_color, (collision_rect[0], collision_rect[1], CELL_SIZE, CELL_SIZE), border_width)
+                # Draw filled semi-transparent rect and border for clarity
+                border_width = max(2, int(4 * arm_factor))
+                border_color = (255, 60, 60) if arm_factor > 0.5 else (200, 80, 80)
+                fill_surface = pygame.Surface((int(hitbox_size), int(hitbox_size)), pygame.SRCALPHA)
+                fill_surface.fill((255, 0, 0, 60))
+                surface.blit(fill_surface, (collision_rect[0], collision_rect[1]))
+                pygame.draw.rect(surface, border_color, (collision_rect[0], collision_rect[1], hitbox_size, hitbox_size), border_width)
                 
                 # Draw cell coordinates for debugging
-                if arm_factor > 0.5:  # Only show coordinates when explosion is strong
+                if arm_factor > 0.5:
                     coord_text = f"{x},{y}"
                     coord_surface = font_small.render(coord_text, True, (255, 255, 255))
-                    coord_rect = coord_surface.get_rect(center=(collision_rect[0] + CELL_SIZE//2, collision_rect[1] + CELL_SIZE//2))
-                    # Draw black background for text readability
+                    coord_rect = coord_surface.get_rect(center=(x * CELL_SIZE + CELL_SIZE//2, y * CELL_SIZE + CELL_SIZE//2))
                     pygame.draw.rect(surface, (0, 0, 0, 128), coord_rect.inflate(4, 2))
                     surface.blit(coord_surface, coord_rect)
                 
@@ -380,9 +383,7 @@ def draw_explosion_collision_debug(surface, current_time, explosions, players=No
                 if players and arm_factor > 0.5:
                     for player in players:
                         if player.alive:
-                            # Check if player would collide with this explosion cell (same logic as handle_explosions)
                             if circle_rect_collision((player.pos[0], player.pos[1]), player.collision_radius, collision_rect):
-                                # Draw player collision circle in this cell
                                 pygame.draw.circle(surface, (255, 255, 0), (int(player.pos[0]), int(player.pos[1])), int(player.collision_radius), 2)
 
 def draw_blast_arm(surface, start_pos, end_offset, image):

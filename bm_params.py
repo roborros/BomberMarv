@@ -27,7 +27,7 @@ FLAME_ARM_THICKNESS_RATIO = 0.9
 
 POWERUP_PROBABILITY = 0.25  # Chance to spawn a powerup when a block is destroyed
 
-TROPHY_WIN_THRESHOLD = 3   # Number of trophies needed to become Champion
+TROPHY_WIN_THRESHOLD = 5   # Number of trophies needed to become Champion
 
 QUAD_DAMAGE_PROBABILITY = 0.0005 # Chance to spawn a Quad Damage powerup
 QUAD_DAMAGE_TIME = 20 # Duration of Quad Damage effect (s)
@@ -37,12 +37,16 @@ QUAD_DAMAGE_SPEEDUP = 1.5  # Speedup
 
 # Crushing walls feature
 CRUSHING_WALLS_DELAY = 20  # Delay before crushing walls activate (seconds)
-CRUSHING_WALLS_MIN_DESTROYABLE = 5  # Minimum destroyable cells before activation
+CRUSHING_WALLS_MIN_DESTROYABLE = 15  # Minimum destroyable cells before activation
 
 GRID_SIZE = 21
 
 BOMB_TIMER = 3000
 EXPLOSION_DURATION = 400
+
+# Explosion collision area scale (portion of cell covered by hitbox)
+# 0.85 => 85% of cell size with equal margins on all sides
+EXPLOSION_COLLISION_SCALE = 0.6
 
 DEGUG = False
 

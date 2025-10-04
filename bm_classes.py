@@ -713,11 +713,22 @@ class Game:
                 for i in range(1, right_length + 1):
                     active_cells.append((cx + i, cy))
                 
+                # Prepare reduced collision rectangle dimensions (centered in the cell)
+                scale = EXPLOSION_COLLISION_SCALE
+                margin = CELL_SIZE * (1.0 - scale) / 2.0
+                hitbox_size = CELL_SIZE * scale
+
                 # Check for player deaths only in currently active cells
                 for player in self.players:
                     if player.alive:
                         for cell in active_cells:
-                            explosion_rect = np.array([cell[0]*CELL_SIZE, cell[1]*CELL_SIZE, CELL_SIZE, CELL_SIZE], dtype=np.float64)
+                            cell_x, cell_y = cell
+                            explosion_rect = np.array([
+                                cell_x * CELL_SIZE + margin,
+                                cell_y * CELL_SIZE + margin,
+                                hitbox_size,
+                                hitbox_size
+                            ], dtype=np.float64)
                             if circle_rect_collision((player.pos[0], player.pos[1]), player.collision_radius, explosion_rect):
                                 player.alive = False
                                 player.death_animation_time = 1000  # 1 second death animation
