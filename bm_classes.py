@@ -35,6 +35,9 @@ class Player:
         self.name = name
         self.death_animation_time = 0
         self.direction = np.array([0.0, 0.0], dtype=np.float64)  # Initialize direction
+        # Transient pickup message (shows for a few seconds on pickup)
+        self.pickup_message = ""
+        self.pickup_message_end_time = 0
 
     def get_circle(self):
         return (self.pos, self.draw_radius)
@@ -248,6 +251,8 @@ class Player:
         self.animation_time = 0
         self.quad_damage = False  # Add this line
         self.quad_damage_start_time = 0  # Add this lines
+        self.pickup_message = ""
+        self.pickup_message_end_time = 0
 
 class Bomb:
     def __init__(self, x, y, start_time, fire_power, owner):
@@ -311,6 +316,12 @@ class Game:
         self.crushing_walls_last_time = 0
         self.crushing_walls_pattern = []
         self.crushing_walls_index = 0
+
+        # End-of-round resolution hold (delay final decision by 0.5s)
+        self.endgame_hold_until = None
+
+        # Track death event times within a round (ms)
+        self.death_events = []
         
         # Game preparation screen state
         self.prep_num_players = NUM_PLAYERS
@@ -438,6 +449,8 @@ class Game:
         self.bombs = []
         self.explosions = []
         self.powerups = []
+        self.endgame_hold_until = None
+        self.death_events = []
         
         fixed_positions = [(1, 1), (GRID_WIDTH - 2, 1), (1, GRID_HEIGHT - 2), (GRID_WIDTH - 2, GRID_HEIGHT - 2)]
         corner_patterns = {
@@ -512,6 +525,11 @@ class Game:
                         visited.add((layer, y))
         
         return pattern
+
+    def reset_trophies(self):
+        """Reset all players' trophies (call when leaving champion screen)."""
+        for p in self.players:
+            p.trophies = 0
 
     def count_destroyable_cells(self):
         """Count the number of destroyable cells on the board"""
@@ -732,6 +750,11 @@ class Game:
                             if circle_rect_collision((player.pos[0], player.pos[1]), player.collision_radius, explosion_rect):
                                 player.alive = False
                                 player.death_animation_time = 1000  # 1 second death animation
+                                # Record death time for potential tie detection
+                                self.death_events.append(self.current_time)
+                                # Spawn a death bonus powerup where the player died
+                                gx, gy = player.get_grid_pos()
+                                self.powerups.append(PowerUp(gx, gy, "death_bonus", spawn_time=self.current_time))
                                 death_sound.play()
                                 break
             
@@ -1019,6 +1042,26 @@ class Game:
                     elif pu.type == "fire":
                         player.fire_power += 1
                         bonus_sound.play()
+                    elif pu.type == "death_bonus":
+                        # Randomly apply one of the effects:
+                        # - Speed x1.05
+                        # - +2 fire power
+                        # - +3 bomb capacity
+                        choice = random.choice(["speed", "fire", "bomb"])
+                        if choice == "speed":
+                            # Multiply current speed by 1.05 (respect quad damage later when applied)
+                            player.speed = int(player.speed * 1.05)
+                            player.pickup_message = "+5% SPEED"
+                            player.pickup_message_end_time = self.current_time + 3000
+                        elif choice == "fire":
+                            player.fire_power += 2
+                            player.pickup_message = "+2 FLAMES"
+                            player.pickup_message_end_time = self.current_time + 3000
+                        else:
+                            player.bomb_capacity += 3
+                            player.pickup_message = "+3 BOMBS"
+                            player.pickup_message_end_time = self.current_time + 3000
+                        bonus_sound.play()
                     elif pu.type == "quad_damage":
                         player.quad_damage = True
                         player.quad_damage_start_time = self.current_time
@@ -1034,17 +1077,28 @@ class Game:
         self.handle_crushing_walls()
         
         alive_players = [p for p in self.players if p.alive]
+        # If round appears to be over (0 or 1 alive), start a 0.5s hold if not started
         if len(alive_players) <= 1:
-            if alive_players:
-                alive_players[0].trophies += 1
-                # Use default trophy threshold
-                trophy_threshold = TROPHY_WIN_THRESHOLD  # Need N wins to become champion
-                if alive_players[0].trophies >= trophy_threshold:
-                    self.game_state = "champion"
+            if self.endgame_hold_until is None:
+                self.endgame_hold_until = self.current_time + 500  # 0.5 seconds
+            # Once hold elapses, resolve winner or tie
+            if self.current_time >= self.endgame_hold_until:
+                # Consider deaths that happened within the last 0.5s
+                recent_deaths = [t for t in self.death_events if t >= self.current_time - 500]
+                # If more than one death occurred within the window, it's a tie (no winner)
+                if len(recent_deaths) >= 2 or len(alive_players) == 0:
+                    self.game_state = "win"  # Use win screen but no trophy assignment
                 else:
-                    self.game_state = "win"
-            else:
-                self.game_state = "win"   
+                    # Single survivor gets the trophy
+                    if alive_players:
+                        alive_players[0].trophies += 1
+                        trophy_threshold = TROPHY_WIN_THRESHOLD
+                        if alive_players[0].trophies >= trophy_threshold:
+                            self.game_state = "champion"
+                        else:
+                            self.game_state = "win"
+                    else:
+                        self.game_state = "win"
             
 # Screen class and methods moved to frontend.py
 

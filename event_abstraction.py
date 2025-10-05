@@ -256,6 +256,9 @@ class GameCommandHandler:
             return True
         
         elif self.game.game_state in ["win", "champion"]:
+            # When leaving champion, reset trophies after announcement
+            if self.game.game_state == "champion" and hasattr(self.game, 'reset_trophies'):
+                self.game.reset_trophies()
             self.game.init_game()
             self.game.game_state = "get_ready"
             return True

@@ -145,6 +145,8 @@ def draw_powerup_icon(surface, center, size, powerup_type):
         draw_fire_powerup_icon(surface, center, size)
     elif powerup_type == "quad_damage":
         draw_quad_damage_powerup_icon(surface, center, size)
+    elif powerup_type == "death_bonus":
+        draw_death_bonus_powerup_icon(surface, center, size)
 
 def draw_bomb_powerup_icon(surface, center, size):
     size = int(size * 1.3)
@@ -186,6 +188,23 @@ def draw_quad_damage_powerup_icon(surface, center, size):
     
     # Blit the scaled image onto the surface
     surface.blit(scaled_image, image_rect)
+
+def draw_death_bonus_powerup_icon(surface, center, size):
+    # Draw a distinctive icon: a skull-like simple icon inside a bordered square
+    size2 = int(size * 1.3)
+    rect = np.array([center[0] - size2//2, center[1] - size2//2, size2, size2], dtype=np.float64)
+    border_color = (255, 255, 0)
+    pygame.draw.rect(surface, border_color, rect, 4)
+    # Simple skull: circle + two eyes + small jaw rectangle
+    skull_radius = size // 3
+    pygame.gfxdraw.filled_circle(surface, center[0], center[1], skull_radius, (230, 230, 230))
+    pygame.gfxdraw.aacircle(surface, center[0], center[1], skull_radius, (0, 0, 0))
+    eye_r = max(2, skull_radius // 5)
+    eye_offset = skull_radius // 2
+    pygame.gfxdraw.filled_circle(surface, center[0] - eye_offset//2, center[1] - eye_offset//3, eye_r, (0,0,0))
+    pygame.gfxdraw.filled_circle(surface, center[0] + eye_offset//2, center[1] - eye_offset//3, eye_r, (0,0,0))
+    jaw_rect = np.array([center[0] - skull_radius//2, center[1] + skull_radius//3, skull_radius, skull_radius//3], dtype=np.float64)
+    pygame.draw.rect(surface, (230, 230, 230), jaw_rect)
 
 
 def draw_trophy_icon(surface, pos, size):
@@ -238,6 +257,16 @@ def draw_players(surface, players):
             name_text = font_small.render(player.name, True, (255, 255, 255))
             name_rect = name_text.get_rect(center=(pos[0], pos[1] - r - 10))
             surface.blit(name_text, name_rect)
+            # Draw pickup message if active
+            if getattr(player, 'pickup_message_end_time', 0) and get_ticks() < player.pickup_message_end_time:
+                msg_text = font_small.render(player.pickup_message, True, (255, 255, 0))
+                msg_rect = msg_text.get_rect(center=(pos[0], pos[1] - r - 40))
+                # Draw a semi-transparent dark background for readability
+                bg_rect = msg_rect.inflate(10, 6)
+                bg_surface = pygame.Surface((bg_rect[2], bg_rect[3]), pygame.SRCALPHA)
+                bg_surface.fill((0, 0, 0, 140))
+                surface.blit(bg_surface, (bg_rect[0], bg_rect[1]))
+                surface.blit(msg_text, msg_rect)
         else:
             # Draw death animation
             alpha = int(255 * (player.death_animation_time / 1000.0))

@@ -138,6 +138,9 @@ class BackendGameLogic:
     
     def _transition_champion_to_ready(self, data: Dict[str, Any]) -> bool:
         """Transition from champion to ready state"""
+        # Reset trophy counters now that champion has been announced
+        if hasattr(self.game, 'reset_trophies'):
+            self.game.reset_trophies()
         self.game.init_game()
         self.game.game_state = "get_ready"
         return True
