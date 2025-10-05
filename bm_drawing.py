@@ -482,14 +482,59 @@ def draw_stat_screen(surface, winner, players):
     surface.blit(text, rect)
     font_small = pygame.font.SysFont("arial", 32)
     y_offset = BASE_HEIGHT//2 + 110
+    # Columns: Name | Trophies | Death (s) | Flames | Bombs
+    name_x = 50
+    trophies_x = 260
+    death_x = 450
+    flames_x = 590
+    bombs_x = 680
+    header_color = (200, 200, 200)
+    surface.blit(font_small.render("Player", True, header_color), (name_x, y_offset))
+    surface.blit(font_small.render("Trophies", True, header_color), (trophies_x, y_offset))
+    surface.blit(font_small.render("Death (s)", True, header_color), (death_x, y_offset))
+    surface.blit(font_small.render("Flames", True, header_color), (flames_x, y_offset))
+    surface.blit(font_small.render("Bombs", True, header_color), (bombs_x, y_offset))
+    y_offset += 34
     for i, player in enumerate(players):
-        trophy_surface = pygame.Surface((150, 40), pygame.SRCALPHA)
+        # Name
+        name_text = font_small.render(f"{player.name}", True, player.color)
+        surface.blit(name_text, (name_x, y_offset))
+
+        # Trophies icons
+        trophy_surface = pygame.Surface((160, 36), pygame.SRCALPHA)
         for j in range(player.trophies):
-            draw_trophy_icon(trophy_surface, (j * 30, 0), 24+10)
-        win_text = font_small.render(f"{player.name}:", True, player.color)
-        surface.blit(win_text, (50, y_offset))
-        surface.blit(trophy_surface, (200, y_offset))
-        y_offset += 40
+            draw_trophy_icon(trophy_surface, (j * 28, 6), 24)
+        surface.blit(trophy_surface, (trophies_x, y_offset - 6))
+
+        # Death time relative to round start; alive players show "—"
+        if hasattr(player, 'death_time_rel_ms') and player.death_time_rel_ms is not None:
+            secs = player.death_time_rel_ms / 1000.0
+            secs_rounded = int(round(secs))
+            death_text_str = f"{secs_rounded}"
+            death_color = (255, 160, 160)
+        else:
+            death_text_str = "—"
+            death_color = (160, 255, 160)
+        death_text = font_small.render(death_text_str, True, death_color)
+        surface.blit(death_text, (death_x, y_offset))
+
+        # Flames and Bombs snapshot (alive players show current values)
+        flames_val = None
+        bombs_val = None
+        if hasattr(player, 'fire_power_at_death') and player.fire_power_at_death is not None:
+            flames_val = player.fire_power_at_death
+        else:
+            flames_val = getattr(player, 'fire_power', 0)
+        if hasattr(player, 'bomb_capacity_at_death') and player.bomb_capacity_at_death is not None:
+            bombs_val = player.bomb_capacity_at_death
+        else:
+            bombs_val = getattr(player, 'bomb_capacity', 0)
+
+        flames_text = font_small.render(str(flames_val), True, (255, 220, 160))
+        bombs_text = font_small.render(str(bombs_val), True, (160, 220, 255))
+        surface.blit(flames_text, (flames_x, y_offset))
+        surface.blit(bombs_text, (bombs_x, y_offset))
+        y_offset += 36
         
     #draw_controls(surface)
 

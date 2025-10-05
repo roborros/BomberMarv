@@ -38,6 +38,12 @@ class Player:
         # Transient pickup message (shows for a few seconds on pickup)
         self.pickup_message = ""
         self.pickup_message_end_time = 0
+        # Death time tracking (absolute and relative to round start)
+        self.death_time_ms = None
+        self.death_time_rel_ms = None
+        # Stats snapshot at death
+        self.fire_power_at_death = None
+        self.bomb_capacity_at_death = None
 
     def get_circle(self):
         return (self.pos, self.draw_radius)
@@ -253,6 +259,10 @@ class Player:
         self.quad_damage_start_time = 0  # Add this lines
         self.pickup_message = ""
         self.pickup_message_end_time = 0
+        self.death_time_ms = None
+        self.death_time_rel_ms = None
+        self.fire_power_at_death = None
+        self.bomb_capacity_at_death = None
 
 class Bomb:
     def __init__(self, x, y, start_time, fire_power, owner):
@@ -319,6 +329,9 @@ class Game:
 
         # End-of-round resolution hold (delay final decision by 0.5s)
         self.endgame_hold_until = None
+        # Post-win delayed transition scheduling
+        self.post_win_transition_time = None
+        self.post_win_target_state = None
 
         # Track death event times within a round (ms)
         self.death_events = []
@@ -451,6 +464,13 @@ class Game:
         self.powerups = []
         self.endgame_hold_until = None
         self.death_events = []
+        self.post_win_transition_time = None
+        self.post_win_target_state = None
+        # Mark round start to compute relative death times for display
+        self.round_start_time = self.current_time
+        for p in self.players:
+            p.death_time_ms = None
+            p.death_time_rel_ms = None
         
         fixed_positions = [(1, 1), (GRID_WIDTH - 2, 1), (1, GRID_HEIGHT - 2), (GRID_WIDTH - 2, GRID_HEIGHT - 2)]
         corner_patterns = {
@@ -609,11 +629,13 @@ class Game:
         alive_players = [p for p in self.players if p.alive]
         
         # Check if conditions are met to activate crushing walls
-        # Use default values for crushing walls
-        crushing_delay = 60  # 60 seconds delay
-        crushing_min_destroyable = 20  # Minimum destroyable cells
+        # Use configurable values from bm_params
+        crushing_delay = CRUSHING_WALLS_DELAY  # seconds
+        crushing_min_destroyable = CRUSHING_WALLS_MIN_DESTROYABLE
+        crushing_max_alive = CRUSHING_WALLS_MAX_ALIVE
+        growth_interval_ms = CRUSHING_WALLS_GROWTH_INTERVAL_MS
         
-        if len(alive_players) == 2 and \
+        if len(alive_players) <= crushing_max_alive and \
            (self.current_time - self.game_start_time) >= crushing_delay * 1000 and \
            self.count_destroyable_cells() < crushing_min_destroyable:
             
@@ -625,8 +647,8 @@ class Game:
                 self.crushing_walls_last_time = self.current_time
                 return
             
-            # Add a new wall every second
-            if self.current_time - self.crushing_walls_last_time >= 1000:
+            # Add new walls at configured interval
+            if self.current_time - self.crushing_walls_last_time >= growth_interval_ms:
                 if self.crushing_walls_index < len(self.crushing_walls_pattern):
                     x, y = self.crushing_walls_pattern[self.crushing_walls_index]
                     
@@ -752,6 +774,13 @@ class Game:
                                 player.death_animation_time = 1000  # 1 second death animation
                                 # Record death time for potential tie detection
                                 self.death_events.append(self.current_time)
+                                player.death_time_ms = self.current_time
+                                # Relative to round start
+                                if hasattr(self, 'round_start_time') and self.round_start_time:
+                                    player.death_time_rel_ms = max(0, self.current_time - self.round_start_time)
+                                # Snapshot stats at death
+                                player.fire_power_at_death = player.fire_power
+                                player.bomb_capacity_at_death = player.bomb_capacity
                                 # Spawn a death bonus powerup where the player died
                                 gx, gy = player.get_grid_pos()
                                 self.powerups.append(PowerUp(gx, gy, "death_bonus", spawn_time=self.current_time))
@@ -1078,27 +1107,36 @@ class Game:
         
         alive_players = [p for p in self.players if p.alive]
         # If round appears to be over (0 or 1 alive), start a 0.5s hold if not started
-        if len(alive_players) <= 1:
+        if len(alive_players) <= 1 and self.post_win_target_state is None:
             if self.endgame_hold_until is None:
                 self.endgame_hold_until = self.current_time + 500  # 0.5 seconds
-            # Once hold elapses, resolve winner or tie
+            # Once hold elapses, resolve winner or tie and schedule post-win transition
             if self.current_time >= self.endgame_hold_until:
-                # Consider deaths that happened within the last 0.5s
                 recent_deaths = [t for t in self.death_events if t >= self.current_time - 500]
-                # If more than one death occurred within the window, it's a tie (no winner)
                 if len(recent_deaths) >= 2 or len(alive_players) == 0:
-                    self.game_state = "win"  # Use win screen but no trophy assignment
+                    # Tie: no trophy assignment
+                    self.post_win_target_state = "win"
                 else:
                     # Single survivor gets the trophy
                     if alive_players:
-                        alive_players[0].trophies += 1
+                        winner = alive_players[0]
+                        winner.trophies += 1
                         trophy_threshold = TROPHY_WIN_THRESHOLD
-                        if alive_players[0].trophies >= trophy_threshold:
-                            self.game_state = "champion"
+                        if winner.trophies >= trophy_threshold:
+                            self.post_win_target_state = "champion"
                         else:
-                            self.game_state = "win"
+                            self.post_win_target_state = "win"
                     else:
-                        self.game_state = "win"
+                        self.post_win_target_state = "win"
+                self.post_win_transition_time = self.current_time + ENDGAME_POST_DELAY_MS
+
+        # If a post-win transition has been scheduled, execute it when time comes
+        if self.post_win_target_state is not None and self.post_win_transition_time is not None:
+            if self.current_time >= self.post_win_transition_time:
+                self.game_state = self.post_win_target_state
+                # Clear schedule to avoid repeat
+                self.post_win_target_state = None
+                self.post_win_transition_time = None
             
 # Screen class and methods moved to frontend.py
 

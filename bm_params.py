@@ -35,9 +35,11 @@ QUAD_DAMAGE_POWER = 10    # Powerup bonus to bomb capacity and fire power
 QUAD_DAMAGE_DELAY = 40  # Delay before Quad Damage powerup spawns (s)
 QUAD_DAMAGE_SPEEDUP = 1.5  # Speedup
 
-# Crushing walls feature
-CRUSHING_WALLS_DELAY = 20  # Delay before crushing walls activate (seconds)
-CRUSHING_WALLS_MIN_DESTROYABLE = 15  # Minimum destroyable cells before activation
+# Crushing walls feature (endgame walls)
+CRUSHING_WALLS_DELAY = 3                # Delay before crushing walls activate (seconds)
+CRUSHING_WALLS_MIN_DESTROYABLE = 500      # Minimum destroyable cells before activation
+CRUSHING_WALLS_MAX_ALIVE = 2              # Max alive players to allow activation (<= triggers)
+CRUSHING_WALLS_GROWTH_INTERVAL_MS = 400  # Interval between new walls once active (ms)
 
 GRID_SIZE = 21
 
@@ -47,6 +49,9 @@ EXPLOSION_DURATION = 400
 # Explosion collision area scale (portion of cell covered by hitbox)
 # 0.85 => 85% of cell size with equal margins on all sides
 EXPLOSION_COLLISION_SCALE = 0.6
+
+# Post-win delay (ms): keep game running briefly after a win before showing screen
+ENDGAME_POST_DELAY_MS = 2500
 
 DEGUG = False
 

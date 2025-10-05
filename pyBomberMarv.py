@@ -13,11 +13,8 @@ import ws_stream_server
 
 
 ## TODO
-# improve collisions - rounded rectangle corners, alley clamping
-# rework explosion animation and colision box
-# split BE/FE
+# rework explosion animation
 # store all necessary params to bomb class, do not access player later
-# bomb collision with a player is strictly based on distance I am hedding towards (out of the center is allowed + 10 size margin)
 # trophy - make a nicer image
 # rework champion page
 # add player menu (number, names, colors, controls)
@@ -29,8 +26,7 @@ import ws_stream_server
 # abstract pyge away from the game logic to not be locked in
 # ingame ECS key to pause the game
 # port to browser https://pygame-web.github.io/
-# remove bomb owner lesf tate from the bomb class and related collision checks
-# abstract state changes to the game class method
+
 
 
 
