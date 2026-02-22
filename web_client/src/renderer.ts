@@ -23,41 +23,25 @@ export class Renderer {
     private ctx: CanvasRenderingContext2D;
     private width: number = 0;
     private height: number = 0;
-
-    // Interpolation state
-    private lastState: GameState | null = null;
-    private currentState: GameState | null = null;
-    private lastStateTime: number = 0;
-    private currentStateTime: number = 0;
-    private interpolationDelayMs = 28;
-    private lastArrivalIntervalMs = 16;
+    private boardLayer: HTMLCanvasElement;
+    private boardLayerCtx: CanvasRenderingContext2D;
+    private boardSignature = '';
+    private renderSamplesMs: number[] = [];
 
     constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
         const context = canvas.getContext('2d');
         if (!context) throw new Error('Could not get 2D context');
         this.ctx = context;
+        this.ctx.imageSmoothingEnabled = true;
+        this.boardLayer = document.createElement('canvas');
+        const boardCtx = this.boardLayer.getContext('2d');
+        if (!boardCtx) throw new Error('Could not create board layer context');
+        this.boardLayerCtx = boardCtx;
     }
 
-    public render(state: GameState, serverTimestamp?: number, metrics?: { latency5sMs?: number; fps5s?: number; hostFps5s?: number }) {
-        const now = Date.now();
-
-        // Update state history for interpolation
-        if (state !== this.currentState) {
-            this.lastState = this.currentState;
-            this.lastStateTime = this.currentStateTime;
-            this.currentState = state;
-            const arrivalTime = typeof serverTimestamp === 'number' ? serverTimestamp : now;
-            if (this.currentStateTime > 0) {
-                const interval = Math.max(1, arrivalTime - this.currentStateTime);
-                // Smooth observed network cadence.
-                this.lastArrivalIntervalMs = this.lastArrivalIntervalMs * 0.85 + interval * 0.15;
-                // Keep latency low on LAN/WLAN while absorbing jitter.
-                this.interpolationDelayMs = Math.min(35, Math.max(20, this.lastArrivalIntervalMs * 1.5));
-            }
-            this.currentStateTime = arrivalTime;
-        }
-
+    public render(state: GameState, metrics?: { latency5sMs?: number; fps5s?: number; hostFps5s?: number; hostRenderFps5s?: number; renderPipelineP95Ms?: number; presentDelayP95Ms?: number; decodeP95Ms?: number; }) {
+        const renderStart = performance.now();
         // Update dimensions if needed based on board size
         if (state.board && state.board.length > 0) {
             const rows = state.board.length;
@@ -70,70 +54,73 @@ export class Renderer {
                 this.height = newHeight;
                 this.canvas.width = this.width;
                 this.canvas.height = this.height;
+                this.boardLayer.width = this.width;
+                this.boardLayer.height = this.height;
+                this.boardSignature = '';
             }
         }
 
-        // Clear screen
+        const signature = this.computeBoardSignature(state.board);
+        if (signature !== this.boardSignature) {
+            this.boardSignature = signature;
+            this.rebuildBoardLayer(state.board);
+        }
+
         this.ctx.fillStyle = COLOR_BG;
         this.ctx.fillRect(0, 0, this.width, this.height);
+        this.ctx.drawImage(this.boardLayer, 0, 0);
 
-        // Draw Board
-        this.drawBoard(state.board);
-
-        // Draw PowerUps
         state.powerups.forEach(p => this.drawPowerUp(p));
-
-        // Draw Bombs
         state.bombs.forEach(b => this.drawBomb(b));
-
-        // Draw Players
-        const players = state.players;
-        players.forEach(player => {
-            // Find this player in last state for interpolation
-            let prevPlayer: PlayerState | undefined;
-            if (this.lastState) {
-                prevPlayer = this.lastState.players.find(p => p.id === player.id);
-            }
-            this.drawPlayer(player, prevPlayer);
-        });
-
-        // Draw Explosions
+        state.players.forEach(player => this.drawPlayer(player));
         state.explosions.forEach(e => this.drawExplosion(e));
-
-        // Draw UI/HUD (optional, could be HTML overlay)
-        this.drawHUD(state, metrics);
+        const renderDurationMs = performance.now() - renderStart;
+        this.renderSamplesMs.push(renderDurationMs);
+        if (this.renderSamplesMs.length > 240) {
+            this.renderSamplesMs = this.renderSamplesMs.slice(-240);
+        }
+        this.drawHUD(state, metrics, this.getRenderP95Ms());
     }
 
-    private drawBoard(board: number[][]) {
+    private computeBoardSignature(board: number[][]): string {
+        if (!board || board.length === 0) return 'empty';
+        const flattened = board.flat();
+        let hash = 2166136261;
+        for (let i = 0; i < flattened.length; i++) {
+            hash ^= (flattened[i] & 0xff);
+            hash = Math.imul(hash, 16777619);
+        }
+        return `${board.length}x${board[0].length}:${hash >>> 0}`;
+    }
+
+    private rebuildBoardLayer(board: number[][]) {
+        this.boardLayerCtx.fillStyle = COLOR_BG;
+        this.boardLayerCtx.fillRect(0, 0, this.width, this.height);
         for (let y = 0; y < board.length; y++) {
             for (let x = 0; x < board[y].length; x++) {
                 const cell = board[y][x];
                 if (cell === 1) { // INDESTRUCTIBLE
-                    this.ctx.fillStyle = COLOR_INDESTRUCTIBLE;
-                    this.ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-                    // Add bevel effect
-                    this.ctx.strokeStyle = '#555';
-                    this.ctx.lineWidth = 2;
-                    this.ctx.strokeRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+                    this.boardLayerCtx.fillStyle = COLOR_INDESTRUCTIBLE;
+                    this.boardLayerCtx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+                    this.boardLayerCtx.strokeStyle = '#555';
+                    this.boardLayerCtx.lineWidth = 2;
+                    this.boardLayerCtx.strokeRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
                 } else if (cell === 2) { // DESTRUCTIBLE
-                    this.ctx.fillStyle = COLOR_DESTRUCTIBLE;
-                    this.ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-                    // Add bevel effect
-                    this.ctx.strokeStyle = '#999';
-                    this.ctx.lineWidth = 2;
-                    this.ctx.strokeRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-
-                    // Detail lines
-                    this.ctx.beginPath();
-                    this.ctx.moveTo(x * CELL_SIZE + 5, y * CELL_SIZE + 5);
-                    this.ctx.lineTo(x * CELL_SIZE + CELL_SIZE - 5, y * CELL_SIZE + CELL_SIZE - 5);
-                    this.ctx.stroke();
+                    this.boardLayerCtx.fillStyle = COLOR_DESTRUCTIBLE;
+                    this.boardLayerCtx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+                    this.boardLayerCtx.strokeStyle = '#999';
+                    this.boardLayerCtx.lineWidth = 2;
+                    this.boardLayerCtx.strokeRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+                    this.boardLayerCtx.beginPath();
+                    this.boardLayerCtx.moveTo(x * CELL_SIZE + 5, y * CELL_SIZE + 5);
+                    this.boardLayerCtx.lineTo(x * CELL_SIZE + CELL_SIZE - 5, y * CELL_SIZE + CELL_SIZE - 5);
+                    this.boardLayerCtx.stroke();
                 }
             }
         }
     }
 
-    private drawPlayer(player: PlayerState, prevPlayer?: PlayerState) {
+    private drawPlayer(player: PlayerState) {
         if (!player.alive) return;
 
         const PYTHON_CELL_SIZE = 100;
@@ -142,52 +129,12 @@ export class Renderer {
         let px = player.x * SCALE;
         let py = player.y * SCALE;
 
-        // Interpolation
-        if (prevPlayer && this.lastStateTime > 0) {
-            const now = Date.now();
-            // Removed unused timeDiff
-
-            // Simple approach: Interpolate from Prev -> Current based on elapsed time since 'current' arrived (but 'current' is our target).
-            // Actually, for smoothness we want to be "between" frames.
-            // But without knowing future frame, we can only interpolate between Last and Current.
-            // If we are at 'now', and we received 'current' at 'currentStateTime'.
-            // Ideally we render at 'now - delay'.
-            // If 'now - delay' > 'currentStateTime', we are waiting for next frame (extrapolate or clamp).
-            // If 'now - delay' < 'currentStateTime' but > 'lastStateTime', we interpolate.
-
-            const renderTime = now - this.interpolationDelayMs;
-
-            if (renderTime > this.lastStateTime && this.currentStateTime > this.lastStateTime) {
-                // Determine phase
-                // Normalized time between last and current? No, renderTime might be PAST current if delay is small.
-                // Wait. lastStateTime < currentStateTime < now.
-                // renderTime = now - 50ms.
-
-                // If renderTime is between last and current:
-                if (renderTime <= this.currentStateTime) {
-                    const totalDuration = this.currentStateTime - this.lastStateTime;
-                    const elapsed = renderTime - this.lastStateTime;
-                    const alpha = elapsed / totalDuration;
-
-                    const prevPx = prevPlayer.x * SCALE;
-                    const prevPy = prevPlayer.y * SCALE;
-
-                    px = prevPx + (px - prevPx) * alpha;
-                    py = prevPy + (py - prevPy) * alpha;
-                } else {
-                    // renderTime > currentStateTime.
-                    // We ran out of future buffer. Show current state (or extrapolate).
-                    // Just show current.
-                }
-            }
-        }
-
         const size = (PYTHON_CELL_SIZE * 0.85) * SCALE; // PLAYER_DRAW_SCALE = 0.85
 
         // Draw Shadow
         this.ctx.fillStyle = 'rgba(0,0,0,0.3)';
         this.ctx.beginPath();
-        this.ctx.ellipse(px + size / 2, py + size - 5, size / 2, size / 4, 0, 0, Math.PI * 2);
+        this.ctx.ellipse(px, py + size * 0.42, size * 0.45, size * 0.2, 0, 0, Math.PI * 2);
         this.ctx.fill();
 
         // Draw Player Body
@@ -212,15 +159,15 @@ export class Renderer {
 
         this.ctx.fillStyle = 'white';
         this.ctx.beginPath();
-        this.ctx.arc(px + CELL_SIZE / 2 + eyeOffX - 6, py + CELL_SIZE / 2 + eyeOffY - 4, 4, 0, Math.PI * 2);
-        this.ctx.arc(px + CELL_SIZE / 2 + eyeOffX + 6, py + CELL_SIZE / 2 + eyeOffY - 4, 4, 0, Math.PI * 2);
+        this.ctx.arc(px + eyeOffX - 6, py + eyeOffY - 4, 4, 0, Math.PI * 2);
+        this.ctx.arc(px + eyeOffX + 6, py + eyeOffY - 4, 4, 0, Math.PI * 2);
         this.ctx.fill();
 
         // Pupils
         this.ctx.fillStyle = 'black';
         this.ctx.beginPath();
-        this.ctx.arc(px + CELL_SIZE / 2 + eyeOffX - 6 + dx * 2, py + CELL_SIZE / 2 + eyeOffY - 4 + dy * 2, 1.5, 0, Math.PI * 2);
-        this.ctx.arc(px + CELL_SIZE / 2 + eyeOffX + 6 + dx * 2, py + CELL_SIZE / 2 + eyeOffY - 4 + dy * 2, 1.5, 0, Math.PI * 2);
+        this.ctx.arc(px + eyeOffX - 6 + dx * 2, py + eyeOffY - 4 + dy * 2, 1.5, 0, Math.PI * 2);
+        this.ctx.arc(px + eyeOffX + 6 + dx * 2, py + eyeOffY - 4 + dy * 2, 1.5, 0, Math.PI * 2);
         this.ctx.fill();
 
         // Determine name
@@ -283,20 +230,42 @@ export class Renderer {
         this.ctx.fillText(text, px + CELL_SIZE / 2, py + CELL_SIZE / 2);
     }
 
-    private drawHUD(state: GameState, metrics?: { latency5sMs?: number; fps5s?: number; hostFps5s?: number }) {
+    private getRenderP95Ms(): number {
+        if (this.renderSamplesMs.length === 0) return 0;
+        const sorted = [...this.renderSamplesMs].sort((a, b) => a - b);
+        const idx = Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95));
+        return sorted[idx];
+    }
+
+    private drawHUD(state: GameState, metrics?: { latency5sMs?: number; fps5s?: number; hostFps5s?: number; hostRenderFps5s?: number; renderPipelineP95Ms?: number; presentDelayP95Ms?: number; decodeP95Ms?: number; }, renderP95Ms?: number) {
         this.ctx.fillStyle = 'white';
-        this.ctx.font = '16px monospace';
+        this.ctx.font = '14px monospace';
         this.ctx.textAlign = 'left';
         this.ctx.fillText(`State: ${state.state}`, 10, 20);
-        this.ctx.fillText(`Time: ${(state.time / 1000).toFixed(1)}`, 10, 40);
+        this.ctx.fillText(`Time: ${(state.time / 1000).toFixed(1)}`, 10, 38);
         if (metrics?.latency5sMs !== undefined) {
-            this.ctx.fillText(`Latency(5s): ${metrics.latency5sMs.toFixed(1)} ms`, 10, 60);
+            this.ctx.fillText(`Latency(5s): ${metrics.latency5sMs.toFixed(1)} ms`, 10, 56);
         }
         if (metrics?.fps5s !== undefined) {
-            this.ctx.fillText(`Client FPS(5s): ${metrics.fps5s.toFixed(1)}`, 10, 80);
+            this.ctx.fillText(`Client FPS(5s): ${metrics.fps5s.toFixed(1)}`, 10, 74);
         }
         if (metrics?.hostFps5s !== undefined) {
-            this.ctx.fillText(`Host FPS(5s): ${metrics.hostFps5s.toFixed(1)}`, 10, 100);
+            this.ctx.fillText(`Host Sim FPS(5s): ${metrics.hostFps5s.toFixed(1)}`, 10, 92);
+        }
+        if (metrics?.hostRenderFps5s !== undefined) {
+            this.ctx.fillText(`Host Render FPS(5s): ${metrics.hostRenderFps5s.toFixed(1)}`, 10, 110);
+        }
+        if (metrics?.renderPipelineP95Ms !== undefined) {
+            this.ctx.fillText(`RenderPipeline p95: ${metrics.renderPipelineP95Ms.toFixed(2)} ms`, 10, 128);
+        }
+        if (metrics?.presentDelayP95Ms !== undefined) {
+            this.ctx.fillText(`PresentDelay p95: ${metrics.presentDelayP95Ms.toFixed(1)} ms`, 10, 146);
+        }
+        if (metrics?.decodeP95Ms !== undefined) {
+            this.ctx.fillText(`Decode p95: ${metrics.decodeP95Ms.toFixed(2)} ms`, 10, 164);
+        }
+        if (renderP95Ms !== undefined) {
+            this.ctx.fillText(`CanvasDraw p95: ${renderP95Ms.toFixed(2)} ms`, 10, 182);
         }
     }
 }

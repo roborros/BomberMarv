@@ -4,6 +4,8 @@ import socket
 import multiprocessing
 import psutil
 import queue
+import statistics
+import time
 import pygame
 from frontend import FrontendManager
 from bm_drawing import (
@@ -83,6 +85,14 @@ def kill_processes_on_ports(ports):
     except Exception as e:
         print(f"DEBUG: Failed to enumerate processes for port cleanup: {e}")
 
+
+def percentile(values, p):
+    if not values:
+        return 0.0
+    ordered = sorted(float(v) for v in values)
+    idx = max(0, min(len(ordered) - 1, int(round((p / 100.0) * (len(ordered) - 1)))))
+    return float(ordered[idx])
+
 if __name__ == "__main__":
     kill_existing_ws_server_processes()
     # Free the TCP ports if occupied
@@ -90,7 +100,7 @@ if __name__ == "__main__":
     
     # Start the input server with a multiprocessing queue for input only
     input_queue = multiprocessing.Queue(maxsize=2048)
-    state_queue = multiprocessing.Queue(maxsize=4)
+    state_queue = multiprocessing.Queue(maxsize=16)
     ws_process = start_ws_server_with_queue(input_queue, state_queue)
     runtime_metrics = {
         "input_events_processed": 0,
@@ -98,8 +108,11 @@ if __name__ == "__main__":
         "state_queue_sent": 0,
         "state_queue_dropped": 0,
         "input_apply_samples_ms": [],
-        "frame_timestamps_ms": [],
-        "avg_fps_5s": 0.0,
+        "sim_step_samples_ms": [],
+        "sim_loop_timestamps_ms": [],
+        "render_loop_timestamps_ms": [],
+        "avg_sim_fps_5s": 0.0,
+        "avg_render_fps_5s": 0.0,
         "last_metrics_log_time": 0,
     }
     
@@ -123,98 +136,125 @@ if __name__ == "__main__":
             return bm_params.font_small
         return pygame.font.SysFont("arial", 24)
 
-    while True:
-        theGame.tick()
-        runtime_metrics["frame_timestamps_ms"].append(theGame.current_time)
-        cutoff = theGame.current_time - 5000
-        runtime_metrics["frame_timestamps_ms"] = [t for t in runtime_metrics["frame_timestamps_ms"] if t >= cutoff]
-        span = runtime_metrics["frame_timestamps_ms"][-1] - runtime_metrics["frame_timestamps_ms"][0] if len(runtime_metrics["frame_timestamps_ms"]) > 1 else 0
-        if span > 0:
-            runtime_metrics["avg_fps_5s"] = ((len(runtime_metrics["frame_timestamps_ms"]) - 1) * 1000.0) / span
-        else:
-            runtime_metrics["avg_fps_5s"] = 0.0
-        
-        
-        theGame.handle_window_events()
-        # Handle web key events from input_queue (use non-blocking drain)
-        processed_events = 0
+    def update_rate_metrics(now_ms):
+        sim_series = runtime_metrics["sim_loop_timestamps_ms"]
+        render_series = runtime_metrics["render_loop_timestamps_ms"]
+        cutoff = now_ms - 5000
+        runtime_metrics["sim_loop_timestamps_ms"] = [t for t in sim_series if t >= cutoff]
+        runtime_metrics["render_loop_timestamps_ms"] = [t for t in render_series if t >= cutoff]
+        sim_span = (
+            runtime_metrics["sim_loop_timestamps_ms"][-1] - runtime_metrics["sim_loop_timestamps_ms"][0]
+            if len(runtime_metrics["sim_loop_timestamps_ms"]) > 1
+            else 0
+        )
+        render_span = (
+            runtime_metrics["render_loop_timestamps_ms"][-1] - runtime_metrics["render_loop_timestamps_ms"][0]
+            if len(runtime_metrics["render_loop_timestamps_ms"]) > 1
+            else 0
+        )
+        runtime_metrics["avg_sim_fps_5s"] = (
+            ((len(runtime_metrics["sim_loop_timestamps_ms"]) - 1) * 1000.0) / sim_span if sim_span > 0 else 0.0
+        )
+        runtime_metrics["avg_render_fps_5s"] = (
+            ((len(runtime_metrics["render_loop_timestamps_ms"]) - 1) * 1000.0) / render_span if render_span > 0 else 0.0
+        )
+
+    def drain_remote_input():
         while True:
             try:
                 event = input_queue.get_nowait()
-                processed_events += 1
                 if isinstance(event, dict) and event.get('type') == 'client_key_debug':
                     print(f"DEBUG: CLIENT DEBUG -> event={event.get('event')} key={event.get('key')} pressed={event.get('pressed_keys')}")
                 received_ts = event.get("ws_received_timestamp") if isinstance(event, dict) else None
                 if isinstance(received_ts, (int, float)):
                     sample = max(0, int(theGame.current_time - int(received_ts)))
                     runtime_metrics["input_apply_samples_ms"].append(sample)
-                    if len(runtime_metrics["input_apply_samples_ms"]) > 200:
-                        runtime_metrics["input_apply_samples_ms"] = runtime_metrics["input_apply_samples_ms"][-200:]
+                    if len(runtime_metrics["input_apply_samples_ms"]) > 300:
+                        runtime_metrics["input_apply_samples_ms"] = runtime_metrics["input_apply_samples_ms"][-300:]
                 theGame.handle_web_key_event(event)
                 runtime_metrics["input_events_processed"] += 1
             except queue.Empty:
-                if processed_events and processed_events > 0:
-                    pass
                 break
             except Exception as e:
                 print(f"DEBUG: Exception processing input queue: {e}")
                 runtime_metrics["input_events_errors"] += 1
                 break
-        
-                
-        # Get the game surface from frontend
-        game_surface = frontend.screen.get_surface()
-        
-        # Periodically refresh client status in lobby states to discover new web players
-        if theGame.game_state in ["startup", "game_prep"]:
-            if not hasattr(theGame, '_last_status_refresh') or theGame.current_time - theGame._last_status_refresh > 1500:
-                previous_status_sig = getattr(theGame, "_last_status_signature", None)
-                theGame._refresh_client_status()
-                new_status_sig = None
-                if isinstance(getattr(theGame, "_cached_status", None), dict):
-                    status = theGame._cached_status
-                    clients = status.get("clients", {})
-                    slots = status.get("slots", {})
-                    clients_sig = []
-                    for cid, info in clients.items():
-                        if not isinstance(info, dict):
-                            continue
-                        clients_sig.append(
-                            (
-                                str(cid),
-                                bool(info.get("registered", False)),
-                                info.get("slot"),
-                                str(info.get("display_name") or ""),
-                                round(float(info.get("avg_latency_5s", 0.0)), 1),
-                            )
-                        )
-                    slots_sig = [(str(slot_id), bool(is_taken)) for slot_id, is_taken in slots.items()]
-                    new_status_sig = (
-                        tuple(sorted(clients_sig)),
-                        tuple(sorted(slots_sig)),
-                    )
-                theGame._last_status_signature = new_status_sig
-                # If in game_prep, update local lobby player list only when remote state changed.
-                if theGame.game_state == "game_prep":
-                    if new_status_sig != previous_status_sig:
-                        theGame.create_players()
-                theGame._last_status_refresh = theGame.current_time
 
-        # Publish latest state with bounded queue policy.
+    def maybe_refresh_lobby_status():
+        if theGame.game_state not in ["startup", "game_prep"]:
+            return
+        if hasattr(theGame, '_last_status_refresh') and (theGame.current_time - theGame._last_status_refresh) <= 1500:
+            return
+        previous_status_sig = getattr(theGame, "_last_status_signature", None)
+        theGame._refresh_client_status()
+        new_status_sig = None
+        if isinstance(getattr(theGame, "_cached_status", None), dict):
+            status = theGame._cached_status
+            clients = status.get("clients", {})
+            slots = status.get("slots", {})
+            clients_sig = []
+            for cid, info in clients.items():
+                if not isinstance(info, dict):
+                    continue
+                clients_sig.append(
+                    (
+                        str(cid),
+                        bool(info.get("registered", False)),
+                        info.get("slot"),
+                        str(info.get("display_name") or ""),
+                        round(float(info.get("avg_latency_5s", 0.0)), 1),
+                    )
+                )
+            slots_sig = [(str(slot_id), bool(is_taken)) for slot_id, is_taken in slots.items()]
+            new_status_sig = (
+                tuple(sorted(clients_sig)),
+                tuple(sorted(slots_sig)),
+            )
+        theGame._last_status_signature = new_status_sig
+        if theGame.game_state == "game_prep" and new_status_sig != previous_status_sig:
+            theGame.create_players()
+        theGame._last_status_refresh = theGame.current_time
+
+    def build_state_payload():
         state_payload = theGame.to_dict()
         samples = runtime_metrics["input_apply_samples_ms"]
-        if samples:
-            avg_input_apply = sum(samples) / len(samples)
-        else:
-            avg_input_apply = 0.0
+        sim_samples = runtime_metrics["sim_step_samples_ms"]
+        avg_input_apply = sum(samples) / len(samples) if samples else 0.0
+        avg_sim_step = statistics.fmean(sim_samples) if sim_samples else 0.0
         state_payload["_net_metrics"] = {
             "input_events_processed": runtime_metrics["input_events_processed"],
             "input_events_errors": runtime_metrics["input_events_errors"],
             "state_queue_sent": runtime_metrics["state_queue_sent"],
             "state_queue_dropped": runtime_metrics["state_queue_dropped"],
             "avg_input_apply_ms": round(avg_input_apply, 2),
-            "host_fps_5s": round(runtime_metrics["avg_fps_5s"], 1),
+            "input_apply_p50_ms": round(percentile(samples, 50), 2),
+            "input_apply_p95_ms": round(percentile(samples, 95), 2),
+            "input_apply_p99_ms": round(percentile(samples, 99), 2),
+            "sim_step_avg_ms": round(avg_sim_step, 2),
+            "sim_step_p95_ms": round(percentile(sim_samples, 95), 2),
+            "host_fps_5s": round(runtime_metrics["avg_sim_fps_5s"], 1),
+            "host_render_fps_5s": round(runtime_metrics["avg_render_fps_5s"], 1),
         }
+        state_payload["_host_published_at_ms"] = int(time.time() * 1000)
+        return state_payload
+
+    def simulate_step(step_ms):
+        step_started = time.perf_counter()
+        theGame.dt = int(step_ms)
+        theGame.current_time = pygame.time.get_ticks()
+        runtime_metrics["sim_loop_timestamps_ms"].append(theGame.current_time)
+        drain_remote_input()
+        maybe_refresh_lobby_status()
+        if theGame.game_state == "get_ready":
+            if theGame.current_time >= theGame.game_start_time:
+                theGame.game_state = "playing"
+        elif theGame.game_state == "playing":
+            theGame.update()
+        step_duration_ms = (time.perf_counter() - step_started) * 1000.0
+        runtime_metrics["sim_step_samples_ms"].append(step_duration_ms)
+        if len(runtime_metrics["sim_step_samples_ms"]) > 300:
+            runtime_metrics["sim_step_samples_ms"] = runtime_metrics["sim_step_samples_ms"][-300:]
+        state_payload = build_state_payload()
         put_latest_nonblocking(
             state_queue,
             state_payload,
@@ -229,10 +269,15 @@ if __name__ == "__main__":
                 f"{runtime_metrics['input_events_processed']} "
                 f"state_sent={runtime_metrics['state_queue_sent']} "
                 f"state_dropped={runtime_metrics['state_queue_dropped']} "
-                f"avg_apply_ms={state_payload['_net_metrics']['avg_input_apply_ms']} "
-                f"fps_5s={state_payload['_net_metrics']['host_fps_5s']}"
+                f"input_p95_ms={state_payload['_net_metrics']['input_apply_p95_ms']} "
+                f"sim_fps_5s={state_payload['_net_metrics']['host_fps_5s']} "
+                f"render_fps_5s={state_payload['_net_metrics']['host_render_fps_5s']}"
             )
+        return state_payload
 
+    def render_frame(state_payload):
+        theGame.handle_window_events()
+        game_surface = frontend.screen.get_surface()
         if theGame.game_state == "startup":
             elapsed = theGame.current_time - theGame.startup_start_time
             if elapsed < 2000:
@@ -244,20 +289,15 @@ if __name__ == "__main__":
             draw_title_page(game_surface, alpha)
             if int(elapsed) >= 2200:
                 draw_controls(game_surface, theGame.players)
-                # Display "Press Enter to start the game" message
                 start_text = get_ui_font().render("Press Enter to start the game", True, (255, 255, 255))
                 start_rect = start_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT - 50))
                 game_surface.blit(start_text, start_rect)
         elif theGame.game_state == "game_prep":
             draw_game_prep(game_surface, theGame)
         elif theGame.game_state == "get_ready":
-            if theGame.current_time < theGame.game_start_time:
-                draw_game_screen(game_surface, theGame)
-                draw_get_ready(game_surface)
-            else:
-                theGame.game_state = "playing"  
+            draw_game_screen(game_surface, theGame)
+            draw_get_ready(game_surface)
         elif theGame.game_state == "playing":
-            theGame.update()
             draw_game_screen(game_surface, theGame)
         elif theGame.game_state == "win":
             draw_title_page(game_surface, alpha=255)
@@ -267,19 +307,36 @@ if __name__ == "__main__":
             alive_players = [p for p in theGame.players if p.alive]
             draw_champion_screen(game_surface, alive_players[0] if alive_players else None)
 
-        # Always show host perf info on every host-rendered screen.
         perf = state_payload["_net_metrics"]
-        perf_text = f"HOST FPS(5s): {perf['host_fps_5s']} | INPUT LAT(5s): {perf['avg_input_apply_ms']}ms"
+        perf_text = (
+            f"SIM FPS(5s): {perf['host_fps_5s']} | RENDER FPS(5s): {perf['host_render_fps_5s']} "
+            f"| INPUT p95: {perf['input_apply_p95_ms']}ms"
+        )
         perf_surface = get_ui_font().render(perf_text, True, (210, 230, 255))
         perf_rect = perf_surface.get_rect(bottomleft=(20, BASE_HEIGHT - 14))
         game_surface.blit(perf_surface, perf_rect)
-
-        
-        
-        # Use frontend renderer
         frontend.render()
-        
-        # Check if we should quit
+        runtime_metrics["render_loop_timestamps_ms"].append(theGame.current_time)
+
+    sim_step_ms = 1000.0 / 60.0
+    max_accumulator_ms = sim_step_ms * 5.0
+    accumulator_ms = 0.0
+    last_tick = time.perf_counter()
+    latest_payload = build_state_payload()
+
+    while True:
+        now = time.perf_counter()
+        elapsed_ms = (now - last_tick) * 1000.0
+        last_tick = now
+        accumulator_ms = min(max_accumulator_ms, accumulator_ms + elapsed_ms)
+
+        while accumulator_ms >= sim_step_ms:
+            latest_payload = simulate_step(sim_step_ms)
+            accumulator_ms -= sim_step_ms
+
+        update_rate_metrics(theGame.current_time)
+        render_frame(latest_payload)
+
         if frontend.should_quit:
             break
 

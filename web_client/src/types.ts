@@ -46,8 +46,15 @@ export interface GameState {
     crushing_walls: CrushingWallsState;
     _net_metrics?: {
         host_fps_5s?: number;
+        host_render_fps_5s?: number;
         avg_input_apply_ms?: number;
+        input_apply_p50_ms?: number;
+        input_apply_p95_ms?: number;
+        input_apply_p99_ms?: number;
+        sim_step_avg_ms?: number;
+        sim_step_p95_ms?: number;
     };
+    _host_published_at_ms?: number;
 }
 
 export interface ProtocolEnvelope {
@@ -86,6 +93,14 @@ export interface GameStateMessage extends ProtocolEnvelope {
     seq?: number;
 }
 
+export interface GameStateDeltaMessage extends ProtocolEnvelope {
+    type: 'gamestate_delta';
+    base_seq: number;
+    seq: number;
+    server_timestamp?: number;
+    delta: Partial<GameState>;
+}
+
 export interface InputAckMessage extends ProtocolEnvelope {
     type: 'input_ack';
     client_id: number;
@@ -109,6 +124,7 @@ export type ServerMessage =
     | RegistrationConfirmedMessage
     | RegistrationRejectedMessage
     | GameStateMessage
+    | GameStateDeltaMessage
     | InputAckMessage
     | PongMessage
     | ErrorMessage;

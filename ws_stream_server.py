@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import queue
+import statistics
 import threading
 import time
 from logging.handlers import RotatingFileHandler
@@ -15,6 +16,7 @@ from net_protocol import (
     MSG_ERROR,
     MSG_GAME_INPUT,
     MSG_GAMESTATE,
+    MSG_GAMESTATE_DELTA,
     MSG_HELLO,
     MSG_INPUT_ACK,
     MSG_PING,
@@ -34,6 +36,34 @@ PORT = 8765
 HTTP_PORT = 8080
 WS_SERVER_VERSION = "2.0.0"
 HTTP_SERVER_VERSION = "2.0.0"
+
+
+def _percentile(values: List[float], percentile: float) -> float:
+    if not values:
+        return 0.0
+    sorted_values = sorted(values)
+    rank = max(0, min(len(sorted_values) - 1, int(round((percentile / 100.0) * (len(sorted_values) - 1)))))
+    return float(sorted_values[rank])
+
+
+def build_state_delta(previous_state: Dict[str, Any], current_state: Dict[str, Any]) -> Dict[str, Any]:
+    delta: Dict[str, Any] = {}
+    keys = (
+        "time",
+        "state",
+        "players",
+        "bombs",
+        "explosions",
+        "powerups",
+        "crushing_walls",
+        "local_player_count",
+        "_net_metrics",
+        "board",
+    )
+    for key in keys:
+        if previous_state.get(key) != current_state.get(key):
+            delta[key] = current_state.get(key)
+    return delta
 
 
 def setup_logging(logfile: str) -> logging.Logger:
@@ -81,6 +111,13 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
         "broadcast_bytes": 0,
         "connections_opened": 0,
         "connections_closed": 0,
+        "state_reader_wait_samples_ms": [],
+        "state_queue_age_samples_ms": [],
+        "broadcast_loop_duration_samples_ms": [],
+        "broadcast_send_duration_samples_ms": [],
+        "broadcast_payload_bytes_samples": [],
+        "broadcast_delta_frames": 0,
+        "broadcast_key_frames": 0,
     }
 
     def enqueue_input_event(event: Dict[str, Any]) -> None:
@@ -92,6 +129,14 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
             dropped_key="input_events_dropped",
         )
 
+    def add_sample(metric_key: str, value: float, limit: int = 400) -> None:
+        bucket = metrics.get(metric_key)
+        if not isinstance(bucket, list):
+            return
+        bucket.append(float(value))
+        if len(bucket) > limit:
+            del bucket[:-limit]
+
     def state_reader_loop():
         nonlocal latest_game_state, latest_state_seq, last_state_json, last_state_seq_sent
         logger.info("State reader thread started")
@@ -100,7 +145,10 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
                 if not state_queue:
                     time.sleep(0.1)
                     continue
+                wait_start = time.perf_counter()
                 state = state_queue.get()
+                wait_ms = (time.perf_counter() - wait_start) * 1000.0
+                add_sample("state_reader_wait_samples_ms", wait_ms)
                 metrics["state_queue_updates"] += 1
                 drained = 0
                 while True:
@@ -117,6 +165,11 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
                     latest_state_seq += 1
                     last_state_json = None
                     last_state_seq_sent = -1
+                if isinstance(state, dict):
+                    published_at_ms = state.get("_host_published_at_ms")
+                    if isinstance(published_at_ms, (int, float)):
+                        age_ms = max(0.0, (time.time() * 1000.0) - float(published_at_ms))
+                        add_sample("state_queue_age_samples_ms", age_ms)
             except Exception as exc:
                 logger.error("State reader loop failed: %s", exc)
                 break
@@ -155,49 +208,120 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
         logger.info("Broadcast loop started")
         last_broadcast_seq = -1
         last_broadcast_time = 0.0
+        last_full_state: Optional[Dict[str, Any]] = None
+        keyframe_interval_seq = 20
         keepalive_interval_s = 0.2
         while True:
+            loop_started = time.perf_counter()
             await asyncio.sleep(0.008)
             with state_lock:
                 if latest_game_state is None:
+                    add_sample("broadcast_loop_duration_samples_ms", (time.perf_counter() - loop_started) * 1000.0)
                     continue
-                if last_state_json is None or last_state_seq_sent != latest_state_seq:
-                    payload = envelope(
-                        MSG_GAMESTATE,
-                        data=latest_game_state,
-                        server_timestamp=int(time.time() * 1000),
-                        seq=latest_state_seq,
-                    )
-                    last_state_json = json.dumps(payload, separators=(",", ":"))
-                    last_state_seq_sent = latest_state_seq
-                current_payload = last_state_json
+                current_state = latest_game_state
                 current_seq = latest_state_seq
-            if not current_payload:
-                continue
-            sockets = []
+            recipients: List[Dict[str, Any]] = []
             with tracking_lock:
-                for cdata in clients.values():
+                for cid, cdata in clients.items():
                     if cdata.get("registered"):
-                        sockets.append(cdata["websocket"])
-            if not sockets:
+                        recipients.append(
+                            {
+                                "client_id": cid,
+                                "websocket": cdata["websocket"],
+                                "last_state_seq": int(cdata.get("last_state_seq", -1)),
+                            }
+                        )
+            if not recipients:
+                add_sample("broadcast_loop_duration_samples_ms", (time.perf_counter() - loop_started) * 1000.0)
                 continue
             now = time.time()
             state_changed = current_seq != last_broadcast_seq
             keepalive_due = (now - last_broadcast_time) >= keepalive_interval_s
             if not state_changed and not keepalive_due:
+                add_sample("broadcast_loop_duration_samples_ms", (time.perf_counter() - loop_started) * 1000.0)
                 continue
-            if sockets:
-                results = await asyncio.gather(
-                    *[ws.send(current_payload) for ws in sockets],
-                    return_exceptions=True,
+
+            # Build keyframe or delta payload based on sequence continuity.
+            force_keyframe = (
+                last_full_state is None
+                or last_broadcast_seq < 0
+                or (current_seq - last_broadcast_seq) >= keyframe_interval_seq
+            )
+            keyframe_payload = envelope(
+                MSG_GAMESTATE,
+                data=current_state,
+                server_timestamp=int(time.time() * 1000),
+                seq=current_seq,
+            )
+            keyframe_json = json.dumps(keyframe_payload, separators=(",", ":"))
+            delta_json: Optional[str] = None
+            delta_available = False
+            if not force_keyframe and isinstance(last_full_state, dict):
+                delta = build_state_delta(last_full_state, current_state)
+                if delta:
+                    delta_payload = envelope(
+                        MSG_GAMESTATE_DELTA,
+                        base_seq=last_broadcast_seq,
+                        seq=current_seq,
+                        server_timestamp=int(time.time() * 1000),
+                        delta=delta,
+                    )
+                    delta_json = json.dumps(delta_payload, separators=(",", ":"))
+                    delta_available = True
+
+            send_plan: List[Dict[str, Any]] = []
+            total_payload_bytes = 0
+            for recipient in recipients:
+                client_last_seq = recipient["last_state_seq"]
+                needs_keyframe = (
+                    force_keyframe
+                    or not delta_available
+                    or client_last_seq != last_broadcast_seq
                 )
-                metrics["broadcast_frames"] += 1
-                metrics["broadcast_bytes"] += len(current_payload) * len(sockets)
-                last_broadcast_seq = current_seq
-                last_broadcast_time = now
-                for result in results:
-                    if isinstance(result, Exception):
-                        logger.debug("Broadcast send exception: %s", result)
+                payload = keyframe_json if needs_keyframe else (delta_json or keyframe_json)
+                send_plan.append(
+                    {
+                        "client_id": recipient["client_id"],
+                        "websocket": recipient["websocket"],
+                        "payload": payload,
+                        "is_keyframe": needs_keyframe,
+                    }
+                )
+                total_payload_bytes += len(payload)
+
+            if total_payload_bytes:
+                add_sample("broadcast_payload_bytes_samples", total_payload_bytes / max(1, len(send_plan)))
+            send_started = time.perf_counter()
+            results = await asyncio.gather(
+                *[item["websocket"].send(item["payload"]) for item in send_plan],
+                return_exceptions=True,
+            )
+            send_ms = (time.perf_counter() - send_started) * 1000.0
+            add_sample("broadcast_send_duration_samples_ms", send_ms)
+            metrics["broadcast_frames"] += 1
+            metrics["broadcast_bytes"] += total_payload_bytes
+            last_broadcast_seq = current_seq
+            last_broadcast_time = now
+            if isinstance(current_state, dict):
+                last_full_state = current_state
+            keyframe_sends = 0
+            delta_sends = 0
+            for idx, result in enumerate(results):
+                if isinstance(result, Exception):
+                    logger.debug("Broadcast send exception: %s", result)
+                    continue
+                if send_plan[idx]["is_keyframe"]:
+                    keyframe_sends += 1
+                else:
+                    delta_sends += 1
+                cid = send_plan[idx]["client_id"]
+                with tracking_lock:
+                    cdata = clients.get(cid)
+                    if cdata:
+                        cdata["last_state_seq"] = current_seq
+            metrics["broadcast_key_frames"] += keyframe_sends
+            metrics["broadcast_delta_frames"] += delta_sends
+            add_sample("broadcast_loop_duration_samples_ms", (time.perf_counter() - loop_started) * 1000.0)
 
     async def cleanup_stale_clients_loop():
         while True:
@@ -237,6 +361,7 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
                 "latency_samples": [],
                 "registered": False,
                 "slot": None,
+                "last_state_seq": -1,
             }
 
         await send_json(websocket, envelope(MSG_CLIENT_ID, client_id=client_id))
@@ -317,6 +442,7 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
                     with tracking_lock:
                         clients[client_id]["slot"] = requested_slot
                         clients[client_id]["registered"] = True
+                        clients[client_id]["last_state_seq"] = -1
                         if requested_name:
                             clients[client_id]["display_name"] = requested_name[:20]
                         clients[client_id]["players"] = [requested_slot]
@@ -486,7 +612,28 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
         return web.json_response(status)
 
     async def handle_metrics(request):
-        return web.json_response(metrics)
+        result = dict(metrics)
+        sample_keys = (
+            "state_reader_wait_samples_ms",
+            "state_queue_age_samples_ms",
+            "broadcast_loop_duration_samples_ms",
+            "broadcast_send_duration_samples_ms",
+            "broadcast_payload_bytes_samples",
+        )
+        percentiles: Dict[str, Dict[str, float]] = {}
+        for key in sample_keys:
+            values = metrics.get(key, [])
+            if not isinstance(values, list):
+                continue
+            percentiles[key] = {
+                "count": float(len(values)),
+                "avg": round(float(statistics.fmean(values)), 3) if values else 0.0,
+                "p50": round(_percentile(values, 50), 3),
+                "p95": round(_percentile(values, 95), 3),
+                "p99": round(_percentile(values, 99), 3),
+            }
+        result["percentiles"] = percentiles
+        return web.json_response(result)
 
     async def handle_health(request):
         return web.json_response({"status": "ok", "timestamp": int(time.time() * 1000)})

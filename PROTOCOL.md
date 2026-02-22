@@ -32,6 +32,7 @@ All messages are JSON with:
 - `registration_confirmed`
 - `registration_rejected`
 - `gamestate`
+- `gamestate_delta`
 - `input_ack`
 - `pong`
 - `error`
@@ -47,3 +48,7 @@ All messages are JSON with:
 - `client_timestamp` from client input packet
 - `server_timestamp` in `input_ack` and `gamestate`
 - Optional `seq` in `gamestate` for ordering
+- `gamestate_delta` includes:
+  - `base_seq`: last sequence the delta applies to
+  - `seq`: resulting sequence
+  - `delta`: partial game state patch
