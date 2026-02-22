@@ -77,7 +77,7 @@ class FrontendRenderer:
         self.screen = screen
         self.window = window
         # smoothscale is visibly nicer, but significantly slower at large internal resolutions.
-        self.use_smoothscale = os.environ.get("BM_USE_SMOOTHSCALE", "0") == "1"
+        self.use_smoothscale = os.environ.get("BM_USE_SMOOTHSCALE", "1") == "1"
     
     def draw_adjust_screen_size(self):
         """Draw the game surface scaled to fit the window"""

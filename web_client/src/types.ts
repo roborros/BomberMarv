@@ -8,6 +8,8 @@ export interface PlayerState {
     direction: [number, number];
     quad_damage: boolean;
     death_anim_time: number | null;
+    fire_power?: number;
+    bomb_capacity?: number;
 }
 
 export interface BombState {

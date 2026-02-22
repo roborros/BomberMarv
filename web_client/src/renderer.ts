@@ -1,10 +1,12 @@
 import type { GameState, PlayerState, BombState, ExplosionState, PowerUpState } from './types';
 
-// Constants matching Python Game
-const CELL_SIZE = 40; // Adjusted for browser viewing
+// Constants matching Python host rendering
+const CELL_SIZE = 100;
 const COLOR_BG = '#3C3C3C'; // (60, 60, 60)
 const COLOR_INDESTRUCTIBLE = '#787878'; // (120, 120, 120)
 const COLOR_DESTRUCTIBLE = '#C8C8C8'; // (200, 200, 200)
+const EXPLOSION_DURATION_MS = 400;
+const FLAME_ARM_THICKNESS_RATIO = 0.9;
 
 // Player colors - matching bm_params.py
 const PLAYER_COLORS = [
@@ -27,6 +29,12 @@ export class Renderer {
     private boardLayerCtx: CanvasRenderingContext2D;
     private boardSignature = '';
     private renderSamplesMs: number[] = [];
+    private fireIcon: HTMLImageElement | null = null;
+    private blastArm: HTMLImageElement | null = null;
+    private blastArmQd: HTMLImageElement | null = null;
+    private blastCenter: HTMLImageElement | null = null;
+    private blastCenterQd: HTMLImageElement | null = null;
+    private lastCanvasScale = 1;
 
     constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
@@ -38,9 +46,12 @@ export class Renderer {
         const boardCtx = this.boardLayer.getContext('2d');
         if (!boardCtx) throw new Error('Could not create board layer context');
         this.boardLayerCtx = boardCtx;
+        this.boardLayerCtx.imageSmoothingEnabled = true;
+        this.loadSpriteAssets();
+        window.addEventListener('resize', () => this.fitCanvasToViewport());
     }
 
-    public render(state: GameState, metrics?: { latency5sMs?: number; fps5s?: number; hostFps5s?: number; hostRenderFps5s?: number; renderPipelineP95Ms?: number; presentDelayP95Ms?: number; decodeP95Ms?: number; }) {
+    public render(state: GameState, metrics?: { latency5sMs?: number; fps5s?: number; hostFps5s?: number; hostRenderFps5s?: number; renderPipelineP95Ms?: number; presentDelayP95Ms?: number; decodeP95Ms?: number; }): string {
         const renderStart = performance.now();
         // Update dimensions if needed based on board size
         if (state.board && state.board.length > 0) {
@@ -57,6 +68,7 @@ export class Renderer {
                 this.boardLayer.width = this.width;
                 this.boardLayer.height = this.height;
                 this.boardSignature = '';
+                this.fitCanvasToViewport();
             }
         }
 
@@ -73,13 +85,42 @@ export class Renderer {
         state.powerups.forEach(p => this.drawPowerUp(p));
         state.bombs.forEach(b => this.drawBomb(b));
         state.players.forEach(player => this.drawPlayer(player));
-        state.explosions.forEach(e => this.drawExplosion(e));
+        state.explosions.forEach(e => this.drawExplosion(e, state.time));
         const renderDurationMs = performance.now() - renderStart;
         this.renderSamplesMs.push(renderDurationMs);
         if (this.renderSamplesMs.length > 240) {
             this.renderSamplesMs = this.renderSamplesMs.slice(-240);
         }
-        this.drawHUD(state, metrics, this.getRenderP95Ms());
+        return this.buildDebugLine(state, metrics, this.getRenderP95Ms());
+    }
+
+    private fitCanvasToViewport() {
+        if (this.width <= 0 || this.height <= 0) {
+            return;
+        }
+        const horizontalPad = 40;
+        const verticalPad = 240;
+        const maxW = Math.max(320, window.innerWidth - horizontalPad);
+        const maxH = Math.max(240, window.innerHeight - verticalPad);
+        const scale = Math.min(maxW / this.width, maxH / this.height, 1);
+        this.lastCanvasScale = scale;
+        this.canvas.style.width = `${Math.floor(this.width * scale)}px`;
+        this.canvas.style.height = `${Math.floor(this.height * scale)}px`;
+    }
+
+    private loadImage(src: string): HTMLImageElement {
+        const img = new Image();
+        img.decoding = 'async';
+        img.src = src;
+        return img;
+    }
+
+    private loadSpriteAssets() {
+        this.fireIcon = this.loadImage('/img/fireup.png');
+        this.blastArm = this.loadImage('/img/blast.png');
+        this.blastArmQd = this.loadImage('/img/blast_qd.png');
+        this.blastCenter = this.loadImage('/img/blast_centre.png');
+        this.blastCenterQd = this.loadImage('/img/blast_centre_qd.png');
     }
 
     private computeBoardSignature(board: number[][]): string {
@@ -154,25 +195,28 @@ export class Renderer {
         const dx = player.direction[0];
         const dy = player.direction[1];
 
-        const eyeOffX = dx * 8;
-        const eyeOffY = dy * 8;
+        const eyeOffX = dx * (size * 0.16);
+        const eyeOffY = dy * (size * 0.16);
+        const eyeRadius = Math.max(4, size * 0.12);
+        const pupilRadius = Math.max(1.5, size * 0.05);
+        const eyeGap = size * 0.18;
 
         this.ctx.fillStyle = 'white';
         this.ctx.beginPath();
-        this.ctx.arc(px + eyeOffX - 6, py + eyeOffY - 4, 4, 0, Math.PI * 2);
-        this.ctx.arc(px + eyeOffX + 6, py + eyeOffY - 4, 4, 0, Math.PI * 2);
+        this.ctx.arc(px + eyeOffX - eyeGap, py + eyeOffY - eyeGap * 0.7, eyeRadius, 0, Math.PI * 2);
+        this.ctx.arc(px + eyeOffX + eyeGap, py + eyeOffY - eyeGap * 0.7, eyeRadius, 0, Math.PI * 2);
         this.ctx.fill();
 
         // Pupils
         this.ctx.fillStyle = 'black';
         this.ctx.beginPath();
-        this.ctx.arc(px + eyeOffX - 6 + dx * 2, py + eyeOffY - 4 + dy * 2, 1.5, 0, Math.PI * 2);
-        this.ctx.arc(px + eyeOffX + 6 + dx * 2, py + eyeOffY - 4 + dy * 2, 1.5, 0, Math.PI * 2);
+        this.ctx.arc(px + eyeOffX - eyeGap + dx * 2, py + eyeOffY - eyeGap * 0.7 + dy * 2, pupilRadius, 0, Math.PI * 2);
+        this.ctx.arc(px + eyeOffX + eyeGap + dx * 2, py + eyeOffY - eyeGap * 0.7 + dy * 2, pupilRadius, 0, Math.PI * 2);
         this.ctx.fill();
 
         // Determine name
         this.ctx.fillStyle = 'white';
-        this.ctx.font = '10px Arial';
+        this.ctx.font = `${Math.max(14, Math.floor(size * 0.24))}px Arial`;
         this.ctx.textAlign = 'center';
         this.ctx.fillText(player.name || `P${player.id}`, px, py - size / 2 - 5);
     }
@@ -194,13 +238,77 @@ export class Renderer {
         this.ctx.stroke();
     }
 
-    private drawExplosion(explosion: ExplosionState) {
-        // Removed unused SCALE
-        this.ctx.fillStyle = 'rgba(255, 100, 50, 0.7)';
-        explosion.cells.forEach(([gx, gy]) => {
-            // These are grid coordinates!
-            this.ctx.fillRect(gx * CELL_SIZE, gy * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-        });
+    private drawExplosion(explosion: ExplosionState, currentTimeMs: number) {
+        if (!explosion.cells || explosion.cells.length === 0) {
+            return;
+        }
+
+        const norm = Math.min(1, Math.max(0, (currentTimeMs - explosion.start_time) / EXPLOSION_DURATION_MS));
+        let armFactor = 0;
+        if (norm < 0.2) {
+            armFactor = norm / 0.2;
+        } else if (norm <= 0.7) {
+            armFactor = 1;
+        } else {
+            armFactor = Math.max(0, 1 - ((norm - 0.7) / 0.3));
+        }
+
+        const [cx, cy] = explosion.cells[0];
+        const centerPixelX = cx * CELL_SIZE + CELL_SIZE / 2;
+        const centerPixelY = cy * CELL_SIZE + CELL_SIZE / 2;
+
+        const upMax = Math.max(0, ...explosion.cells.filter(([x, y]) => x === cx && y < cy).map(([, y]) => cy - y));
+        const downMax = Math.max(0, ...explosion.cells.filter(([x, y]) => x === cx && y > cy).map(([, y]) => y - cy));
+        const leftMax = Math.max(0, ...explosion.cells.filter(([x, y]) => y === cy && x < cx).map(([x]) => cx - x));
+        const rightMax = Math.max(0, ...explosion.cells.filter(([x, y]) => y === cy && x > cx).map(([x]) => x - cx));
+
+        const upLength = armFactor * upMax * CELL_SIZE;
+        const downLength = armFactor * downMax * CELL_SIZE;
+        const leftLength = armFactor * leftMax * CELL_SIZE;
+        const rightLength = armFactor * rightMax * CELL_SIZE;
+
+        const centerSprite = explosion.quad_damage ? this.blastCenterQd : this.blastCenter;
+        const armSprite = explosion.quad_damage ? this.blastArmQd : this.blastArm;
+        const thickness = CELL_SIZE * FLAME_ARM_THICKNESS_RATIO;
+
+        if (centerSprite && centerSprite.complete && centerSprite.naturalWidth > 0) {
+            const centerSize = thickness;
+            this.ctx.drawImage(
+                centerSprite,
+                centerPixelX - centerSize / 2,
+                centerPixelY - centerSize / 2,
+                centerSize,
+                centerSize,
+            );
+        } else {
+            this.ctx.fillStyle = explosion.quad_damage ? 'rgba(85, 255, 255, 0.85)' : 'rgba(255, 110, 70, 0.85)';
+            this.ctx.fillRect(centerPixelX - thickness / 2, centerPixelY - thickness / 2, thickness, thickness);
+        }
+
+        const drawArm = (dx: number, dy: number, length: number) => {
+            if (length <= 0) return;
+            if (armSprite && armSprite.complete && armSprite.naturalWidth > 0) {
+                this.ctx.save();
+                this.ctx.translate(centerPixelX, centerPixelY);
+                this.ctx.rotate(Math.atan2(dy, dx));
+                this.ctx.drawImage(armSprite, 0, -thickness / 2, length, thickness);
+                this.ctx.restore();
+            } else {
+                this.ctx.fillStyle = explosion.quad_damage ? 'rgba(85, 255, 255, 0.75)' : 'rgba(255, 140, 65, 0.75)';
+                const x = dx >= 0 ? centerPixelX : centerPixelX - length;
+                const y = dy >= 0 ? centerPixelY : centerPixelY - length;
+                if (Math.abs(dx) > 0) {
+                    this.ctx.fillRect(x, centerPixelY - thickness / 2, length, thickness);
+                } else {
+                    this.ctx.fillRect(centerPixelX - thickness / 2, y, thickness, length);
+                }
+            }
+        };
+
+        drawArm(0, -1, upLength);
+        drawArm(0, 1, downLength);
+        drawArm(-1, 0, leftLength);
+        drawArm(1, 0, rightLength);
     }
 
     private drawPowerUp(powerup: PowerUpState) {
@@ -212,11 +320,32 @@ export class Renderer {
         let color = 'yellow';
         let text = '?';
 
-        if (powerup.type === 'fire') { color = 'orange'; text = 'F'; }
-        else if (powerup.type === 'bomb') { color = 'gray'; text = 'B'; }
+        if (powerup.type === 'fire') {
+            const borderSize = size * 1.3;
+            this.ctx.strokeStyle = 'rgb(0,255,255)';
+            this.ctx.lineWidth = 3;
+            this.ctx.strokeRect(
+                px + (CELL_SIZE - borderSize) / 2,
+                py + (CELL_SIZE - borderSize) / 2,
+                borderSize,
+                borderSize,
+            );
+            if (this.fireIcon && this.fireIcon.complete && this.fireIcon.naturalWidth > 0) {
+                this.ctx.drawImage(
+                    this.fireIcon,
+                    px + (CELL_SIZE - size) / 2,
+                    py + (CELL_SIZE - size) / 2,
+                    size,
+                    size,
+                );
+                return;
+            }
+            color = 'orange';
+            text = 'F';
+        } else if (powerup.type === 'bomb') { color = 'gray'; text = 'B'; }
         else if (powerup.type === 'kick') { color = 'green'; text = 'K'; }
         else if (powerup.type === 'skull') { color = 'red'; text = 'S'; }
-        else if (powerup.type === 'quad') { color = 'purple'; text = '4x'; }
+        else if (powerup.type === 'quad' || powerup.type === 'quad_damage') { color = 'purple'; text = '4x'; }
 
         this.ctx.fillStyle = color;
         this.ctx.beginPath();
@@ -237,35 +366,19 @@ export class Renderer {
         return sorted[idx];
     }
 
-    private drawHUD(state: GameState, metrics?: { latency5sMs?: number; fps5s?: number; hostFps5s?: number; hostRenderFps5s?: number; renderPipelineP95Ms?: number; presentDelayP95Ms?: number; decodeP95Ms?: number; }, renderP95Ms?: number) {
-        this.ctx.fillStyle = 'white';
-        this.ctx.font = '14px monospace';
-        this.ctx.textAlign = 'left';
-        this.ctx.fillText(`State: ${state.state}`, 10, 20);
-        this.ctx.fillText(`Time: ${(state.time / 1000).toFixed(1)}`, 10, 38);
-        if (metrics?.latency5sMs !== undefined) {
-            this.ctx.fillText(`Latency(5s): ${metrics.latency5sMs.toFixed(1)} ms`, 10, 56);
-        }
-        if (metrics?.fps5s !== undefined) {
-            this.ctx.fillText(`Client FPS(5s): ${metrics.fps5s.toFixed(1)}`, 10, 74);
-        }
-        if (metrics?.hostFps5s !== undefined) {
-            this.ctx.fillText(`Host Sim FPS(5s): ${metrics.hostFps5s.toFixed(1)}`, 10, 92);
-        }
-        if (metrics?.hostRenderFps5s !== undefined) {
-            this.ctx.fillText(`Host Render FPS(5s): ${metrics.hostRenderFps5s.toFixed(1)}`, 10, 110);
-        }
-        if (metrics?.renderPipelineP95Ms !== undefined) {
-            this.ctx.fillText(`RenderPipeline p95: ${metrics.renderPipelineP95Ms.toFixed(2)} ms`, 10, 128);
-        }
-        if (metrics?.presentDelayP95Ms !== undefined) {
-            this.ctx.fillText(`PresentDelay p95: ${metrics.presentDelayP95Ms.toFixed(1)} ms`, 10, 146);
-        }
-        if (metrics?.decodeP95Ms !== undefined) {
-            this.ctx.fillText(`Decode p95: ${metrics.decodeP95Ms.toFixed(2)} ms`, 10, 164);
-        }
-        if (renderP95Ms !== undefined) {
-            this.ctx.fillText(`CanvasDraw p95: ${renderP95Ms.toFixed(2)} ms`, 10, 182);
-        }
+    private buildDebugLine(state: GameState, metrics?: { latency5sMs?: number; fps5s?: number; hostFps5s?: number; hostRenderFps5s?: number; renderPipelineP95Ms?: number; presentDelayP95Ms?: number; decodeP95Ms?: number; }, renderP95Ms?: number): string {
+        const parts: string[] = [];
+        parts.push(`State: ${state.state}`);
+        parts.push(`Time: ${(state.time / 1000).toFixed(1)}`);
+        if (metrics?.latency5sMs !== undefined) parts.push(`Latency(5s): ${metrics.latency5sMs.toFixed(1)} ms`);
+        if (metrics?.fps5s !== undefined) parts.push(`Client FPS(5s): ${metrics.fps5s.toFixed(1)}`);
+        if (metrics?.hostFps5s !== undefined) parts.push(`Host Sim FPS(5s): ${metrics.hostFps5s.toFixed(1)}`);
+        if (metrics?.hostRenderFps5s !== undefined) parts.push(`Host Render FPS(5s): ${metrics.hostRenderFps5s.toFixed(1)}`);
+        if (metrics?.renderPipelineP95Ms !== undefined) parts.push(`RenderPipeline p95: ${metrics.renderPipelineP95Ms.toFixed(2)} ms`);
+        if (metrics?.presentDelayP95Ms !== undefined) parts.push(`PresentDelay p95: ${metrics.presentDelayP95Ms.toFixed(1)} ms`);
+        if (metrics?.decodeP95Ms !== undefined) parts.push(`Decode p95: ${metrics.decodeP95Ms.toFixed(2)} ms`);
+        if (renderP95Ms !== undefined) parts.push(`CanvasDraw p95: ${renderP95Ms.toFixed(2)} ms`);
+        parts.push(`Scale: ${(this.lastCanvasScale * 100).toFixed(0)}%`);
+        return parts.join(' | ');
     }
 }

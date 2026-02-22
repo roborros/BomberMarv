@@ -20,6 +20,7 @@ const RECONNECT_BASE_MS = 500
 const RECONNECT_MAX_MS = 6000
 const SNAPSHOT_BUFFER_LIMIT = 16
 const KEYFRAME_STALE_MS = 1500
+const AUDIO_COOLDOWN_MS = 40
 
 window.onerror = (msg, url, line, col, error) => {
   console.error('GLOBAL ERROR:', msg, url, line, col, error)
@@ -33,6 +34,7 @@ if (!appDiv) throw new Error('Missing #app root element')
 appDiv.innerHTML = `
   <div id="game-container">
     <canvas id="gameCanvas"></canvas>
+    <div id="debug-line">Waiting for game state...</div>
     <div id="state-only" class="hidden">Waiting for game to start...</div>
     <div id="controls-hint">
       Controls: Arrow Keys to Move, Space to Place Bomb
@@ -42,6 +44,7 @@ appDiv.innerHTML = `
 `
 
 const canvas = document.querySelector<HTMLCanvasElement>('#gameCanvas')
+const debugLine = document.querySelector<HTMLDivElement>('#debug-line')
 const renderToggle = document.querySelector<HTMLInputElement>('#render-toggle')
 const stateOnly = document.querySelector<HTMLDivElement>('#state-only')
 const statusDiv = document.querySelector<HTMLDivElement>('#status')
@@ -50,11 +53,12 @@ const slotContainer = document.getElementById('slot-container')
 const lobbyStatus = document.getElementById('lobby-status')
 const playerNameInput = document.querySelector<HTMLInputElement>('#player-name')
 
-if (!canvas || !renderToggle || !stateOnly || !statusDiv || !lobbyOverlay || !slotContainer || !lobbyStatus || !playerNameInput) {
+if (!canvas || !debugLine || !renderToggle || !stateOnly || !statusDiv || !lobbyOverlay || !slotContainer || !lobbyStatus || !playerNameInput) {
   throw new Error('Required DOM elements not found')
 }
 
 const canvasEl: HTMLCanvasElement = canvas
+const debugLineEl: HTMLDivElement = debugLine
 const renderToggleEl: HTMLInputElement = renderToggle
 const stateOnlyEl: HTMLDivElement = stateOnly
 const statusDivEl: HTMLDivElement = statusDiv
@@ -99,6 +103,17 @@ let arrivalIntervalsMs: number[] = []
 let pipelineSamplesMs: number[] = []
 let presentDelaySamplesMs: number[] = []
 let decodeSamplesMs: number[] = []
+let audioUnlocked = false
+let lastSoundAt: Record<string, number> = {}
+let knownExplosionKeys = new Set<string>()
+
+const SOUND_EXPLOSION = '/sounds/explosion_short.wav'
+const SOUND_EXPLOSION_QD = '/sounds/explosion_short_qd.wav'
+const SOUND_BONUS = '/sounds/pick-bonus.wav'
+const SOUND_DEATH = '/sounds/death.wav'
+const SOUND_QD = '/sounds/quad_damage.mp3'
+
+const audioCache = new Map<string, HTMLAudioElement>()
 
 const keys = {
   up: false,
@@ -121,6 +136,73 @@ function getWsUrl(): string {
 function sendMessage(message: Record<string, unknown>) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(message))
+  }
+}
+
+function ensureAudioUnlocked() {
+  if (audioUnlocked) return
+  audioUnlocked = true
+  // Prime audio elements after first user gesture.
+  ;[SOUND_EXPLOSION, SOUND_EXPLOSION_QD, SOUND_BONUS, SOUND_DEATH, SOUND_QD].forEach((src) => {
+    if (!audioCache.has(src)) {
+      const a = new Audio(src)
+      a.preload = 'auto'
+      audioCache.set(src, a)
+    }
+  })
+}
+
+function playSound(src: string, volume: number) {
+  if (!audioUnlocked) return
+  const now = performance.now()
+  const last = lastSoundAt[src] ?? 0
+  if (now - last < AUDIO_COOLDOWN_MS) return
+  lastSoundAt[src] = now
+  let base = audioCache.get(src)
+  if (!base) {
+    base = new Audio(src)
+    base.preload = 'auto'
+    audioCache.set(src, base)
+  }
+  const shot = base.cloneNode(true) as HTMLAudioElement
+  shot.volume = volume
+  void shot.play().catch(() => {})
+}
+
+function processAudioEvents(previous: GameState | null, current: GameState) {
+  const newExplosionKeys = new Set<string>()
+  let explosionPlays = 0
+  for (const e of current.explosions) {
+    const c = e.cells[0]
+    if (!c) continue
+    const key = `${e.start_time}:${c[0]}:${c[1]}:${e.quad_damage ? 1 : 0}`
+    newExplosionKeys.add(key)
+    if (!knownExplosionKeys.has(key)) {
+      playSound(e.quad_damage ? SOUND_EXPLOSION_QD : SOUND_EXPLOSION, 0.12)
+      explosionPlays += 1
+      if (explosionPlays >= 4) break
+    }
+  }
+  knownExplosionKeys = newExplosionKeys
+
+  if (!previous) return
+  const prevPlayers = new Map(previous.players.map((p) => [p.id, p]))
+  for (const p of current.players) {
+    const prev = prevPlayers.get(p.id)
+    if (!prev) continue
+    if (prev.alive && !p.alive) {
+      playSound(SOUND_DEATH, 0.12)
+    }
+    if (!prev.quad_damage && p.quad_damage) {
+      playSound(SOUND_QD, 0.12)
+    }
+    const prevFire = prev.fire_power ?? 0
+    const prevBomb = prev.bomb_capacity ?? 0
+    const nextFire = p.fire_power ?? prevFire
+    const nextBomb = p.bomb_capacity ?? prevBomb
+    if (nextFire > prevFire || nextBomb > prevBomb) {
+      playSound(SOUND_BONUS, 0.1)
+    }
   }
 }
 
@@ -166,12 +248,14 @@ function mergeDelta(base: GameState, delta: Partial<GameState>): GameState {
 
 function ingestSnapshot(state: GameState, seq: number, serverTs?: number, recvTs = performance.now()) {
   if (latestSeq >= 0 && seq <= latestSeq) return
+  const previous = latestState
   if (snapshotBuffer.length > 0) {
     const interval = recvTs - snapshotBuffer[snapshotBuffer.length - 1].recvTs
     if (interval > 0) pushLimited(arrivalIntervalsMs, interval)
   }
   latestState = state
   latestSeq = seq
+  processAudioEvents(previous, state)
   snapshotBuffer.push({ seq, recvTs, serverTs, state })
   if (snapshotBuffer.length > SNAPSHOT_BUFFER_LIMIT) {
     snapshotBuffer = snapshotBuffer.slice(snapshotBuffer.length - SNAPSHOT_BUFFER_LIMIT)
@@ -328,6 +412,7 @@ function connectWebSocket() {
     snapshotBuffer = []
     latestState = null
     latestSeq = -1
+    knownExplosionKeys = new Set()
     sendMessage({ type: 'hello', protocol: PROTOCOL_VERSION, ts: Date.now() })
     if (currentPlayerName) {
       sendMessage({ type: 'set_name', protocol: PROTOCOL_VERSION, name: currentPlayerName })
@@ -357,6 +442,7 @@ function connectWebSocket() {
     snapshotBuffer = []
     latestState = null
     latestSeq = -1
+    knownExplosionKeys = new Set()
     const waitMs = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * (2 ** (reconnectAttempts - 1)))
     if (reconnectTimer) clearTimeout(reconnectTimer)
     reconnectTimer = setTimeout(connectWebSocket, waitMs)
@@ -536,7 +622,7 @@ function loop(ts: number) {
     }
 
     if (renderEnabled) {
-      renderer.render(displayState, {
+      const debugText = renderer.render(displayState, {
         latency5sMs: avgLatency5sMs,
         fps5s: avgClientFps5s,
         hostFps5s: hostFps,
@@ -545,6 +631,7 @@ function loop(ts: number) {
         presentDelayP95Ms: percentile(presentDelaySamplesMs, 95),
         decodeP95Ms: percentile(decodeSamplesMs, 95)
       })
+      debugLineEl.textContent = debugText
     } else {
       const latencyText = `Latency(5s): ${avgLatency5sMs.toFixed(1)} ms`
       const fpsText = `Client FPS(5s): ${avgClientFps5s.toFixed(1)}`
@@ -552,6 +639,7 @@ function loop(ts: number) {
       const presentDelayText = `PresentDelay p95: ${percentile(presentDelaySamplesMs, 95).toFixed(1)} ms`
       const decodeText = `Decode p95: ${percentile(decodeSamplesMs, 95).toFixed(2)} ms`
       stateOnlyEl.textContent = `${humanStateName(displayState.state)} | ${latencyText} | ${fpsText} | ${hostFpsText} | ${presentDelayText} | ${decodeText}`
+      debugLineEl.textContent = stateOnlyEl.textContent
     }
     pushLimited(pipelineSamplesMs, performance.now() - frameStart)
   }
@@ -560,3 +648,6 @@ function loop(ts: number) {
 
 connectWebSocket()
 requestAnimationFrame(loop)
+
+window.addEventListener('keydown', ensureAudioUnlocked, { once: true })
+window.addEventListener('pointerdown', ensureAudioUnlocked, { once: true })

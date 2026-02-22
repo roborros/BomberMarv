@@ -275,7 +275,9 @@ class Player:
             'alive': self.alive,
             'direction': [float(self.direction[0]), float(self.direction[1])],
             'quad_damage': self.quad_damage,
-            'death_anim_time': self.death_animation_time
+            'death_anim_time': self.death_animation_time,
+            'fire_power': int(self.fire_power),
+            'bomb_capacity': int(self.bomb_capacity),
         }
 
 class Bomb:
