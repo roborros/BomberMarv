@@ -1,14 +1,24 @@
 # internal imports
 
-from PIL import Image
 import socket
 import multiprocessing
 import psutil
 import queue
-from turbojpeg import TurboJPEG, TJPF_RGB
-import numpy as np
+import pygame
 from frontend import FrontendManager
-from bm_drawing import draw_game_screen, draw_get_ready, draw_title_page, draw_stat_screen, draw_champion_screen
+from bm_drawing import (
+    draw_champion_screen,
+    draw_controls,
+    draw_game_prep,
+    draw_game_screen,
+    draw_get_ready,
+    draw_stat_screen,
+    draw_title_page,
+)
+import bm_params
+from bm_params import BASE_HEIGHT, BASE_WIDTH
+from bm_classes import Game
+from queue_utils import put_latest_nonblocking
 import ws_stream_server
 
 
@@ -35,9 +45,9 @@ def is_port_in_use(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
-def start_ws_server_with_queue(input_queue):
-    # Start the server in a process, passing input queue only, and log output to ws_server.log
-    p = multiprocessing.Process(target=ws_stream_server.run_server_with_queue, args=(input_queue, "ws_server.log"))
+def start_ws_server_with_queue(input_queue, state_queue):
+    # Start the server in a process, passing input queue and state queue, and log output to ws_server.log
+    p = multiprocessing.Process(target=ws_stream_server.run_server_with_queue, args=(input_queue, state_queue, "ws_server.log"))
     p.daemon = True
     p.start()
     return p
@@ -74,46 +84,55 @@ def kill_processes_on_ports(ports):
         print(f"DEBUG: Failed to enumerate processes for port cleanup: {e}")
 
 if __name__ == "__main__":
-    
-    
-    from bm_params import *
-    from bm_sounds import *
-    from lib_collisions import *
-    from lib_grid import *
-    from bm_drawing import *
-    from bm_classes import *
-    
     kill_existing_ws_server_processes()
     # Free the TCP ports if occupied
     kill_processes_on_ports({8080, 8765})
     
     # Start the input server with a multiprocessing queue for input only
-    input_queue = multiprocessing.Queue()
-    ws_process = start_ws_server_with_queue(input_queue)
+    input_queue = multiprocessing.Queue(maxsize=2048)
+    state_queue = multiprocessing.Queue(maxsize=4)
+    ws_process = start_ws_server_with_queue(input_queue, state_queue)
+    runtime_metrics = {
+        "input_events_processed": 0,
+        "input_events_errors": 0,
+        "state_queue_sent": 0,
+        "state_queue_dropped": 0,
+        "input_apply_samples_ms": [],
+        "frame_timestamps_ms": [],
+        "avg_fps_5s": 0.0,
+        "last_metrics_log_time": 0,
+    }
     
     # Get reference to server functions for game state updates
-    update_game_state = ws_stream_server.update_game_state
+    # update_game_state = ws_stream_server.update_game_state # No longer needed
 
-    print("DEBUG: Creating Game instance...")
     theGame = Game()
-    print("DEBUG: Game instance created")
     # Don't call init_game() here - we want to start in prep mode
     # theGame.init_game()
 
     # Set game instance in WebSocket server for input handling
-    ws_stream_server.set_game_instance(theGame)
+    # ws_stream_server.set_game_instance(theGame) # This only sets it in the main process, not helpful for the server process input validation, but maybe okay for now.
 
     # Create frontend and initialize
-    print("DEBUG: Creating frontend...")
     frontend = FrontendManager(theGame)
-    print("DEBUG: Initializing frontend...")
     window = frontend.initialize()
-    print("DEBUG: Setting frontend in game...")
     theGame.set_frontend(frontend)
-    print("DEBUG: Starting main game loop...")
+
+    def get_ui_font():
+        if bm_params.font_small is not None:
+            return bm_params.font_small
+        return pygame.font.SysFont("arial", 24)
 
     while True:
         theGame.tick()
+        runtime_metrics["frame_timestamps_ms"].append(theGame.current_time)
+        cutoff = theGame.current_time - 5000
+        runtime_metrics["frame_timestamps_ms"] = [t for t in runtime_metrics["frame_timestamps_ms"] if t >= cutoff]
+        span = runtime_metrics["frame_timestamps_ms"][-1] - runtime_metrics["frame_timestamps_ms"][0] if len(runtime_metrics["frame_timestamps_ms"]) > 1 else 0
+        if span > 0:
+            runtime_metrics["avg_fps_5s"] = ((len(runtime_metrics["frame_timestamps_ms"]) - 1) * 1000.0) / span
+        else:
+            runtime_metrics["avg_fps_5s"] = 0.0
         
         
         theGame.handle_window_events()
@@ -123,28 +142,98 @@ if __name__ == "__main__":
             try:
                 event = input_queue.get_nowait()
                 processed_events += 1
-                print(f"DEBUG: Main game received event: {event}")
                 if isinstance(event, dict) and event.get('type') == 'client_key_debug':
                     print(f"DEBUG: CLIENT DEBUG -> event={event.get('event')} key={event.get('key')} pressed={event.get('pressed_keys')}")
+                received_ts = event.get("ws_received_timestamp") if isinstance(event, dict) else None
+                if isinstance(received_ts, (int, float)):
+                    sample = max(0, int(theGame.current_time - int(received_ts)))
+                    runtime_metrics["input_apply_samples_ms"].append(sample)
+                    if len(runtime_metrics["input_apply_samples_ms"]) > 200:
+                        runtime_metrics["input_apply_samples_ms"] = runtime_metrics["input_apply_samples_ms"][-200:]
                 theGame.handle_web_key_event(event)
+                runtime_metrics["input_events_processed"] += 1
             except queue.Empty:
                 if processed_events and processed_events > 0:
-                    print(f"DEBUG: Processed {processed_events} input events this tick")
+                    pass
                 break
             except Exception as e:
                 print(f"DEBUG: Exception processing input queue: {e}")
+                runtime_metrics["input_events_errors"] += 1
                 break
         
                 
         # Get the game surface from frontend
         game_surface = frontend.screen.get_surface()
         
-        # Update server with current game state (only when it changes)
-        update_game_state(theGame.game_state)
+        # Periodically refresh client status in lobby states to discover new web players
+        if theGame.game_state in ["startup", "game_prep"]:
+            if not hasattr(theGame, '_last_status_refresh') or theGame.current_time - theGame._last_status_refresh > 1500:
+                previous_status_sig = getattr(theGame, "_last_status_signature", None)
+                theGame._refresh_client_status()
+                new_status_sig = None
+                if isinstance(getattr(theGame, "_cached_status", None), dict):
+                    status = theGame._cached_status
+                    clients = status.get("clients", {})
+                    slots = status.get("slots", {})
+                    clients_sig = []
+                    for cid, info in clients.items():
+                        if not isinstance(info, dict):
+                            continue
+                        clients_sig.append(
+                            (
+                                str(cid),
+                                bool(info.get("registered", False)),
+                                info.get("slot"),
+                                str(info.get("display_name") or ""),
+                                round(float(info.get("avg_latency_5s", 0.0)), 1),
+                            )
+                        )
+                    slots_sig = [(str(slot_id), bool(is_taken)) for slot_id, is_taken in slots.items()]
+                    new_status_sig = (
+                        tuple(sorted(clients_sig)),
+                        tuple(sorted(slots_sig)),
+                    )
+                theGame._last_status_signature = new_status_sig
+                # If in game_prep, update local lobby player list only when remote state changed.
+                if theGame.game_state == "game_prep":
+                    if new_status_sig != previous_status_sig:
+                        theGame.create_players()
+                theGame._last_status_refresh = theGame.current_time
+
+        # Publish latest state with bounded queue policy.
+        state_payload = theGame.to_dict()
+        samples = runtime_metrics["input_apply_samples_ms"]
+        if samples:
+            avg_input_apply = sum(samples) / len(samples)
+        else:
+            avg_input_apply = 0.0
+        state_payload["_net_metrics"] = {
+            "input_events_processed": runtime_metrics["input_events_processed"],
+            "input_events_errors": runtime_metrics["input_events_errors"],
+            "state_queue_sent": runtime_metrics["state_queue_sent"],
+            "state_queue_dropped": runtime_metrics["state_queue_dropped"],
+            "avg_input_apply_ms": round(avg_input_apply, 2),
+            "host_fps_5s": round(runtime_metrics["avg_fps_5s"], 1),
+        }
+        put_latest_nonblocking(
+            state_queue,
+            state_payload,
+            runtime_metrics,
+            sent_key="state_queue_sent",
+            dropped_key="state_queue_dropped",
+        )
+        if theGame.current_time - runtime_metrics["last_metrics_log_time"] > 5000:
+            runtime_metrics["last_metrics_log_time"] = theGame.current_time
+            print(
+                "[NET] input_events="
+                f"{runtime_metrics['input_events_processed']} "
+                f"state_sent={runtime_metrics['state_queue_sent']} "
+                f"state_dropped={runtime_metrics['state_queue_dropped']} "
+                f"avg_apply_ms={state_payload['_net_metrics']['avg_input_apply_ms']} "
+                f"fps_5s={state_payload['_net_metrics']['host_fps_5s']}"
+            )
 
         if theGame.game_state == "startup":
-            # Draw startup screen
-            from bm_drawing import draw_title_page, draw_controls
             elapsed = theGame.current_time - theGame.startup_start_time
             if elapsed < 2000:
                 alpha = 255
@@ -156,14 +245,10 @@ if __name__ == "__main__":
             if int(elapsed) >= 2200:
                 draw_controls(game_surface, theGame.players)
                 # Display "Press Enter to start the game" message
-                from bm_drawing import font_small
-                from bm_params import BASE_WIDTH, BASE_HEIGHT
-                start_text = font_small.render("Press Enter to start the game", True, (255, 255, 255))
+                start_text = get_ui_font().render("Press Enter to start the game", True, (255, 255, 255))
                 start_rect = start_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT - 50))
                 game_surface.blit(start_text, start_rect)
         elif theGame.game_state == "game_prep":
-            # Draw game prep screen
-            from bm_drawing import draw_game_prep
             draw_game_prep(game_surface, theGame)
         elif theGame.game_state == "get_ready":
             if theGame.current_time < theGame.game_start_time:
@@ -177,10 +262,17 @@ if __name__ == "__main__":
         elif theGame.game_state == "win":
             draw_title_page(game_surface, alpha=255)
             alive_players = [p for p in theGame.players if p.alive]
-            draw_stat_screen(game_surface, alive_players[0] if alive_players else None, theGame.players)
+            draw_stat_screen(game_surface, alive_players[0] if alive_players else None, theGame.players, theGame)
         elif theGame.game_state == "champion":
             alive_players = [p for p in theGame.players if p.alive]
             draw_champion_screen(game_surface, alive_players[0] if alive_players else None)
+
+        # Always show host perf info on every host-rendered screen.
+        perf = state_payload["_net_metrics"]
+        perf_text = f"HOST FPS(5s): {perf['host_fps_5s']} | INPUT LAT(5s): {perf['avg_input_apply_ms']}ms"
+        perf_surface = get_ui_font().render(perf_text, True, (210, 230, 255))
+        perf_rect = perf_surface.get_rect(bottomleft=(20, BASE_HEIGHT - 14))
+        game_surface.blit(perf_surface, perf_rect)
 
         
         

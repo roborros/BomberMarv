@@ -465,7 +465,7 @@ def draw_controls(surface, players):
         surface.blit(text, rect)
         y_offset += 50
 
-def draw_stat_screen(surface, winner, players):
+def draw_stat_screen(surface, winner, players, game=None):
     _ensure_fonts_initialized()
     font = pygame.font.SysFont("arial", 48, bold=True)
     draw_title_page(surface, alpha=255)
@@ -535,6 +535,112 @@ def draw_stat_screen(surface, winner, players):
         surface.blit(flames_text, (flames_x, y_offset))
         surface.blit(bombs_text, (bombs_x, y_offset))
         y_offset += 36
+
+    # Draw replay panel on the right side (if replay data is available)
+    has_replay_segment = game is not None and hasattr(game, 'replay_segment') and bool(game.replay_segment)
+    has_replay_buffer = game is not None and hasattr(game, 'replay_buffer') and bool(game.replay_buffer)
+    if game is not None and (has_replay_segment or has_replay_buffer):
+        panel_w = int(BASE_WIDTH * REPLAY_PANEL_WIDTH_RATIO)
+        panel_h = BASE_HEIGHT - 2 * REPLAY_PANEL_PADDING
+        panel_x = BASE_WIDTH - panel_w - REPLAY_PANEL_PADDING
+        panel_y = REPLAY_PANEL_PADDING
+        pygame.draw.rect(surface, (30, 30, 30), (panel_x, panel_y, panel_w, panel_h))
+        pygame.draw.rect(surface, (120, 120, 120), (panel_x, panel_y, panel_w, panel_h), 2)
+
+        # Title
+        title = font_small.render("Replay", True, (255, 255, 255))
+        surface.blit(title, (panel_x + 10, panel_y + 8))
+
+        # Choose a frame to render: if a frozen replay segment exists, animate it in a loop
+        focus_name = getattr(game, 'replay_focus_player', None)
+        chosen_frame = None
+        if hasattr(game, 'replay_segment') and game.replay_segment:
+            seg = game.replay_segment
+            # Derive target time within segment loop
+            seg_start = getattr(game, 'replay_segment_start_time', 0) or 0
+            seg_end = getattr(game, 'replay_segment_end_time', seg_start)
+            duration = max(1, int(seg_end - seg_start))
+            # Anchor loop timing at first stat-screen render so replay always starts from the beginning.
+            if not hasattr(game, 'replay_loop_anchor_time') or game.replay_loop_anchor_time is None:
+                game.replay_loop_anchor_time = game.current_time
+            loop_elapsed = max(0, int(game.current_time - game.replay_loop_anchor_time))
+            loop_offset = loop_elapsed % duration
+            target_t = seg_start + loop_offset
+            # Find the most recent snapshot at or before target_t
+            last_idx = 0
+            for idx, (t, snap) in enumerate(seg):
+                if t <= target_t:
+                    last_idx = idx
+                else:
+                    break
+            chosen_frame = seg[last_idx][1]
+        else:
+            # Fallback: still preview from the captured window (may disappear as buffer trims)
+            end_t = getattr(game, 'replay_end_time', game.current_time)
+            start_t = getattr(game, 'replay_start_time', max(0, end_t - REPLAY_BUFFER_MS))
+            frames = [snap for (t, snap) in game.replay_buffer if start_t <= t <= end_t]
+            if frames:
+                chosen_frame = frames[-1]
+        if chosen_frame:
+            players_state = chosen_frame['players']
+            # Determine camera center
+            cam_x_px, cam_y_px = BASE_WIDTH // 2, BASE_HEIGHT // 2
+            if focus_name:
+                for ps in players_state:
+                    if ps['name'] == focus_name:
+                        cam_x_px, cam_y_px = int(ps['pos'][0]), int(ps['pos'][1])
+                        break
+            # Compute viewport in pixels based on cell radius
+            cells_radius = REPLAY_CAMERA_RADIUS_CELLS
+            view_w = (2 * cells_radius + 1) * CELL_SIZE
+            view_h = (2 * cells_radius + 1) * CELL_SIZE
+            view_rect = pygame.Rect(cam_x_px - view_w // 2, cam_y_px - view_h // 2, view_w, view_h)
+
+            # Create a surface for the world snapshot
+            world_surface = pygame.Surface((BASE_WIDTH, BASE_HEIGHT))
+            # Draw board cells
+            for y in range(GRID_HEIGHT):
+                for x in range(GRID_WIDTH):
+                    r = np.array([x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE], dtype=np.float64)
+                    if game.board[y][x] == EMPTY:
+                        pygame.gfxdraw.box(world_surface, r, COLOR_BG)
+                    elif game.board[y][x] == INDESTRUCTIBLE:
+                        pygame.gfxdraw.box(world_surface, r, COLOR_INDESTRUCTIBLE)
+                        pygame.draw.rect(world_surface, (80,80,80), r, 1)
+                    elif game.board[y][x] == DESTRUCTIBLE:
+                        pygame.gfxdraw.box(world_surface, r, COLOR_DESTRUCTIBLE)
+                        draw_brick_pattern(r, world_surface)
+                        pygame.draw.rect(world_surface, (80,80,80), r, 1)
+
+            # Draw bombs
+            for b in chosen_frame['bombs']:
+                cx = b['x'] * CELL_SIZE + CELL_SIZE//2
+                cy = b['y'] * CELL_SIZE + CELL_SIZE//2
+                pygame.gfxdraw.filled_circle(world_surface, cx, cy, BOMB_BASE_RADIUS, COLOR_BOMB_FILL)
+                pygame.gfxdraw.aacircle(world_surface, cx, cy, BOMB_BASE_RADIUS, COLOR_BOMB_OUTLINE)
+
+            # Draw powerups
+            for pu in chosen_frame['powerups']:
+                center = (pu['x'] * CELL_SIZE + CELL_SIZE//2, pu['y'] * CELL_SIZE + CELL_SIZE//2)
+                size = CELL_SIZE - 20
+                draw_powerup_icon(world_surface, center, size, pu['type'])
+
+            # Draw players
+            for ps in players_state:
+                if not ps['alive']:
+                    continue
+                pos = (int(ps['pos'][0]), int(ps['pos'][1]))
+                r = ps['draw_radius']
+                col = ps['color']
+                pygame.gfxdraw.filled_circle(world_surface, pos[0], pos[1], r, col)
+                pygame.gfxdraw.aacircle(world_surface, pos[0], pos[1], r, col)
+
+            # Crop and scale to panel; guard against empty clip rects.
+            clip_rect = view_rect.clip(world_surface.get_rect())
+            if clip_rect.width > 0 and clip_rect.height > 0:
+                sub_surface = world_surface.subsurface(clip_rect)
+                scaled = pygame.transform.smoothscale(sub_surface, (panel_w - 2 * REPLAY_PANEL_PADDING, panel_h - 40))
+                surface.blit(scaled, (panel_x + REPLAY_PANEL_PADDING, panel_y + 30))
         
     #draw_controls(surface)
 
@@ -615,291 +721,195 @@ def draw_get_ready(surface):
     surface.blit(start_text, start_rect)
 
 def draw_game_prep(surface, Game):
-    """Draw the game lobby screen"""
+    """Draw the host lobby screen with a clean split layout."""
     _ensure_fonts_initialized()
-    surface.fill(COLOR_BG)
+    surface.fill((24, 28, 34))
+    pulse = 0.5 + 0.5 * math.sin(time.time() * 8.0)
 
-    # Title
-    title_font = pygame.font.SysFont("arial", 36, bold=True)
-    surface.blit(title_font.render("GAME LOBBY", True, (255, 255, 255)), (40, 20))
-
-    # Two main panels: Local Players and Connected Clients
-    panel_width = (BASE_WIDTH - 80) // 2
-    left_panel = np.array([40, 80, panel_width, BASE_HEIGHT - 200], dtype=np.float64)
-    right_panel = np.array([40 + panel_width + 20, 80, panel_width, BASE_HEIGHT - 200], dtype=np.float64)
-    
-    pygame.draw.rect(surface, (70, 70, 70), left_panel)
-    pygame.draw.rect(surface, (70, 70, 70), right_panel)
-    pygame.draw.rect(surface, (120, 120, 120), left_panel, 2)
-    pygame.draw.rect(surface, (120, 120, 120), right_panel, 2)
-
-    # Panel titles
-    panel_title_font = pygame.font.SysFont("arial", 24, bold=True)
-    surface.blit(panel_title_font.render("LOCAL PLAYERS", True, (255, 255, 255)), (left_panel[0] + 15, left_panel[1] - 35))
-    surface.blit(panel_title_font.render("CONNECTED CLIENTS", True, (255, 255, 255)), (right_panel[0] + 15, right_panel[1] - 35))
-
-    # Left panel: Local Players
-    y = left_panel[1] + 20
-    line_height = 35
-    
-    # Local player count selector
-    surface.blit(font_small.render("Local Players:", True, (200, 255, 200)), (left_panel[0] + 20, y))
-    y += line_height
-    
-    # Player count buttons (1-6)
-    button_width = 60
-    button_height = 30
-    button_spacing = 10
-    start_x = left_panel[0] + 20
-    
-    for i in range(1, 7):  # Changed from range(1, 5) to range(1, 7)
-        button_x = start_x + (i-1) * (button_width + button_spacing)
-        button_y = y
-        button_rect = np.array([button_x, button_y, button_width, button_height], dtype=np.float64)
-        
-        # Highlight selected count
-        is_selected = (Game.prep_section == 'local_players' and Game.prep_cursor_row == 0 and Game.prep_cursor_col == i-1)
-        button_color = (255, 255, 0) if is_selected else (100, 100, 100)  # Bright yellow for selected
-        
-        pygame.draw.rect(surface, button_color, button_rect)
-        pygame.draw.rect(surface, (255, 255, 255), button_rect, 1)
-        
-        # Button text
-        text_surface = font_small.render(str(i), True, (255, 255, 255))
-        text_rect = text_surface.get_rect(center=(button_x + button_width//2, button_y + button_height//2))
-        surface.blit(text_surface, text_rect)
-    
-    y += button_height + 20
-    
-    # Initialize status cache if needed
-    if not hasattr(Game, '_last_status_check'):
-        Game._last_status_check = 0
+    # Header
+    title_font = pygame.font.SysFont("arial", 54, bold=True)
+    subtitle_font = pygame.font.SysFont("arial", 28)
+    title = title_font.render("BomberMarv Lobby", True, (238, 244, 255))
+    subtitle = subtitle_font.render("Host setup and connected clients", True, (160, 176, 200))
+    surface.blit(title, (40, 22))
+    surface.blit(subtitle, (42, 72))
+    # Game._cached_status is refreshed by the main loop; do not block drawing here.
+    if not hasattr(Game, '_cached_status'):
         Game._cached_status = None
-    
-    current_time = time.time()
-    if current_time - Game._last_status_check > 1.0:  # Update every 1 second instead of every frame
-        try:
-            import requests
-            response = requests.get('http://localhost:8080/status', timeout=0.5)
-            if response.status_code == 200:
-                Game._cached_status = response.json()
-            Game._last_status_check = current_time
-        except Exception as e:
-            Game._cached_status = None
-            Game._last_status_check = current_time
-    
-    # All players list (local + client)
-    surface.blit(font_small.render("Players:", True, (200, 255, 200)), (left_panel[0] + 20, y))
-    y += line_height
-    
-    # Collect all players (local + client) with global IDs
+
+    # Build player list used by the left panel.
     all_players = []
     global_player_id = 1
-    
-    # Add local players first
     for i in range(Game.prep_num_players):
-        player_name = Game.prep_player_names[i % len(Game.prep_player_names)]
-        color_idx = Game.prep_player_colors[i % len(Game.prep_player_colors)]
         all_players.append({
             'id': global_player_id,
-            'name': player_name,
-            'color': color_idx,
+            'name': Game.prep_player_names[i % len(Game.prep_player_names)],
+            'color': Game.prep_player_colors[i % len(Game.prep_player_colors)],
             'type': 'local',
-            'source': i,  # Index for local player data
-            'real_time_status': ''  # No real-time status for local players
+            'source': i,
+            'status': _format_controls(Game.prep_controls[i % len(Game.prep_controls)]),
         })
         global_player_id += 1
-    
-    # Add client players
-    if Game._cached_status:
-        status_data = Game._cached_status
-        clients = status_data.get('clients', {})
-        players = status_data.get('players', {})
-        
-        for client_id, client_info in clients.items():
-            if client_info.get('registered', False):
-                client_players = client_info.get('players', [])
-                for player_id in client_players:
-                    player_info = players.get(str(player_id), {})
-                    keys = player_info.get('keys', {})
 
-                    # Show pressed keys as directiveal indicators
-                    pressed_keys = []
-                    if keys.get('up'): pressed_keys.append('↑')
-                    if keys.get('down'): pressed_keys.append('↓')
-                    if keys.get('left'): pressed_keys.append('←')
-                    if keys.get('right'): pressed_keys.append('→')
-                    if keys.get('bomb'): pressed_keys.append('💣')
-                    
-                    real_time_status = ''.join(pressed_keys) if pressed_keys else '---'
-                    
-                    all_players.append({
-                        'id': global_player_id,
-                        'name': f"Client {client_id} P{player_id}",
-                        'color': global_player_id % len(colors),  # Assign color based on global ID
-                        'type': 'client',
-                        'source': (client_id, player_id),  # Client and player ID
-                        'real_time_status': real_time_status
-                    })
-                    global_player_id += 1
-    
-    # Display all players with integrated name and color editing
-    for i, player in enumerate(all_players):
-        # Check if this player is selected for editing
-        is_selected = (Game.prep_section == 'local_players' and Game.prep_cursor_row == i + 1)  # +1 because row 0 is player count buttons
-        is_editing_name = (Game.prep_editing_name and Game.prep_name_edit_index == i)
-        
-        # Player name with editing support
-        if is_editing_name:
-            name_text = f"Player {player['id']}: {player['name']}_"
-            name_color = (255, 255, 0)  # Yellow for editing
-        elif is_selected:
-            name_text = f"Player {player['id']}: {player['name']}"
-            name_color = (255, 255, 0)  # Yellow for selected
-        else:
-            name_text = f"Player {player['id']}: {player['name']}"
-            name_color = (255, 255, 255)  # White for normal
-        
-        surface.blit(font_small.render(name_text, True, name_color), (left_panel[0] + 20, y))
-        
-        # Color indicator (clickable)
-        color_rect = np.array([left_panel[0] + 200, y + 5, 20, 20], dtype=np.float64)
-        color_border_color = (255, 255, 0) if is_selected else (255, 255, 255)
-        pygame.draw.rect(surface, colors[player['color'] % len(colors)], color_rect)
-        pygame.draw.rect(surface, color_border_color, color_rect, 2)
-        
-        # Status info - show controls for local, real-time movement for client
-        if player['type'] == 'local':
-            # Show controls for local players
-            controls = Game.prep_controls[player['source'] % len(Game.prep_controls)]
-            status_text = _format_controls(controls)
-            status_color = (180, 180, 180)
-        else:
-            # Show real-time movement for client players
-            # Get current key state from web_keys_by_player if available
-            current_keys = '---'
-            if hasattr(Game, 'web_keys_by_player'):
-                # Find the player object for this web player
-                for game_player in Game.players:
-                    if (not game_player.is_local and 
-                        game_player.client_id == player['source'][0] and 
-                        game_player.client_player_id == player['source'][1]):
-                        if game_player in Game.web_keys_by_player:
-                            pressed_keys = []
-                            web_keys = Game.web_keys_by_player[game_player]
-                            if 'up' in web_keys: pressed_keys.append('↑')
-                            if 'down' in web_keys: pressed_keys.append('↓')
-                            if 'left' in web_keys: pressed_keys.append('←')
-                            if 'right' in web_keys: pressed_keys.append('→')
-                            if 'bomb' in web_keys: pressed_keys.append('💣')
-                            current_keys = ''.join(pressed_keys) if pressed_keys else '---'
-                        break
-            
-            status_text = current_keys
-            status_color = (120, 255, 120) if current_keys != '---' else (180, 180, 180)
-        
-        surface.blit(font_small.render(status_text, True, status_color), (left_panel[0] + 240, y))
-        
-        y += line_height
-    
-    # Right panel: Connected Clients
-    y = right_panel[1] + 20
-    
-    # Use cached status data
+    cached_clients = {}
+    cached_players = {}
     if Game._cached_status:
-        status_data = Game._cached_status
-        clients = status_data.get('clients', {})
-        players = status_data.get('players', {})
-        
-        if clients:
-            for client_id, client_info in clients.items():
-                # Client header
-                last_seen = client_info.get('last_seen', 0)
-                time_since = time.time() - last_seen
-                status_color = (120, 255, 120) if time_since < 5 else (255, 200, 120) if time_since < 30 else (255, 120, 120)
-                
-                registered = client_info.get('registered', False)
-                reg_status = "REG" if registered else "UNREG"
-                
-                avg_latency = client_info.get('avg_latency', 0)
-                latency_samples = client_info.get('latency_samples', 0)
-                latency_text = f" (avg: {avg_latency}ms)" if latency_samples > 0 else " (no data)"
-                
-                client_text = f"Client {client_id} [{reg_status}]{latency_text}"
-                surface.blit(font_small.render(client_text, True, status_color), (right_panel[0] + 20, y))
-                y += line_height
-                
-                # Players for this client
-                client_players = client_info.get('players', [])
-                for player_id in client_players:
-                    player_info = players.get(str(player_id), {})
-                    keys = player_info.get('keys', {})
+        cached_clients = Game._cached_status.get('clients', {})
+        cached_players = Game._cached_status.get('players', {})
 
-                    # Show pressed keys as directional indicators
-                    pressed_keys = []
-                    if keys.get('up'): pressed_keys.append('↑')
-                    if keys.get('down'): pressed_keys.append('↓')
-                    if keys.get('left'): pressed_keys.append('←')
-                    if keys.get('right'): pressed_keys.append('→')
-                    if keys.get('bomb'): pressed_keys.append('💣')
-                    
-                    keys_display = ''.join(pressed_keys) if pressed_keys else '---'
-                    
-                    # Player info
-                    player_text = f"  Player {player_id}: {keys_display}"
-                    surface.blit(font_small.render(player_text, True, (255, 255, 255)), (right_panel[0] + 20, y))
-                    y += line_height - 5
-                
-                # Separator line
-                pygame.draw.line(surface, (110, 110, 110), (right_panel[0] + 15, y - 3), (right_panel[0] + right_panel[2] - 15, y - 3), 1)
-                y += 10
+    for client_id, client_info in cached_clients.items():
+        if not client_info.get('registered', False):
+            continue
+        display_name = str(client_info.get('display_name', '') or '').strip()
+        client_latency_5s = float(client_info.get('avg_latency_5s', client_info.get('avg_latency', 0)) or 0)
+        for player_id in client_info.get('players', []):
+            pinfo = cached_players.get(str(player_id), {})
+            keys = pinfo.get('keys', {})
+            pressed = []
+            if keys.get('up'): pressed.append('UP')
+            if keys.get('down'): pressed.append('DOWN')
+            if keys.get('left'): pressed.append('LEFT')
+            if keys.get('right'): pressed.append('RIGHT')
+            if keys.get('bomb'): pressed.append('BOMB')
+            live_status = ' + '.join(pressed) if pressed else 'IDLE'
+            resolved_name = display_name if display_name else f"Client {client_id} P{player_id}"
+            all_players.append({
+                'id': global_player_id,
+                'name': resolved_name,
+                'color': global_player_id % len(colors),
+                'type': 'client',
+                'source': (client_id, player_id),
+                'status': live_status,
+                'latency_5s': client_latency_5s,
+            })
+            global_player_id += 1
+
+    # Panels
+    top_y = 120
+    panel_h = BASE_HEIGHT - 250
+    left_panel = pygame.Rect(34, top_y, int(BASE_WIDTH * 0.62), panel_h)
+    right_panel = pygame.Rect(left_panel.right + 14, top_y, BASE_WIDTH - left_panel.right - 48, panel_h)
+
+    pygame.draw.rect(surface, (34, 41, 52), left_panel, border_radius=14)
+    pygame.draw.rect(surface, (69, 87, 112), left_panel, 2, border_radius=14)
+    pygame.draw.rect(surface, (30, 37, 48), right_panel, border_radius=14)
+    pygame.draw.rect(surface, (64, 80, 104), right_panel, 2, border_radius=14)
+
+    section_font = pygame.font.SysFont("arial", 32, bold=True)
+    surface.blit(section_font.render("Players", True, (235, 242, 255)), (left_panel.x + 18, left_panel.y + 12))
+    surface.blit(section_font.render("Remote Clients", True, (235, 242, 255)), (right_panel.x + 18, right_panel.y + 12))
+
+    # Local player count controls
+    label_font = pygame.font.SysFont("arial", 26, bold=True)
+    surface.blit(label_font.render("Local player count", True, (185, 214, 180)), (left_panel.x + 20, left_panel.y + 56))
+
+    button_y = left_panel.y + 88
+    button_w = 52
+    button_h = 34
+    for idx in range(6):
+        rect = pygame.Rect(left_panel.x + 20 + idx * (button_w + 8), button_y, button_w, button_h)
+        selected = (Game.prep_section == 'local_players' and Game.prep_cursor_row == 0 and Game.prep_cursor_col == idx)
+        if selected:
+            glow = int(180 + 60 * pulse)
+            fill = (glow, 180, 62)
+            text_col = (20, 24, 28)
         else:
-            surface.blit(font_small.render("No clients connected", True, (180, 180, 180)), (right_panel[0] + 20, y))
+            fill = (74, 90, 112) if idx + 1 != Game.prep_num_players else (106, 144, 216)
+            text_col = (236, 241, 248)
+        pygame.draw.rect(surface, fill, rect, border_radius=8)
+        pygame.draw.rect(surface, (196, 209, 228), rect, 1, border_radius=8)
+        txt = label_font.render(str(idx + 1), True, text_col)
+        surface.blit(txt, txt.get_rect(center=rect.center))
+
+    # Player rows
+    row_y = button_y + button_h + 22
+    row_h = 44
+    max_rows = max(1, (left_panel.bottom - row_y - 10) // row_h)
+    shown_players = all_players[:max_rows]
+    for i, p in enumerate(shown_players):
+        rect = pygame.Rect(left_panel.x + 14, row_y + i * row_h, left_panel.width - 28, row_h - 4)
+        selected = (Game.prep_section == 'local_players' and Game.prep_cursor_row == i + 1)
+        editing = (Game.prep_editing_name and Game.prep_name_edit_index == i)
+        if selected:
+            glow = int(76 + 36 * pulse)
+            row_bg = (glow, glow + 10, 110)
+        else:
+            row_bg = (43, 52, 66)
+        pygame.draw.rect(surface, row_bg, rect, border_radius=8)
+        pygame.draw.rect(surface, (102, 122, 148), rect, 1, border_radius=8)
+
+        # color chip
+        chip_rect = pygame.Rect(rect.x + 8, rect.y + 8, 18, 18)
+        pygame.draw.rect(surface, colors[p['color'] % len(colors)], chip_rect, border_radius=4)
+        pygame.draw.rect(surface, (220, 232, 248), chip_rect, 1, border_radius=4)
+
+        name = p['name'] + "_" if editing else p['name']
+        if p['type'] == 'local':
+            name = f"L{p['id']}: {name}"
+        else:
+            name = f"R{p['id']}: {name}"
+        name_color = (250, 234, 130) if (selected or editing) else (234, 242, 255)
+        status_color = (142, 246, 160) if p['type'] == 'client' and p['status'] != 'IDLE' else (164, 181, 203)
+        status_text = p['status']
+        if p['type'] == 'client':
+            status_text = f"{p['status']} | {int(round(float(p.get('latency_5s', 0))))} ms"
+
+        line_font = pygame.font.SysFont("arial", 34, bold=True)
+        status_font = pygame.font.SysFont("arial", 28, bold=True)
+        surface.blit(line_font.render(name, True, name_color), (chip_rect.right + 10, rect.y + 1))
+        surface.blit(status_font.render(status_text, True, status_color), (rect.x + int(rect.width * 0.60), rect.y + 4))
+
+    if len(all_players) > max_rows:
+        more = len(all_players) - max_rows
+        surface.blit(font_small.render(f"... and {more} more", True, (180, 188, 200)), (left_panel.x + 20, left_panel.bottom - 28))
+
+    # Right panel client cards
+    client_card_y = right_panel.y + 52
+    if cached_clients:
+        for client_id, info in cached_clients.items():
+            if client_card_y > right_panel.bottom - 70:
+                break
+            last_seen = info.get('last_seen', 0)
+            age = time.time() - last_seen
+            online_col = (132, 233, 146) if age < 5 else (236, 200, 117) if age < 30 else (227, 123, 123)
+            reg = "READY" if info.get('registered', False) else "WAITING"
+            display_name = str(info.get('display_name', '') or '').strip()
+            latency = info.get('avg_latency_5s', info.get('avg_latency', 0))
+            samples = info.get('latency_samples_5s', info.get('latency_samples', 0))
+            card = pygame.Rect(right_panel.x + 12, client_card_y, right_panel.width - 24, 62)
+            pygame.draw.rect(surface, (43, 52, 66), card, border_radius=8)
+            pygame.draw.rect(surface, (95, 116, 140), card, 1, border_radius=8)
+            line1 = f"Client {client_id} - {reg}"
+            if display_name:
+                line1 += f" ({display_name})"
+            line2 = f"Players: {len(info.get('players', []))}   Latency(5s): {latency}ms ({samples})"
+            surface.blit(font_small.render(line1, True, online_col), (card.x + 10, card.y + 4))
+            surface.blit(font_small.render(line2, True, (188, 204, 224)), (card.x + 10, card.y + 30))
+            client_card_y += 70
     else:
-        surface.blit(font_small.render("No server connection", True, (255, 120, 120)), (right_panel[0] + 20, y))
-    
-    # Total players count
+        surface.blit(font_small.render("No remote clients connected.", True, (172, 184, 204)), (right_panel.x + 14, right_panel.y + 58))
+
+    # Footer panel and start action
+    footer = pygame.Rect(34, BASE_HEIGHT - 112, BASE_WIDTH - 68, 78)
+    pygame.draw.rect(surface, (28, 34, 43), footer, border_radius=12)
+    pygame.draw.rect(surface, (80, 97, 121), footer, 2, border_radius=12)
+
     total_players = len(all_players)
-    
-    # Game start section
-    start_y = BASE_HEIGHT - 120
-    start_panel = np.array([40, start_y, BASE_WIDTH - 80, 80], dtype=np.float64)
-    pygame.draw.rect(surface, (50, 50, 50), start_panel)
-    pygame.draw.rect(surface, (120, 120, 120), start_panel, 2)
-    
-    # Total players display
-    total_text = f"Total Players: {total_players}"
-    surface.blit(font_small.render(total_text, True, (255, 255, 255)), (60, start_y + 15))
-    
-    # Start game button
-    start_button_x = BASE_WIDTH - 200
-    start_button_y = start_y + 10
-    start_button_rect = np.array([start_button_x, start_button_y, 150, 40], dtype=np.float64)
-    
-    is_start_selected = (Game.prep_section == 'start_game')
-    start_color = (120, 255, 120) if is_start_selected else (100, 100, 100)
-    
-    pygame.draw.rect(surface, start_color, start_button_rect)
-    pygame.draw.rect(surface, (255, 255, 255), start_button_rect, 2)
-    
-    start_text = "START GAME"
-    start_text_surface = font_small.render(start_text, True, (255, 255, 255))
-    start_text_rect = start_text_surface.get_rect(center=(start_button_x + 75, start_button_y + 20))
-    surface.blit(start_text_surface, start_text_rect)
-    
-    # Controls help
-    controls_text = "ARROWS: Navigate   TAB: Switch sections   ENTER: Select/Edit   LEFT/RIGHT: Change color   ESC: Back"
-    surface.blit(font_small.render(controls_text, True, (180, 180, 180)), (60, start_y + 50))
-    
-    # Debug info
-    debug_text = f"DEBUG: Section={Game.prep_section}, Row={Game.prep_cursor_row}, Col={Game.prep_cursor_col}, Players={Game.prep_num_players}"
-    surface.blit(font_small.render(debug_text, True, (255, 255, 0)), (60, start_y + 70))
-    
-    # Server status debug
-    if Game._cached_status:
-        clients_count = len(Game._cached_status.get('clients', {}))
-        players_count = len(Game._cached_status.get('players', {}))
-        server_debug = f"SERVER: {clients_count} clients, {players_count} players"
-        surface.blit(font_small.render(server_debug, True, (255, 255, 0)), (60, start_y + 90))
+    totals = label_font.render(f"Total players: {total_players} (Local {Game.prep_num_players})", True, (232, 239, 250))
+    surface.blit(totals, (footer.x + 18, footer.y + 14))
+
+    start_rect = pygame.Rect(footer.right - 208, footer.y + 14, 188, 48)
+    start_selected = (Game.prep_section == 'start_game')
+    if start_selected:
+        glow = int(132 + 50 * pulse)
+        start_fill = (86, glow, 128)
     else:
-        surface.blit(font_small.render("SERVER: No connection", True, (255, 0, 0)), (60, start_y + 90))
+        start_fill = (68, 98, 76)
+    start_text_col = (22, 36, 24) if start_selected else (233, 246, 236)
+    pygame.draw.rect(surface, start_fill, start_rect, border_radius=10)
+    pygame.draw.rect(surface, (210, 235, 214), start_rect, 1, border_radius=10)
+    start_text = label_font.render("START GAME", True, start_text_col)
+    surface.blit(start_text, start_text.get_rect(center=start_rect.center))
+
+    help_text = "ARROWS navigate | ENTER select/edit | LEFT/RIGHT change color | TAB switch area | ESC back"
+    surface.blit(font_small.render(help_text, True, (160, 176, 198)), (footer.x + 18, footer.y + 44))

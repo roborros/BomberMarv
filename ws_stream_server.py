@@ -1,450 +1,534 @@
-# --- Logging Setup ---
-def setup_logging(logfile):
-    import logging
-    import sys
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(threadName)s %(message)s",
-        handlers=[
-            logging.FileHandler(logfile, mode='a', encoding='utf-8'),
-            logging.StreamHandler(sys.__stdout__)
-        ]
-    )
-    class StreamToLogger:
-        def __init__(self, level):
-            self.level = level
-        def write(self, message):
-            if message.strip():
-                logging.log(self.level, message.strip())
-        def flush(self): pass
-    # sys.stdout = StreamToLogger(logging.INFO)
-    # sys.stderr = StreamToLogger(logging.ERROR)
-    # import builtins
-    # builtins.print = lambda *args, **kwargs: logging.info(' '.join(str(a) for a in args))
-# --- End Logging Setup ---
-
 import asyncio
-import websockets
-import aiohttp
-from aiohttp import web
-import threading
 import json
+import logging
 import queue
-import profiler
-import os
-import uuid
+import threading
 import time
+from logging.handlers import RotatingFileHandler
+from typing import Any, Dict, List, Optional
 
+import websockets
+from aiohttp import web
 
-# Set the port for the WebSocket server
+from net_protocol import (
+    MSG_CLIENT_ID,
+    MSG_ERROR,
+    MSG_GAME_INPUT,
+    MSG_GAMESTATE,
+    MSG_HELLO,
+    MSG_INPUT_ACK,
+    MSG_PING,
+    MSG_PONG,
+    MSG_REGISTRATION_CONFIRMED,
+    MSG_REGISTRATION_REJECTED,
+    MSG_REQUEST_SLOT_LIST,
+    MSG_SELECT_SLOT,
+    MSG_SET_NAME,
+    MSG_SLOT_LIST,
+    envelope,
+    validate_client_message,
+)
+from queue_utils import put_latest_nonblocking
+
 PORT = 8765
-
 HTTP_PORT = 8080
-CLIENT_HTML = "client.html"
+WS_SERVER_VERSION = "2.0.0"
+HTTP_SERVER_VERSION = "2.0.0"
 
-WS_SERVER_VERSION = "1.2.0"
-HTTP_SERVER_VERSION = "1.1.0"
 
-# Global game state tracking
-_current_game_state = "game_prep"  # Start in prep mode to allow immediate client registration
-_game_state_lock = threading.Lock()
-game_instance = None
+def setup_logging(logfile: str) -> logging.Logger:
+    logger = logging.getLogger("ws_stream_server")
+    if logger.handlers:
+        return logger
+    logger.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(threadName)s %(message)s")
+    file_handler = RotatingFileHandler(logfile, maxBytes=20_000_000, backupCount=3, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    logger.addHandler(stream_handler)
+    return logger
 
-def update_game_state(new_state):
-    """Update the current game state (called from main game)"""
-    global _current_game_state
-    with _game_state_lock:
-        _current_game_state = new_state
-        #print(f"Game state changed to: {new_state}")
 
-def get_game_state():
-    """Get the current game state"""
-    global _current_game_state
-    with _game_state_lock:
-        return _current_game_state
-
-def set_game_instance(game):
-    """Set the game instance for input handling"""
-    global game_instance
-    game_instance = game
-
-def run_server_with_queue(input_queue, log_path=None):
-    import asyncio
-    import websockets
-    import threading
-    import aiohttp
-    from aiohttp import web
-    import json
-    import profiler
-    import uuid
-
-    # Make input_queue globally accessible
-    globals()['input_queue'] = input_queue
-    print(f"DEBUG: Input queue set up in WebSocket server: {input_queue}")
-
-    PORT = 8765
-    HTTP_PORT = 8080
-    CLIENT_HTML = "client.html"
+def run_server_with_queue(input_queue, state_queue=None, log_path=None):
+    logger = setup_logging(log_path or "ws_server.log")
 
     client_id_counter = 0
     client_id_lock = threading.Lock()
-    client_ids = set()
-
-    # Track clients and their players
-    clients = {}  # {client_id: {websocket, players: [player_ids], last_seen: timestamp, latency_samples: [latencies], registered: bool}}
-    players = {}  # {player_id: {client_id, keys: {up, down, left, right, bomb}}}
     tracking_lock = threading.Lock()
+    slots_lock = threading.Lock()
+    state_lock = threading.Lock()
+
+    clients: Dict[int, Dict[str, Any]] = {}
+    players: Dict[int, Dict[str, Any]] = {}
+    slots: Dict[int, Optional[int]] = {i: None for i in range(1, 7)}
+
+    latest_game_state: Optional[Dict[str, Any]] = None
+    latest_state_seq = 0
+    last_state_json: Optional[str] = None
+    last_state_seq_sent = -1
+
+    metrics = {
+        "state_queue_updates": 0,
+        "state_queue_drained": 0,
+        "state_queue_dropped_old": 0,
+        "input_events_enqueued": 0,
+        "input_events_dropped": 0,
+        "messages_invalid": 0,
+        "messages_received": 0,
+        "broadcast_frames": 0,
+        "broadcast_bytes": 0,
+        "connections_opened": 0,
+        "connections_closed": 0,
+    }
+
+    def enqueue_input_event(event: Dict[str, Any]) -> None:
+        put_latest_nonblocking(
+            input_queue,
+            event,
+            metrics,
+            sent_key="input_events_enqueued",
+            dropped_key="input_events_dropped",
+        )
+
+    def state_reader_loop():
+        nonlocal latest_game_state, latest_state_seq, last_state_json, last_state_seq_sent
+        logger.info("State reader thread started")
+        while True:
+            try:
+                if not state_queue:
+                    time.sleep(0.1)
+                    continue
+                state = state_queue.get()
+                metrics["state_queue_updates"] += 1
+                drained = 0
+                while True:
+                    try:
+                        state = state_queue.get_nowait()
+                        drained += 1
+                    except queue.Empty:
+                        break
+                if drained:
+                    metrics["state_queue_drained"] += drained
+                    metrics["state_queue_dropped_old"] += drained
+                with state_lock:
+                    latest_game_state = state
+                    latest_state_seq += 1
+                    last_state_json = None
+                    last_state_seq_sent = -1
+            except Exception as exc:
+                logger.error("State reader loop failed: %s", exc)
+                break
+
+    if state_queue:
+        threading.Thread(target=state_reader_loop, daemon=True, name="state-reader").start()
+
+    def build_slot_list() -> Dict[str, Any]:
+        local_taken = 0
+        with state_lock:
+            if latest_game_state:
+                try:
+                    local_taken = int(latest_game_state.get("local_player_count", 0))
+                except Exception:
+                    local_taken = 0
+        slots_dict: Dict[str, bool] = {}
+        slot_reasons: Dict[str, str] = {}
+        with slots_lock:
+            for slot_id, occupied_by_client in slots.items():
+                occupied = occupied_by_client is not None or slot_id <= local_taken
+                key = str(slot_id)
+                slots_dict[key] = occupied
+                if occupied:
+                    if slot_id <= local_taken:
+                        slot_reasons[key] = "local"
+                    else:
+                        slot_reasons[key] = "remote"
+        return {"slots": slots_dict, "slot_reasons": slot_reasons}
+
+    async def send_json(ws, payload: Dict[str, Any]) -> None:
+        raw = json.dumps(payload, separators=(",", ":"))
+        await ws.send(raw)
+
+    async def broadcast_loop():
+        nonlocal last_state_json, last_state_seq_sent
+        logger.info("Broadcast loop started")
+        last_broadcast_seq = -1
+        last_broadcast_time = 0.0
+        keepalive_interval_s = 0.2
+        while True:
+            await asyncio.sleep(0.008)
+            with state_lock:
+                if latest_game_state is None:
+                    continue
+                if last_state_json is None or last_state_seq_sent != latest_state_seq:
+                    payload = envelope(
+                        MSG_GAMESTATE,
+                        data=latest_game_state,
+                        server_timestamp=int(time.time() * 1000),
+                        seq=latest_state_seq,
+                    )
+                    last_state_json = json.dumps(payload, separators=(",", ":"))
+                    last_state_seq_sent = latest_state_seq
+                current_payload = last_state_json
+                current_seq = latest_state_seq
+            if not current_payload:
+                continue
+            sockets = []
+            with tracking_lock:
+                for cdata in clients.values():
+                    if cdata.get("registered"):
+                        sockets.append(cdata["websocket"])
+            if not sockets:
+                continue
+            now = time.time()
+            state_changed = current_seq != last_broadcast_seq
+            keepalive_due = (now - last_broadcast_time) >= keepalive_interval_s
+            if not state_changed and not keepalive_due:
+                continue
+            if sockets:
+                results = await asyncio.gather(
+                    *[ws.send(current_payload) for ws in sockets],
+                    return_exceptions=True,
+                )
+                metrics["broadcast_frames"] += 1
+                metrics["broadcast_bytes"] += len(current_payload) * len(sockets)
+                last_broadcast_seq = current_seq
+                last_broadcast_time = now
+                for result in results:
+                    if isinstance(result, Exception):
+                        logger.debug("Broadcast send exception: %s", result)
+
+    async def cleanup_stale_clients_loop():
+        while True:
+            await asyncio.sleep(10)
+            now = time.time()
+            stale_ids: List[int] = []
+            with tracking_lock:
+                for cid, cdata in clients.items():
+                    if now - cdata.get("last_seen", now) > 60:
+                        stale_ids.append(cid)
+            if not stale_ids:
+                continue
+            for cid in stale_ids:
+                with tracking_lock:
+                    cdata = clients.get(cid)
+                    if not cdata:
+                        continue
+                    ws = cdata["websocket"]
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
 
     async def handle_client(websocket):
         nonlocal client_id_counter
-        # Assign a unique client_id to this client
         with client_id_lock:
             client_id = client_id_counter
             client_id_counter += 1
-            client_ids.add(client_id)
-        
-        # Create client entry but don't register yet
+        metrics["connections_opened"] += 1
+        logger.info("Client connected: id=%s address=%s", client_id, websocket.remote_address)
+
         with tracking_lock:
             clients[client_id] = {
-                'websocket': websocket,
-                'players': [],
-                'last_seen': time.time(),
-                'latency_samples': [],
-                'registered': False
+                "websocket": websocket,
+                "players": [],
+                "last_seen": time.time(),
+                "latency_samples": [],
+                "registered": False,
+                "slot": None,
             }
-        
-        # Send client_id to client as a JSON message
-        await websocket.send(json.dumps({"type": "client_id", "client_id": client_id}))
-        print(f"Client connected: {websocket.remote_address}, assigned client_id: {client_id} (not registered yet)")
-        pressed_keys = set()
+
+        await send_json(websocket, envelope(MSG_CLIENT_ID, client_id=client_id))
+
         try:
-            while True:
+            async for raw in websocket:
+                metrics["messages_received"] += 1
+                with tracking_lock:
+                    if client_id in clients:
+                        clients[client_id]["last_seen"] = time.time()
                 try:
-                    msg = await asyncio.wait_for(websocket.recv(), timeout=0.1)
-                    if msg:
-                        try:
-                            data = json.loads(msg)
-                            print(f"DEBUG: Received message from client {client_id}: {data}")
-                            data['client_id'] = client_id  # Attach client_id to all events
-                            
-                            if data.get('type') == 'register_client':
-                                # Handle explicit client registration
-                                current_state = get_game_state()
-                                if current_state == "game_prep":
-                                    with tracking_lock:
-                                        if client_id in clients:
-                                            clients[client_id]['registered'] = True
-                                            clients[client_id]['last_seen'] = time.time()
-                                            
-                                            # Assign player IDs based on requested number of players
-                                            requested_players = data.get('num_players', 1)
-                                            current_player_count = len(clients[client_id]['players'])
-                                            
-                                            # Only assign new players if we need more
-                                            if current_player_count < requested_players:
-                                                for i in range(current_player_count, requested_players):
-                                                    player_id = len(players) + 1
-                                                    players[player_id] = {
-                                                        'client_id': client_id,
-                                                        'keys': {'up': 0, 'down': 0, 'left': 0, 'right': 0, 'bomb': 0}
-                                                    }
-                                                    clients[client_id]['players'].append(player_id)
-                                                    print(f"Assigned player ID {player_id} to client {client_id}")
-                                            
-                                            # Remove excess players if fewer requested
-                                            elif current_player_count > requested_players:
-                                                excess_players = clients[client_id]['players'][requested_players:]
-                                                for player_id in excess_players:
-                                                    if player_id in players:
-                                                        del players[player_id]
-                                                        print(f"Removed player ID {player_id} from client {client_id}")
-                                                clients[client_id]['players'] = clients[client_id]['players'][:requested_players]
-                                            
-                                            # Send assigned player IDs back to client
-                                            assigned_player_ids = clients[client_id]['players']
-                                            await websocket.send(json.dumps({
-                                                "type": "player_ids_assigned",
-                                                "client_id": client_id,
-                                                "player_ids": assigned_player_ids
-                                            }))
-                                    
-                                    # Send registration confirmation
-                                    await websocket.send(json.dumps({
-                                        "type": "registration_confirmed",
-                                        "client_id": client_id,
-                                        "game_state": current_state,
-                                        "message": "Successfully registered for game"
-                                    }))
-                                    print(f"Client {client_id} registered successfully")
-                                else:
-                                    # Send registration rejection
-                                    await websocket.send(json.dumps({
-                                        "type": "registration_rejected",
-                                        "client_id": client_id,
-                                        "game_state": current_state,
-                                        "message": f"Registration not allowed in {current_state} state. Only allowed during game preparation."
-                                    }))
-                                    print(f"Client {client_id} registration rejected - game state: {current_state}")
-                                continue
-                            
-                            elif data.get('type') == 'game_input':
-                                print(f"DEBUG: Received game_input message from client {client_id}")
-                                # Only process game input from registered clients
+                    data = json.loads(raw)
+                except json.JSONDecodeError:
+                    metrics["messages_invalid"] += 1
+                    await send_json(websocket, envelope(MSG_ERROR, message="invalid JSON"))
+                    continue
+                err = validate_client_message(data)
+                if err:
+                    metrics["messages_invalid"] += 1
+                    await send_json(websocket, envelope(MSG_ERROR, message=err))
+                    continue
+
+                msg_type = data["type"]
+
+                if msg_type == MSG_HELLO:
+                    await send_json(
+                        websocket,
+                        envelope("hello_ack", server="bombermarv", ws_version=WS_SERVER_VERSION),
+                    )
+                    continue
+
+                if msg_type == MSG_REQUEST_SLOT_LIST:
+                    slot_info = build_slot_list()
+                    await send_json(websocket, envelope(MSG_SLOT_LIST, **slot_info))
+                    continue
+
+                if msg_type == MSG_SET_NAME:
+                    name_value = str(data.get("name", "")).strip()
+                    with tracking_lock:
+                        if client_id in clients:
+                            clients[client_id]["display_name"] = name_value[:20] if name_value else None
+                    slot_info = build_slot_list()
+                    await send_json(websocket, envelope(MSG_SLOT_LIST, **slot_info))
+                    continue
+
+                if msg_type == MSG_SELECT_SLOT:
+                    requested_slot = data["slot"]
+                    requested_name = str(data.get("name", "")).strip()
+                    success = False
+                    message = "invalid slot"
+                    with slots_lock:
+                        if requested_slot in slots:
+                            local_taken = 0
+                            with state_lock:
+                                if latest_game_state:
+                                    try:
+                                        local_taken = int(latest_game_state.get("local_player_count", 0))
+                                    except Exception:
+                                        local_taken = 0
+                            if requested_slot <= local_taken:
+                                message = "slot taken by local player"
+                            elif slots[requested_slot] is None:
+                                current_slot = None
                                 with tracking_lock:
-                                    if client_id not in clients or not clients[client_id]['registered']:
-                                        await websocket.send(json.dumps({
-                                            "type": "input_rejected",
-                                            "client_id": client_id,
-                                            "message": "Client not registered. Please register first."
-                                        }))
-                                        continue
-                                
-                                # New format: compact game input [client_id, player_id, up, down, left, right, bomb, ...]
-                                game_input = data.get('input', [])
-                                print(f"DEBUG: Client {client_id} game input: {game_input}")
-                                
-                                # Update player tracking
-                                with tracking_lock:
-                                    clients[client_id]['last_seen'] = time.time()
-                                    
-                                    # Process each player's input
-                                    if len(game_input) > 1:
-                                        print(f"DEBUG: Processing {len(game_input)} input values")
-                                        i = 1  # Skip client_id at index 0
-                                        while i < len(game_input):
-                                            if i + 5 < len(game_input):  # Need at least 6 values: player_id, up, down, left, right, bomb
-                                                requested_player_id = int(game_input[i])
-                                                up, down, left, right, bomb = game_input[i+1:i+6]
-                                                print(f"DEBUG: Player {requested_player_id} keys: up={up}, down={down}, left={left}, right={right}, bomb={bomb}")
-                                                
-                                                # Assign server-side player ID if not exists
-                                                if requested_player_id not in players:
-                                                    # Check if this client already has a player with this ID
-                                                    if requested_player_id in clients[client_id]['players']:
-                                                        # Client already has this player ID, use it
-                                                        player_id = requested_player_id
-                                                    else:
-                                                        # Assign new server-side player ID
-                                                        player_id = len(players) + 1
-                                                        print(f"Assigned server player ID {player_id} to client {client_id} (requested {requested_player_id})")
-                                                    
-                                                    players[player_id] = {
-                                                        'client_id': client_id,
-                                                        'keys': {'up': 0, 'down': 0, 'left': 0, 'right': 0, 'bomb': 0}
-                                                    }
-                                                    clients[client_id]['players'].append(player_id)
-                                                else:
-                                                    player_id = int(requested_player_id)
-                                            
-                                                # Compute key deltas vs previous state and emit keydown/keyup with browser-style names
-                                                previous_keys = players[player_id]['keys'] if player_id in players and 'keys' in players[player_id] else {'up': 0, 'down': 0, 'left': 0, 'right': 0, 'bomb': 0}
-                                                new_keys = {'up': up, 'down': down, 'left': left, 'right': right, 'bomb': bomb}
-                                                
-                                                # Update stored keys
-                                                players[player_id]['keys'] = dict(new_keys)
-                                                
-                                                # Map internal actions to browser key names expected by the game
-                                                action_to_browser_key = {
-                                                    'up': 'arrowup',
-                                                    'down': 'arrowdown',
-                                                    'left': 'arrowleft',
-                                                    'right': 'arrowright',
-                                                    'bomb': 'space'
-                                                }
-                                                
-                                                # Send input to game via input queue
-                                                print(f"DEBUG: Checking input_queue availability...")
-                                                if 'input_queue' in globals() and input_queue:
-                                                    print(f"DEBUG: Input queue available, processing key deltas...")
-                                                    # Generate keydown/keyup events based on deltas
-                                                    for action, new_val in new_keys.items():
-                                                        prev_val = int(previous_keys.get(action, 0))
-                                                        if new_val and not prev_val:
-                                                            # Key pressed
-                                                            evt = {'type': 'keydown', 'key': action_to_browser_key[action], 'client_id': client_id, 'player_id': requested_player_id}
-                                                            try:
-                                                                input_queue.put(evt)
-                                                                print(f"DEBUG: Client {client_id} Player {requested_player_id}: keydown {evt['key']} -> queue")
-                                                            except Exception as e:
-                                                                print(f"DEBUG: Error sending keydown to queue: {e}")
-                                                        elif (not new_val) and prev_val:
-                                                            # Key released
-                                                            evt = {'type': 'keyup', 'key': action_to_browser_key[action], 'client_id': client_id, 'player_id': requested_player_id}
-                                                            try:
-                                                                input_queue.put(evt)
-                                                                print(f"DEBUG: Client {client_id} Player {requested_player_id}: keyup {evt['key']} -> queue")
-                                                            except Exception as e:
-                                                                print(f"DEBUG: Error sending keyup to queue: {e}")
-                                                else:
-                                                    print(f"DEBUG: Input queue not available! globals: {'input_queue' in globals()}, queue: {input_queue}")
-                                                
-                                                i += 6  # Move to next player
-                                            else:
-                                                break
-                                        
-                                        # Send assigned player IDs back to client
-                                        assigned_player_ids = clients[client_id]['players']
-                                        await websocket.send(json.dumps({
-                                            "type": "player_ids_assigned",
-                                            "client_id": client_id,
-                                            "player_ids": assigned_player_ids
-                                        }))
-                                
-                                input_queue.put(data)
-                            elif data.get('type') == 'keys_update':
-                                # Legacy format: client sends all currently pressed keys
-                                new_pressed_keys = set(data.get('pressed_keys', []))
-                                pressed_keys = new_pressed_keys
-                                print(f"Client {client_id} pressed keys: {sorted(pressed_keys)}")
-                                input_queue.put(data)
-                            elif data.get('type') == 'keydown':
-                                # Legacy format: individual key events
-                                pressed_keys.add(data.get('key'))
-                                print(f"Client {client_id} pressed keys: {sorted(pressed_keys)}")
-                                input_queue.put(data)
-                            elif data.get('type') == 'keyup':
-                                # Legacy format: individual key events
-                                pressed_keys.discard(data.get('key'))
-                                print(f"Client {client_id} pressed keys: {sorted(pressed_keys)}")
-                                input_queue.put(data)
-                            elif data.get('type') == 'client_key_debug':
-                                # Client-side debug info: also forward to main process via queue
-                                print(f"DEBUG: CLIENT {client_id} {data.get('event')} key={data.get('key')} pressed={data.get('pressed_keys')}")
-                                try:
-                                    if 'input_queue' in globals() and input_queue:
-                                        input_queue.put(data)
-                                except Exception:
-                                    pass
-                            
-                            # Send acknowledgment back to client for latency measurement
-                            server_timestamp = time.time() * 1000  # Convert to milliseconds
-                            client_timestamp = data.get('client_timestamp')
-                            
-                            # Calculate latency if client timestamp is provided
-                            if client_timestamp:
-                                latency = server_timestamp - client_timestamp
-                                with tracking_lock:
-                                    if client_id in clients:
-                                        clients[client_id]['latency_samples'].append(latency)
-                                        # Keep only last 100 samples to prevent memory growth
-                                        if len(clients[client_id]['latency_samples']) > 100:
-                                            clients[client_id]['latency_samples'] = clients[client_id]['latency_samples'][-100:]
-                            
-                            ack_msg = {
-                                "type": "input_ack",
-                                "client_id": client_id,
-                                "original_timestamp": client_timestamp,
-                                "server_timestamp": server_timestamp
+                                    current_slot = clients.get(client_id, {}).get("slot")
+                                if current_slot:
+                                    slots[current_slot] = None
+                                slots[requested_slot] = client_id
+                                success = True
+                                message = f"joined slot {requested_slot}"
+                            else:
+                                message = "slot already taken"
+                    if not success:
+                        await send_json(websocket, envelope(MSG_REGISTRATION_REJECTED, message=message))
+                        slot_info = build_slot_list()
+                        await send_json(websocket, envelope(MSG_SLOT_LIST, **slot_info))
+                        continue
+                    with tracking_lock:
+                        clients[client_id]["slot"] = requested_slot
+                        clients[client_id]["registered"] = True
+                        if requested_name:
+                            clients[client_id]["display_name"] = requested_name[:20]
+                        clients[client_id]["players"] = [requested_slot]
+                        players[requested_slot] = {
+                            "client_id": client_id,
+                            "keys": {"up": 0, "down": 0, "left": 0, "right": 0, "bomb": 0},
+                        }
+                    await send_json(
+                        websocket,
+                        envelope(
+                            MSG_REGISTRATION_CONFIRMED,
+                            client_id=client_id,
+                            slot=requested_slot,
+                            player_ids=[requested_slot],
+                            message=message,
+                        ),
+                    )
+                    slot_info = build_slot_list()
+                    await send_json(websocket, envelope(MSG_SLOT_LIST, **slot_info))
+                    continue
+
+                if msg_type == MSG_GAME_INPUT:
+                    with tracking_lock:
+                        if not clients.get(client_id, {}).get("registered", False):
+                            await send_json(
+                                websocket,
+                                envelope(MSG_REGISTRATION_REJECTED, message="client not registered"),
+                            )
+                            continue
+                    game_input = data["input"]
+                    client_timestamp = data.get("client_timestamp")
+                    action_to_key = {
+                        "up": "arrowup",
+                        "down": "arrowdown",
+                        "left": "arrowleft",
+                        "right": "arrowright",
+                        "bomb": "space",
+                    }
+                    i = 1
+                    with tracking_lock:
+                        while i + 5 < len(game_input):
+                            requested_player_id = int(game_input[i])
+                            up, down, left, right, bomb = [int(v) for v in game_input[i + 1 : i + 6]]
+                            if requested_player_id not in players:
+                                players[requested_player_id] = {
+                                    "client_id": client_id,
+                                    "keys": {"up": 0, "down": 0, "left": 0, "right": 0, "bomb": 0},
+                                }
+                                if requested_player_id not in clients[client_id]["players"]:
+                                    clients[client_id]["players"].append(requested_player_id)
+                            prev_keys = players[requested_player_id]["keys"]
+                            new_keys = {
+                                "up": up,
+                                "down": down,
+                                "left": left,
+                                "right": right,
+                                "bomb": bomb,
                             }
-                            await websocket.send(json.dumps(ack_msg))
-                        except Exception as e:
-                            print(f"Error parsing input: {e}")
-                except asyncio.TimeoutError:
-                    pass
-                # No longer sending image frames - this is now input-only
-                await asyncio.sleep(0.01)
-        except websockets.ConnectionClosed as cc:
-            print(f"WebSocket connection closed: {cc}")
-        except Exception as e:
-            print(f"Error in handle_client: {e}")
-        print(f"Exiting handle_client for {websocket.remote_address}, client_id: {client_id}")
-        with client_id_lock:
-            client_ids.discard(client_id)
-        
-        with tracking_lock:
-            # Remove all players from this client
-            if client_id in clients:
-                for player_id in clients[client_id]['players']:
-                    if player_id in players:
-                        del players[player_id]
-                del clients[client_id]
+                            players[requested_player_id]["keys"] = dict(new_keys)
+                            for action, new_val in new_keys.items():
+                                old_val = int(prev_keys.get(action, 0))
+                                if new_val and not old_val:
+                                    enqueue_input_event(
+                                        {
+                                            "type": "keydown",
+                                            "key": action_to_key[action],
+                                            "client_id": client_id,
+                                            "player_id": requested_player_id,
+                                            "ws_received_timestamp": int(time.time() * 1000),
+                                        }
+                                    )
+                                elif not new_val and old_val:
+                                    enqueue_input_event(
+                                        {
+                                            "type": "keyup",
+                                            "key": action_to_key[action],
+                                            "client_id": client_id,
+                                            "player_id": requested_player_id,
+                                            "ws_received_timestamp": int(time.time() * 1000),
+                                        }
+                                    )
+                            i += 6
 
-    async def handle_root(request):
-        return web.FileResponse(CLIENT_HTML)
+                    server_timestamp = int(time.time() * 1000)
+                    if client_timestamp:
+                        with tracking_lock:
+                            latency_ms = server_timestamp - int(client_timestamp)
+                            samples = clients[client_id]["latency_samples"]
+                            samples.append((server_timestamp, latency_ms))
+                            cutoff = server_timestamp - 5000
+                            samples = [(ts, val) for (ts, val) in samples if ts >= cutoff]
+                            if len(samples) > 300:
+                                samples = samples[-300:]
+                            clients[client_id]["latency_samples"] = samples
+                    await send_json(
+                        websocket,
+                        envelope(
+                            MSG_INPUT_ACK,
+                            client_id=client_id,
+                            original_timestamp=client_timestamp,
+                            server_timestamp=server_timestamp,
+                        ),
+                    )
+                    continue
 
-    async def handle_static(request):
-        path = request.match_info.get('filename', None)
-        if path and os.path.exists(path):
-            return web.FileResponse(path)
-        return web.Response(status=404)
+                if msg_type == MSG_PING:
+                    await send_json(websocket, envelope(MSG_PONG, server_timestamp=int(time.time() * 1000)))
+        except websockets.ConnectionClosed:
+            logger.info("WebSocket closed for client id=%s", client_id)
+        except Exception as exc:
+            logger.exception("Error in client handler id=%s: %s", client_id, exc)
+        finally:
+            metrics["connections_closed"] += 1
+            with tracking_lock:
+                cdata = clients.pop(client_id, None)
+                if cdata:
+                    for player_id in cdata["players"]:
+                        players.pop(player_id, None)
+            with slots_lock:
+                for slot_id, cid in list(slots.items()):
+                    if cid == client_id:
+                        slots[slot_id] = None
+                        logger.info("Released slot %s for client %s", slot_id, client_id)
 
     async def handle_versions(request):
-        return web.json_response({
-            "ws_server": WS_SERVER_VERSION,
-            "http_server": HTTP_SERVER_VERSION
-        })
-    
+        return web.json_response({"ws_server": WS_SERVER_VERSION, "http_server": HTTP_SERVER_VERSION})
+
     async def handle_config(request):
         import bm_params
-        return web.json_response({
-            "key_send_frequency_limit": bm_params.KEY_SEND_FREQUENCY_LIMIT,
-            "send_on_change": bm_params.SEND_ON_CHANGE,
-            "periodic_sending": bm_params.PERIODIC_SENDING,
-            "min_send_frequency": bm_params.MIN_SEND_FREQUENCY,
-            "max_send_frequency": bm_params.MAX_SEND_FREQUENCY
-        })
-    
-    async def handle_status(request):
-        """Get current client and player status"""
-        with tracking_lock:
-            status = {
-                'clients': {},
-                'players': {}
+
+        return web.json_response(
+            {
+                "send_on_change": bm_params.SEND_ON_CHANGE,
+                "periodic_sending": bm_params.PERIODIC_SENDING,
+                "min_send_frequency": bm_params.MIN_SEND_FREQUENCY,
+                "max_send_frequency": bm_params.MAX_SEND_FREQUENCY,
             }
-            
+        )
+
+    async def handle_status(request):
+        with tracking_lock:
+            status = {"clients": {}, "players": {}}
             for client_id, client_data in clients.items():
-                latency_samples = client_data.get('latency_samples', [])
-                avg_latency = sum(latency_samples) / len(latency_samples) if latency_samples else 0
-                
-                status['clients'][client_id] = {
-                    'players': client_data['players'],
-                    'last_seen': client_data['last_seen'],
-                    'avg_latency': round(avg_latency, 2),
-                    'latency_samples': len(latency_samples),
-                    'registered': client_data.get('registered', False)
+                samples = client_data.get("latency_samples", [])
+                values = []
+                for entry in samples:
+                    if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                        values.append(float(entry[1]))
+                    elif isinstance(entry, (int, float)):
+                        values.append(float(entry))
+                avg_latency = (sum(values) / len(values)) if values else 0.0
+                status["clients"][client_id] = {
+                    "players": client_data["players"],
+                    "last_seen": client_data["last_seen"],
+                    "avg_latency": round(avg_latency, 2),
+                    "avg_latency_5s": round(avg_latency, 2),
+                    "latency_samples": len(values),
+                    "latency_samples_5s": len(values),
+                    "registered": client_data.get("registered", False),
+                    "slot": client_data.get("slot"),
+                    "display_name": client_data.get("display_name"),
                 }
-            
-            for player_id, player_data in players.items():
-                status['players'][player_id] = {
-                    'client_id': player_data['client_id'],
-                    'keys': player_data['keys']
-                }
-        
+            for player_id, pdata in players.items():
+                status["players"][player_id] = {"client_id": pdata["client_id"], "keys": pdata["keys"]}
+        with slots_lock:
+            status["slots"] = {k: (v is not None) for k, v in slots.items()}
         return web.json_response(status)
 
+    async def handle_metrics(request):
+        return web.json_response(metrics)
+
+    async def handle_health(request):
+        return web.json_response({"status": "ok", "timestamp": int(time.time() * 1000)})
+
     def start_http_server():
-        try:
-            app = web.Application()
-            app.router.add_get('/', handle_root)
-            app.router.add_get('/{filename}', handle_static)
-            app.router.add_get('/versions', handle_versions)
-            app.router.add_get('/config', handle_config)
-            app.router.add_get('/status', handle_status)
-            runner = web.AppRunner(app)
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            async def run():
-                try:
-                    await runner.setup()
-                    site = web.TCPSite(runner, '0.0.0.0', HTTP_PORT)
-                    await site.start()
-                    print(f"HTTP server started on port {HTTP_PORT}")
-                    while True:
-                        await asyncio.sleep(3600)
-                except Exception as e:
-                    print(f"HTTP server failed to start: {e}")
-                    raise
-            loop.run_until_complete(run())
-        except Exception as e:
-            print(f"HTTP server startup failed: {e}")
-            import traceback
-            traceback.print_exc()
+        app = web.Application()
+        app.router.add_get("/health", handle_health)
+        app.router.add_get("/versions", handle_versions)
+        app.router.add_get("/config", handle_config)
+        app.router.add_get("/status", handle_status)
+        app.router.add_get("/metrics", handle_metrics)
+        runner = web.AppRunner(app)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        async def run():
+            await runner.setup()
+            site = web.TCPSite(runner, "0.0.0.0", HTTP_PORT)
+            await site.start()
+            logger.info("HTTP diagnostics server started on port %s", HTTP_PORT)
+            while True:
+                await asyncio.sleep(3600)
+
+        loop.run_until_complete(run())
 
     async def main():
-        print(f"Starting WebSocket server on port {PORT}")
-        ws_server = websockets.serve(handle_client, "0.0.0.0", PORT, max_size=2**22)
-        threading.Thread(target=start_http_server, daemon=True).start()
-        await ws_server
-        await asyncio.Future()  # run forever
+        logger.info("Starting websocket server on port %s", PORT)
+        threading.Thread(target=start_http_server, daemon=True, name="http-server").start()
+        asyncio.create_task(broadcast_loop())
+        asyncio.create_task(cleanup_stale_clients_loop())
+        ws_server = await websockets.serve(
+            handle_client,
+            "0.0.0.0",
+            PORT,
+            max_size=2**22,
+            ping_interval=20,
+            ping_timeout=20,
+        )
+        await ws_server.wait_closed()
 
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        # Process termination (Ctrl+C / taskkill) should not print a traceback.
+        logger.info("Websocket server shutdown requested.")

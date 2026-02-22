@@ -229,11 +229,9 @@ class GameCommandHandler:
     
     def _handle_close_window(self):
         """Handle window close"""
-        # Signal the frontend to quit instead of calling pygame.quit() directly
+        # Signal the main loop to exit gracefully.
         if hasattr(self.game, 'frontend') and self.game.frontend:
             self.game.frontend.should_quit = True
-        import sys
-        sys.exit()
     
     def _handle_start_game(self):
         """Handle start game command"""

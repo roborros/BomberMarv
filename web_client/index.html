@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>web_client</title>
+</head>
+
+<body>
+  <div id="app">Loading BomberMarv... (if you see this, JS failed to load)</div>
+
+  <div id="lobby-overlay" class="hidden">
+    <div class="lobby-content">
+      <h1>Join Lobby</h1>
+      <p id="lobby-help">Pick a display name, choose a slot, and decide whether to render the live game screen.</p>
+      <div class="lobby-controls-row">
+        <input id="player-name" type="text" maxlength="20" placeholder="Display name" />
+        <label id="render-toggle-wrap">
+          <input id="render-toggle" type="checkbox" checked />
+          Show game screen
+        </label>
+      </div>
+      <div id="slot-container">
+        <!-- Slots will be injected here -->
+      </div>
+      <div id="lobby-status">Connecting to server...</div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+
+</html>

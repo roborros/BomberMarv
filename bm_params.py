@@ -53,9 +53,22 @@ EXPLOSION_COLLISION_SCALE = 0.6
 # Post-win delay (ms): keep game running briefly after a win before showing screen
 ENDGAME_POST_DELAY_MS = 2500
 
-DEGUG = False
+# --- Replay settings ---
+# How often to log snapshots for replay (ms)
+REPLAY_LOG_INTERVAL_MS = 100
+# How much history to keep/play back on win (ms)
+REPLAY_BUFFER_MS = 5000
+# Camera radius in cells (viewport will be (2*r+1) cells in width/height)
+REPLAY_CAMERA_RADIUS_CELLS = 5
+# Replay panel width as a fraction of base width on the win screen
+REPLAY_PANEL_WIDTH_RATIO = 0.42
+REPLAY_PANEL_PADDING = 12
 
-if DEGUG:
+DEBUG_MODE = False
+# Backward-compatible alias used in existing modules.
+DEGUG = DEBUG_MODE
+
+if DEBUG_MODE:
     SHOW_PLAYER_DIRECTIONS = True  # Set to False to disable direction arrows
     SHOW_EXPLOSION_COLLISION_DEBUG = True  # Set to False to disable red collision boxes
     EXPLOSION_DURATION = 4000
@@ -145,13 +158,8 @@ window = None  # Will be set by frontend
 game_surface = None  # Will be set by frontend
 
 # Input sending configuration
-KEY_SEND_FREQUENCY_LIMIT = 20  # Default frequency limit in milliseconds
 SEND_ON_CHANGE = True  # Send input immediately when it changes
 PERIODIC_SENDING = True  # Send input periodically even without changes
 MIN_SEND_FREQUENCY = 1  # Minimum allowed frequency (ms)
 MAX_SEND_FREQUENCY = 1000  # Maximum allowed frequency (ms)
-
-# Quad Damage Powerup Settings
-QUAD_DAMAGE_DELAY = 30  # Seconds before quad damage can start appearing
-QUAD_DAMAGE_PROBABILITY = 0.001  # Probability per game tick (0.1% chance per tick at 60 FPS = ~6% per second)
 

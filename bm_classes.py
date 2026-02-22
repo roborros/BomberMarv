@@ -264,6 +264,20 @@ class Player:
         self.fire_power_at_death = None
         self.bomb_capacity_at_death = None
 
+    def to_dict(self):
+        # Handle numpy arrays for serialization
+        return {
+            'id': getattr(self, 'global_id', 0),
+            'name': self.name,
+            'x': float(self.pos[0]),
+            'y': float(self.pos[1]),
+            'color': self.color,  # Assuming tuple/list
+            'alive': self.alive,
+            'direction': [float(self.direction[0]), float(self.direction[1])],
+            'quad_damage': self.quad_damage,
+            'death_anim_time': self.death_animation_time
+        }
+
 class Bomb:
     def __init__(self, x, y, start_time, fire_power, owner):
         self.x = x
@@ -280,6 +294,15 @@ class Bomb:
             self.exploded = True
         return current_time - self.start_time >= BOMB_TIMER
 
+    def to_dict(self):
+        return {
+            'x': self.x,
+            'y': self.y,
+            'start_time': self.start_time,
+            'fire_power': self.fire_power,
+            'quad_damage': self.quad_damage
+        }
+
 class Explosion:
     def __init__(self, cells, start_time, quad_damage=False):
         self.cells = cells
@@ -289,12 +312,26 @@ class Explosion:
     def is_active(self, current_time):
         return current_time - self.start_time < EXPLOSION_DURATION
 
+    def to_dict(self):
+        return {
+            'cells': self.cells,
+            'start_time': self.start_time,
+            'quad_damage': self.quad_damage
+        }
+
 class PowerUp:
     def __init__(self, x, y, type, spawn_time=0):
         self.x = x
         self.y = y
         self.type = type
         self.spawn_time = spawn_time
+
+    def to_dict(self):
+        return {
+            'x': self.x,
+            'y': self.y,
+            'type': self.type
+        }
 
 
 
@@ -335,6 +372,15 @@ class Game:
 
         # Track death event times within a round (ms)
         self.death_events = []
+
+        # Replay buffer: list of (timestamp_ms, snapshot_dict)
+        self.replay_buffer = []
+        self.last_replay_log_time = 0
+        # Frozen replay segment captured at round end (list of (t, snapshot))
+        self.replay_segment = None
+        self.replay_segment_start_time = 0
+        self.replay_segment_end_time = 0
+        self.replay_loop_anchor_time = None
         
         # Game preparation screen state
         self.prep_num_players = NUM_PLAYERS
@@ -385,9 +431,11 @@ class Game:
             for client_id, client_info in clients.items():
                 if client_info.get('registered', False):
                     client_players = client_info.get('players', [])
+                    display_name = client_info.get('display_name')
                     for player_id in client_players:
                         # Use stored name and color if available, otherwise use defaults
-                        stored_name = self.prep_web_player_names.get(global_player_id, f"Client {client_id} P{player_id}")
+                        default_name = str(display_name).strip() if display_name else f"Client {client_id} P{player_id}"
+                        stored_name = self.prep_web_player_names.get(global_player_id, default_name)
                         stored_color = self.prep_web_player_colors.get(global_player_id, global_player_id % len(colors))
                         
                         all_players.append({
@@ -434,7 +482,7 @@ class Game:
         """Refresh client status from server"""
         try:
             import requests
-            response = requests.get('http://localhost:8080/status', timeout=0.5)
+            response = requests.get('http://localhost:8080/status', timeout=0.12)
             if response.status_code == 200:
                 self._cached_status = response.json()
             else:
@@ -466,6 +514,16 @@ class Game:
         self.death_events = []
         self.post_win_transition_time = None
         self.post_win_target_state = None
+        self.replay_buffer = []
+        self.last_replay_log_time = 0
+        # Clear any previous replay segment/state
+        self.replay_segment = None
+        self.replay_segment_start_time = 0
+        self.replay_segment_end_time = 0
+        self.replay_loop_anchor_time = None
+        self.replay_focus_player = None
+        self.replay_end_time = None
+        self.replay_start_time = None
         # Mark round start to compute relative death times for display
         self.round_start_time = self.current_time
         for p in self.players:
@@ -821,7 +879,14 @@ class Game:
                                 
     def tick(self):
         self.dt = self.clock.tick(FPS)
-        self.current_time = get_ticks()                
+        self.current_time = get_ticks()
+        # Replay snapshots are only needed for active-round states.
+        if (
+            self.game_state in ("get_ready", "playing", "win")
+            and self.current_time - getattr(self, 'last_replay_log_time', 0) >= REPLAY_LOG_INTERVAL_MS
+        ):
+            self._log_replay_snapshot()
+            self.last_replay_log_time = self.current_time
                     
     def handle_window_events(self):
         """Handle window events using the new frontend/backend separation"""
@@ -834,6 +899,42 @@ class Game:
         """Set the frontend reference"""
         self.frontend = frontend
         self.screen = frontend.screen
+
+    def _log_replay_snapshot(self):
+        """Capture a lightweight snapshot of the current game state for replay."""
+        # Copy positions and alive flags for players, bombs and explosions positions, powerups
+        players_state = []
+        for p in self.players:
+            players_state.append({
+                'name': p.name,
+                'color': p.color,
+                'pos': (float(p.pos[0]), float(p.pos[1])),
+                'alive': bool(p.alive),
+                'draw_radius': int(p.draw_radius),
+                'fire_power': int(p.fire_power),
+                'bomb_capacity': int(p.bomb_capacity),
+            })
+        bombs_state = [{'x': b.x, 'y': b.y, 'start': int(b.start_time)} for b in self.bombs]
+        explosions_state = []
+        for e in self.explosions:
+            explosions_state.append({
+                'cells': list(e.cells),
+                'start': int(e.start_time),
+                'qd': bool(e.quad_damage)
+            })
+        powerups_state = [{'x': pu.x, 'y': pu.y, 'type': pu.type} for pu in self.powerups]
+        snapshot = {
+            't': int(self.current_time),
+            'players': players_state,
+            'bombs': bombs_state,
+            'explosions': explosions_state,
+            'powerups': powerups_state,
+        }
+        self.replay_buffer.append((self.current_time, snapshot))
+        # Trim to buffer window
+        min_time = self.current_time - REPLAY_BUFFER_MS
+        while self.replay_buffer and self.replay_buffer[0][0] < min_time:
+            self.replay_buffer.pop(0)
     
     def handle_prep_key_event(self, event):
         """Handle key events for game lobby navigation"""
@@ -971,8 +1072,9 @@ class Game:
         player_id = int(event.get('player_id', 0) or 0)
         client_id = int(event.get('client_id', 0) or 0)
         
-        print(f"DEBUG: handle_web_key_event called with event: {event}")
-        print(f"DEBUG: Looking for client_id={client_id}, player_id={player_id}")
+        if DEGUG:
+            print(f"DEBUG: handle_web_key_event called with event: {event}")
+            print(f"DEBUG: Looking for client_id={client_id}, player_id={player_id}")
         
         if not hasattr(self, 'web_keys_by_player'):
             self.web_keys_by_player = {}
@@ -980,7 +1082,8 @@ class Game:
         # Find the corresponding player object
         player_obj = None
         for player in self.players:
-            print(f"DEBUG: Checking player: is_local={player.is_local}, client_id={getattr(player, 'client_id', None)}, client_player_id={getattr(player, 'client_player_id', None)}")
+            if DEGUG:
+                print(f"DEBUG: Checking player: is_local={player.is_local}, client_id={getattr(player, 'client_id', None)}, client_player_id={getattr(player, 'client_player_id', None)}")
             # Normalize stored ids to int for robust comparison
             try:
                 stored_client = int(getattr(player, 'client_id', -1)) if getattr(player, 'client_id', None) is not None else -1
@@ -994,12 +1097,14 @@ class Game:
                 stored_client == client_id and 
                 stored_player == player_id):
                 player_obj = player
-                print(f"DEBUG: Found matching player object!")
+                if DEGUG:
+                    print(f"DEBUG: Found matching player object!")
                 break
         
         if player_obj is None:
-            print(f"DEBUG: No matching player found for client_id={client_id}, player_id={player_id}")
-            print(f"DEBUG: Available players: {[(p.is_local, getattr(p, 'client_id', None), getattr(p, 'client_player_id', None)) for p in self.players]}")
+            if DEGUG:
+                print(f"DEBUG: No matching player found for client_id={client_id}, player_id={player_id}")
+                print(f"DEBUG: Available players: {[(p.is_local, getattr(p, 'client_id', None), getattr(p, 'client_player_id', None)) for p in self.players]}")
         
         if player_obj is not None:
             if player_obj not in self.web_keys_by_player:
@@ -1008,7 +1113,8 @@ class Game:
                 # Normalize key to lowercase for consistent comparisons
                 keyname = str(event['key']).lower()
                 self.web_keys_by_player[player_obj].add(keyname)
-                print(f"DEBUG: Player {player_obj.client_id}:{player_obj.client_player_id} KEYS DOWN -> {sorted(list(self.web_keys_by_player[player_obj]))}")
+                if DEGUG:
+                    print(f"DEBUG: Player {player_obj.client_id}:{player_obj.client_player_id} KEYS DOWN -> {sorted(list(self.web_keys_by_player[player_obj]))}")
                 # Allow Enter/Return to start the game from browser
                 if keyname in ('enter', 'return'):
                     if self.game_state == "startup":
@@ -1019,7 +1125,8 @@ class Game:
             elif event['type'] == 'keyup':
                 keyname = str(event['key']).lower()
                 self.web_keys_by_player[player_obj].discard(keyname)
-                print(f"DEBUG: Player {player_obj.client_id}:{player_obj.client_player_id} KEYS UP -> {sorted(list(self.web_keys_by_player[player_obj]))}")
+                if DEGUG:
+                    print(f"DEBUG: Player {player_obj.client_id}:{player_obj.client_player_id} KEYS UP -> {sorted(list(self.web_keys_by_player[player_obj]))}")
 
     def update(self):
         # update players
@@ -1129,6 +1236,20 @@ class Game:
                     else:
                         self.post_win_target_state = "win"
                 self.post_win_transition_time = self.current_time + ENDGAME_POST_DELAY_MS
+                # Prepare replay segment metadata: find last-dead player and replay window bounds
+                last_dead_time = None
+                last_dead_player_name = None
+                for p in self.players:
+                    if p.death_time_ms is not None and (last_dead_time is None or p.death_time_ms > last_dead_time):
+                        last_dead_time = p.death_time_ms
+                        last_dead_player_name = p.name
+                self.replay_focus_player = last_dead_player_name
+                self.replay_end_time = self.current_time
+                self.replay_start_time = max(0, self.replay_end_time - REPLAY_BUFFER_MS)
+                # Freeze the replay segment now so it doesn't get trimmed while on win screen
+                self.replay_segment_start_time = self.replay_start_time
+                self.replay_segment_end_time = self.replay_end_time
+                self.replay_segment = [(t, snap) for (t, snap) in self.replay_buffer if self.replay_start_time <= t <= self.replay_end_time]
 
         # If a post-win transition has been scheduled, execute it when time comes
         if self.post_win_target_state is not None and self.post_win_transition_time is not None:
@@ -1137,6 +1258,25 @@ class Game:
                 # Clear schedule to avoid repeat
                 self.post_win_target_state = None
                 self.post_win_transition_time = None
+
+    def to_dict(self):
+        # Ensure board is serializable (convert from numpy array if needed)
+        board_data = self.board.tolist() if hasattr(self.board, 'tolist') else self.board
+        
+        return {
+            'time': self.current_time,
+            'state': self.game_state,
+            'board': board_data,
+            'players': [p.to_dict() for p in self.players],
+            'bombs': [b.to_dict() for b in self.bombs],
+            'explosions': [e.to_dict() for e in self.explosions],
+            'powerups': [p.to_dict() for p in self.powerups],
+            'crushing_walls': {
+                'active': self.crushing_walls_active,
+                'index': self.crushing_walls_index
+            },
+            'local_player_count': int(self.prep_num_players if self.game_state in ["startup", "game_prep"] else sum(1 for p in self.players if getattr(p, 'is_local', False))),
+        }
             
 # Screen class and methods moved to frontend.py
 

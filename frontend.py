@@ -3,6 +3,7 @@ Frontend module for handling all pygame/screen/window related functionality.
 This is the only module that should import pygame directly.
 """
 
+import os
 import pygame
 import sys
 from typing import Optional, Tuple
@@ -75,6 +76,8 @@ class FrontendRenderer:
     def __init__(self, screen: FrontendScreen, window: FrontendWindow):
         self.screen = screen
         self.window = window
+        # smoothscale is visibly nicer, but significantly slower at large internal resolutions.
+        self.use_smoothscale = os.environ.get("BM_USE_SMOOTHSCALE", "0") == "1"
     
     def draw_adjust_screen_size(self):
         """Draw the game surface scaled to fit the window"""
@@ -86,8 +89,16 @@ class FrontendRenderer:
                     self.screen.window_size[1] / BASE_HEIGHT)
         new_width = int(BASE_WIDTH * factor)
         new_height = int(BASE_HEIGHT * factor)
-        
-        scaled_surface = pygame.transform.smoothscale(self.screen.surface, (new_width, new_height))
+
+        if new_width <= 0 or new_height <= 0:
+            return
+
+        if new_width == BASE_WIDTH and new_height == BASE_HEIGHT:
+            scaled_surface = self.screen.surface
+        elif self.use_smoothscale:
+            scaled_surface = pygame.transform.smoothscale(self.screen.surface, (new_width, new_height))
+        else:
+            scaled_surface = pygame.transform.scale(self.screen.surface, (new_width, new_height))
         self.window.window.fill((0, 0, 0))
         x_offset = (self.screen.window_size[0] - new_width) // 2
         y_offset = (self.screen.window_size[1] - new_height) // 2
