@@ -2,10 +2,44 @@ import pygame
 import numpy as np
 import time
 import math
+import os
+import bm_params as bmp
 from bm_params import *
 from input_abstraction import get_key_name
 from timing_abstraction import get_ticks
 from lib_collisions import circle_rect_collision
+
+_AVATAR_CACHE = {}
+
+
+def _get_image_asset(name):
+    """Resolve image assets lazily from bm_params at runtime."""
+    bmp.init_assets()
+    return getattr(bmp, name, None)
+
+
+def _load_avatar_by_name(name, size):
+    if not name:
+        return None
+    key = (name.lower(), int(size))
+    if key in _AVATAR_CACHE:
+        return _AVATAR_CACHE[key]
+    avatar_path = os.path.join('img', 'avatars', f'{name}.png')
+    if not os.path.exists(avatar_path):
+        _AVATAR_CACHE[key] = None
+        return None
+    try:
+        img = pygame.image.load(avatar_path).convert_alpha()
+        scaled = pygame.transform.smoothscale(img, (int(size), int(size)))
+        mask = pygame.Surface((int(size), int(size)), pygame.SRCALPHA)
+        pygame.draw.circle(mask, (255, 255, 255, 255), (int(size // 2), int(size // 2)), int(size // 2))
+        avatar = scaled.copy()
+        avatar.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+        _AVATAR_CACHE[key] = avatar
+        return avatar
+    except Exception:
+        _AVATAR_CACHE[key] = None
+        return None
 
 def _format_controls(controls):
     """Convert pygame key constants to readable control names"""
@@ -64,6 +98,9 @@ def draw_title_page(surface, alpha=255):
     
     surface.fill(COLOR_BG) 
     
+    logo_image = _get_image_asset("logo_image")
+    if logo_image is None:
+        return
     # Get the original dimensions of the logo
     logo_width, logo_height = logo_image.get_size()
     
@@ -170,6 +207,9 @@ def draw_fire_powerup_icon(surface, center, size):
     blue_border = (0, 255, 255)
     pygame.draw.rect(surface, blue_border, rect, 4)
     
+    fire_powerup_image = _get_image_asset("fire_powerup_image")
+    if fire_powerup_image is None:
+        return
     # Scale the fire powerup image to fit the size
     scaled_image = pygame.transform.smoothscale(fire_powerup_image, (size, size))
     
@@ -180,6 +220,9 @@ def draw_fire_powerup_icon(surface, center, size):
     surface.blit(scaled_image, image_rect)
 
 def draw_quad_damage_powerup_icon(surface, center, size):
+    quad_damage_image = _get_image_asset("quad_damage_image")
+    if quad_damage_image is None:
+        return
     # Scale the quad damage image to fit the size
     scaled_image = pygame.transform.smoothscale(quad_damage_image, (size, size))
     
@@ -227,8 +270,14 @@ def draw_players(surface, players):
         pos = (int(player.pos[0]), int(player.pos[1]))
         r = player.draw_radius
         if player.alive:
-            pygame.gfxdraw.filled_circle(surface, pos[0], pos[1], r, player.color)
-            pygame.gfxdraw.aacircle(surface, pos[0], pos[1], r, player.color)
+            avatar = _load_avatar_by_name(getattr(player, 'name', ''), 2 * r)
+            if avatar is not None:
+                avatar_rect = avatar.get_rect(center=(pos[0], pos[1]))
+                surface.blit(avatar, avatar_rect)
+                pygame.gfxdraw.aacircle(surface, pos[0], pos[1], r, (255, 255, 255))
+            else:
+                pygame.gfxdraw.filled_circle(surface, pos[0], pos[1], r, player.color)
+                pygame.gfxdraw.aacircle(surface, pos[0], pos[1], r, player.color)
             helmet_color = (min(player.color[0]+30,255), min(player.color[1]+30,255), min(player.color[2]+30,255))
             rect_head = np.array([pos[0]-r, pos[1]-r, 2*r, 2*r], dtype=np.float64)
             pygame.draw.arc(surface, helmet_color, rect_head, math.pi, 2*math.pi, 3)
@@ -313,11 +362,13 @@ def draw_explosions(surface, current_time, explosions):
         right_length = arm_factor * right_max * CELL_SIZE
         
         if explosion.quad_damage:
-            img = blast_image_qd
-            center_img = blast_centre_image_qd
+            img = _get_image_asset("blast_image_qd")
+            center_img = _get_image_asset("blast_centre_image_qd")
         else:
-            img = blast_image
-            center_img = blast_centre_image
+            img = _get_image_asset("blast_image")
+            center_img = _get_image_asset("blast_centre_image")
+        if img is None or center_img is None:
+            continue
         
         # Draw the center of the explosion using the center image
         scaled_center_img = pygame.transform.smoothscale(center_img, (CELL_SIZE * FLAME_ARM_THICKNESS_RATIO, CELL_SIZE * FLAME_ARM_THICKNESS_RATIO))
@@ -468,6 +519,7 @@ def draw_controls(surface, players):
 def draw_stat_screen(surface, winner, players, game=None):
     _ensure_fonts_initialized()
     font = pygame.font.SysFont("arial", 48, bold=True)
+    big_winner_font = pygame.font.SysFont("arial", 96, bold=True)
     draw_title_page(surface, alpha=255)
     if winner:
         x_start = BASE_WIDTH//2 + 150
@@ -475,25 +527,33 @@ def draw_stat_screen(surface, winner, players, game=None):
         for i in range(winner.trophies):
             trophy_pos = (x_start + i * (icon_size + 5), BASE_HEIGHT//2 + 70)
             draw_trophy_icon(surface, trophy_pos, icon_size)
-        text = font.render(f"{winner.name} wins!", True, winner.color)
+        text = big_winner_font.render(f"{winner.name} wins!", True, winner.color)
     else:
         text = font.render("No one wins!", True, (255,255,255))
     rect = text.get_rect(center=(BASE_WIDTH//2, BASE_HEIGHT//2 + 80))
     surface.blit(text, rect)
     font_small = pygame.font.SysFont("arial", 32)
     y_offset = BASE_HEIGHT//2 + 110
-    # Columns: Name | Trophies | Death (s) | Flames | Bombs
+    # Columns: Name | Trophies | Death (s) | Flames | Bombs | Kills | Walls | PU | Cells
     name_x = 50
     trophies_x = 260
     death_x = 450
     flames_x = 590
     bombs_x = 680
+    kills_x = 760
+    walls_x = 840
+    pups_x = 920
+    walked_x = 1000
     header_color = (200, 200, 200)
     surface.blit(font_small.render("Player", True, header_color), (name_x, y_offset))
     surface.blit(font_small.render("Trophies", True, header_color), (trophies_x, y_offset))
     surface.blit(font_small.render("Death (s)", True, header_color), (death_x, y_offset))
     surface.blit(font_small.render("Flames", True, header_color), (flames_x, y_offset))
     surface.blit(font_small.render("Bombs", True, header_color), (bombs_x, y_offset))
+    surface.blit(font_small.render("Kills", True, header_color), (kills_x, y_offset))
+    surface.blit(font_small.render("Walls", True, header_color), (walls_x, y_offset))
+    surface.blit(font_small.render("PU", True, header_color), (pups_x, y_offset))
+    surface.blit(font_small.render("Cells", True, header_color), (walked_x, y_offset))
     y_offset += 34
     for i, player in enumerate(players):
         # Name
@@ -532,8 +592,16 @@ def draw_stat_screen(surface, winner, players, game=None):
 
         flames_text = font_small.render(str(flames_val), True, (255, 220, 160))
         bombs_text = font_small.render(str(bombs_val), True, (160, 220, 255))
+        kills_text = font_small.render(str(getattr(player, 'players_killed', 0)), True, (255, 180, 180))
+        walls_text = font_small.render(str(getattr(player, 'walls_destroyed', 0)), True, (220, 200, 170))
+        pups_text = font_small.render(str(getattr(player, 'powerups_collected', 0)), True, (180, 255, 180))
+        walked_text = font_small.render(str(getattr(player, 'cells_walked', 0)), True, (180, 220, 255))
         surface.blit(flames_text, (flames_x, y_offset))
         surface.blit(bombs_text, (bombs_x, y_offset))
+        surface.blit(kills_text, (kills_x, y_offset))
+        surface.blit(walls_text, (walls_x, y_offset))
+        surface.blit(pups_text, (pups_x, y_offset))
+        surface.blit(walked_text, (walked_x, y_offset))
         y_offset += 36
 
     # Draw replay panel on the right side (if replay data is available)
@@ -745,6 +813,7 @@ def draw_game_prep(surface, Game):
             'id': global_player_id,
             'name': Game.prep_player_names[i % len(Game.prep_player_names)],
             'color': Game.prep_player_colors[i % len(Game.prep_player_colors)],
+            'team': Game.prep_player_teams[i % len(Game.prep_player_teams)],
             'type': 'local',
             'source': i,
             'status': _format_controls(Game.prep_controls[i % len(Game.prep_controls)]),
@@ -777,6 +846,7 @@ def draw_game_prep(surface, Game):
                 'id': global_player_id,
                 'name': resolved_name,
                 'color': global_player_id % len(colors),
+                'team': (global_player_id - 1) % 2,
                 'type': 'client',
                 'source': (client_id, player_id),
                 'status': live_status,
@@ -851,8 +921,10 @@ def draw_game_prep(surface, Game):
         name_color = (250, 234, 130) if (selected or editing) else (234, 242, 255)
         status_color = (142, 246, 160) if p['type'] == 'client' and p['status'] != 'IDLE' else (164, 181, 203)
         status_text = p['status']
+        team_text = f"T{int(p.get('team', 0)) + 1}"
         if p['type'] == 'client':
             status_text = f"{p['status']} | {int(round(float(p.get('latency_5s', 0))))} ms"
+        status_text = f"{team_text} | {status_text}"
 
         line_font = pygame.font.SysFont("arial", 34, bold=True)
         status_font = pygame.font.SysFont("arial", 28, bold=True)
@@ -911,5 +983,5 @@ def draw_game_prep(surface, Game):
     start_text = label_font.render("START GAME", True, start_text_col)
     surface.blit(start_text, start_text.get_rect(center=start_rect.center))
 
-    help_text = "ARROWS navigate | ENTER select/edit | LEFT/RIGHT change color | TAB switch area | ESC back"
+    help_text = "ARROWS navigate | ENTER select/edit | LEFT/RIGHT color | T team | TAB switch | ESC back"
     surface.blit(font_small.render(help_text, True, (160, 176, 198)), (footer.x + 18, footer.y + 44))

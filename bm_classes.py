@@ -9,6 +9,9 @@ from input_abstraction import get_pressed_keys, is_key_pressed, Keys
 from timing_abstraction import get_ticks, Clock
 from frontend import FrontendManager
 from backend_game_logic import BackendGameLogic
+from explosions import compute_explosion_active_cells
+from powerups import choose_death_bonus_effect
+from replay import build_replay_snapshot
 
 
 
@@ -44,6 +47,14 @@ class Player:
         # Stats snapshot at death
         self.fire_power_at_death = None
         self.bomb_capacity_at_death = None
+        # Match statistics
+        self.walls_destroyed = 0
+        self.players_killed = 0
+        self.powerups_collected = 0
+        self.cells_walked = 0
+        self._last_grid_pos = None
+        # Team mode (0 by default, assigned in create_players)
+        self.team = 0
 
     def get_circle(self):
         return (self.pos, self.draw_radius)
@@ -168,6 +179,10 @@ class Player:
         original_pos = self.pos.copy()
         spd = self.speed if not self.quad_damage else int(self.speed * QUAD_DAMAGE_SPEEDUP)
         self.pos = self.pos + direction * spd * (dt / 1000.0)
+        current_grid = self.get_grid_pos()
+        if self._last_grid_pos is not None and current_grid != self._last_grid_pos:
+            self.cells_walked += 1
+        self._last_grid_pos = current_grid
 
         # Update bomb ownership if the player has left their bomb cell.
         for bomb in bombs:
@@ -195,12 +210,17 @@ class Player:
             self.fire_power -= QUAD_DAMAGE_POWER
             
     def collides_with_walls(self, board):
-        for y in range(GRID_HEIGHT):
-            for x in range(GRID_WIDTH):
-                if board[y][x] in (INDESTRUCTIBLE, DESTRUCTIBLE):
-                    wall_rect = np.array([x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE], dtype=np.float64)
-                    if circle_rect_collision((self.pos[0], self.pos[1]), self.collision_radius, wall_rect):
-                        return True
+        center_x = int(self.pos[0] // CELL_SIZE)
+        center_y = int(self.pos[1] // CELL_SIZE)
+        for dy in range(-1, 2):
+            for dx in range(-1, 2):
+                x = center_x + dx
+                y = center_y + dy
+                if 0 <= x < GRID_WIDTH and 0 <= y < GRID_HEIGHT:
+                    if board[y][x] in (INDESTRUCTIBLE, DESTRUCTIBLE):
+                        wall_rect = np.array([x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE], dtype=np.float64)
+                        if circle_rect_collision((self.pos[0], self.pos[1]), self.collision_radius, wall_rect):
+                            return True
         return False
 
     def collides_with_bombs(self, bombs, original_pos):
@@ -263,6 +283,11 @@ class Player:
         self.death_time_rel_ms = None
         self.fire_power_at_death = None
         self.bomb_capacity_at_death = None
+        self.walls_destroyed = 0
+        self.players_killed = 0
+        self.powerups_collected = 0
+        self.cells_walked = 0
+        self._last_grid_pos = self.get_grid_pos()
 
     def to_dict(self):
         # Handle numpy arrays for serialization
@@ -278,6 +303,11 @@ class Player:
             'death_anim_time': self.death_animation_time,
             'fire_power': int(self.fire_power),
             'bomb_capacity': int(self.bomb_capacity),
+            'walls_destroyed': int(self.walls_destroyed),
+            'players_killed': int(self.players_killed),
+            'powerups_collected': int(self.powerups_collected),
+            'cells_walked': int(self.cells_walked),
+            'team': int(self.team),
         }
 
 class Bomb:
@@ -306,10 +336,11 @@ class Bomb:
         }
 
 class Explosion:
-    def __init__(self, cells, start_time, quad_damage=False):
+    def __init__(self, cells, start_time, quad_damage=False, owner=None):
         self.cells = cells
         self.start_time = start_time
         self.quad_damage = quad_damage
+        self.owner = owner
 
     def is_active(self, current_time):
         return current_time - self.start_time < EXPLOSION_DURATION
@@ -318,7 +349,8 @@ class Explosion:
         return {
             'cells': self.cells,
             'start_time': self.start_time,
-            'quad_damage': self.quad_damage
+            'quad_damage': self.quad_damage,
+            'owner_player_id': int(getattr(self.owner, "global_id", 0)) if self.owner is not None else None,
         }
 
 class PowerUp:
@@ -359,6 +391,8 @@ class Game:
         # Initialize event handling system
         self.frontend = None  # Will be set after frontend is available
         self.backend_logic = BackendGameLogic(self)
+        self.friendly_fire = False
+        self._cached_status = None
         
         # Crushing walls feature variables
         self.crushing_walls_active = False
@@ -388,6 +422,7 @@ class Game:
         self.prep_num_players = NUM_PLAYERS
         self.prep_player_names = player_names.copy()
         self.prep_player_colors = list(range(len(colors)))  # Store color indices instead of colors
+        self.prep_player_teams = [i % 2 for i in range(len(player_names))]
         self.prep_controls = [controls.copy() for controls in controls_list]
         
         # Lobby navigation system
@@ -418,6 +453,7 @@ class Game:
                 'id': global_player_id,
                 'name': player_name,
                 'color': color_idx,
+                'team': self.prep_player_teams[i % len(self.prep_player_teams)],
                 'type': 'local',
                 'source': i,  # Index for local player data
                 'controls': self.prep_controls[i % len(self.prep_controls)]
@@ -444,6 +480,7 @@ class Game:
                             'id': global_player_id,
                             'name': stored_name,
                             'color': stored_color,
+                            'team': (global_player_id - 1) % 2,
                             'type': 'client',
                             'source': (client_id, player_id),  # Client and player ID
                             'controls': None  # Client players don't use local controls
@@ -478,19 +515,12 @@ class Game:
                 p.client_player_id = player_info['source'][1]
             
             p.global_id = player_info['id']
+            p.team = int(player_info.get('team', (p.global_id - 1) % 2))
             self.players.append(p)
     
     def _refresh_client_status(self):
-        """Refresh client status from server"""
-        try:
-            import requests
-            response = requests.get('http://localhost:8080/status', timeout=0.12)
-            if response.status_code == 200:
-                self._cached_status = response.json()
-            else:
-                self._cached_status = None
-        except Exception as e:
-            self._cached_status = None
+        """Status refresh is now queue-driven in the host loop."""
+        return self._cached_status
     
     def init_game(self):
         # Refresh client status before creating players
@@ -744,7 +774,7 @@ class Game:
                     # Remove any bombs in this cell (they explode immediately)
                     for bomb in self.bombs[:]:
                         if bomb.x == x and bomb.y == y:
-                            exp = Explosion(self.get_explosion_cells(bomb), self.current_time, bomb.quad_damage)
+                            exp = Explosion(self.get_explosion_cells(bomb), self.current_time, bomb.quad_damage, owner=bomb.owner)
                             self.explosions.append(exp)
                             bomb.owner.active_bombs -= 1
                             self.bombs.remove(bomb)
@@ -770,49 +800,9 @@ class Game:
     def handle_explosions(self):
         
         for explosion in self.explosions[:]:
-            # Calculate animation timing (same as in draw_explosions)
-            norm = (self.current_time - explosion.start_time) / EXPLOSION_DURATION
-            norm = min(norm, 1)
-            if norm < 0.2:
-                arm_factor = norm / 0.2
-            elif norm <= 0.7:
-                arm_factor = 1
-            else:
-                arm_factor = (1 - (norm - 0.7) / 0.3)
-            
+            active_cells = compute_explosion_active_cells(explosion, self.current_time, EXPLOSION_DURATION)
             # Only check for kills when explosion arms are active
-            if arm_factor > 0:
-                # Get explosion center
-                cx, cy = explosion.cells[0]
-                
-                # Calculate maximum arm lengths in each direction
-                up_max = max([cy - cell[1] for cell in explosion.cells if cell[0] == cx and cell[1] < cy] or [0])
-                down_max = max([cell[1] - cy for cell in explosion.cells if cell[0] == cx and cell[1] > cy] or [0])
-                left_max = max([cx - cell[0] for cell in explosion.cells if cell[1] == cy and cell[0] < cx] or [0])
-                right_max = max([cell[0] - cx for cell in explosion.cells if cell[1] == cy and cell[0] > cx] or [0])
-                
-                # Calculate current arm lengths based on animation
-                up_length = int(arm_factor * up_max)
-                down_length = int(arm_factor * down_max)
-                left_length = int(arm_factor * left_max)
-                right_length = int(arm_factor * right_max)
-                
-                # Determine which cells are currently active based on arm lengths
-                active_cells = []
-                
-                # Add center cell
-                active_cells.append((cx, cy))
-                
-                # Add cells in each direction based on current arm length
-                for i in range(1, up_length + 1):
-                    active_cells.append((cx, cy - i))
-                for i in range(1, down_length + 1):
-                    active_cells.append((cx, cy + i))
-                for i in range(1, left_length + 1):
-                    active_cells.append((cx - i, cy))
-                for i in range(1, right_length + 1):
-                    active_cells.append((cx + i, cy))
-                
+            if active_cells:
                 # Prepare reduced collision rectangle dimensions (centered in the cell)
                 scale = EXPLOSION_COLLISION_SCALE
                 margin = CELL_SIZE * (1.0 - scale) / 2.0
@@ -821,6 +811,13 @@ class Game:
                 # Check for player deaths only in currently active cells
                 for player in self.players:
                     if player.alive:
+                        if (
+                            not self.friendly_fire
+                            and explosion.owner is not None
+                            and getattr(explosion.owner, "team", None) == getattr(player, "team", None)
+                            and explosion.owner is not player
+                        ):
+                            continue
                         for cell in active_cells:
                             cell_x, cell_y = cell
                             explosion_rect = np.array([
@@ -841,6 +838,8 @@ class Game:
                                 # Snapshot stats at death
                                 player.fire_power_at_death = player.fire_power
                                 player.bomb_capacity_at_death = player.bomb_capacity
+                                if explosion.owner is not None and explosion.owner is not player:
+                                    explosion.owner.players_killed += 1
                                 # Spawn a death bonus powerup where the player died
                                 gx, gy = player.get_grid_pos()
                                 self.powerups.append(PowerUp(gx, gy, "death_bonus", spawn_time=self.current_time))
@@ -857,6 +856,8 @@ class Game:
                 for (x, y) in explosion.cells:
                     if self.board[y][x] == DESTRUCTIBLE:
                         self.board[y][x] = EMPTY
+                        if explosion.owner is not None:
+                            explosion.owner.walls_destroyed += 1
                         if random.random() < POWERUP_PROBABILITY:
                             pu_type = random.choice(["bomb", "fire"])
                             self.powerups.append(PowerUp(x, y, pu_type, spawn_time=explosion.start_time))
@@ -904,34 +905,7 @@ class Game:
 
     def _log_replay_snapshot(self):
         """Capture a lightweight snapshot of the current game state for replay."""
-        # Copy positions and alive flags for players, bombs and explosions positions, powerups
-        players_state = []
-        for p in self.players:
-            players_state.append({
-                'name': p.name,
-                'color': p.color,
-                'pos': (float(p.pos[0]), float(p.pos[1])),
-                'alive': bool(p.alive),
-                'draw_radius': int(p.draw_radius),
-                'fire_power': int(p.fire_power),
-                'bomb_capacity': int(p.bomb_capacity),
-            })
-        bombs_state = [{'x': b.x, 'y': b.y, 'start': int(b.start_time)} for b in self.bombs]
-        explosions_state = []
-        for e in self.explosions:
-            explosions_state.append({
-                'cells': list(e.cells),
-                'start': int(e.start_time),
-                'qd': bool(e.quad_damage)
-            })
-        powerups_state = [{'x': pu.x, 'y': pu.y, 'type': pu.type} for pu in self.powerups]
-        snapshot = {
-            't': int(self.current_time),
-            'players': players_state,
-            'bombs': bombs_state,
-            'explosions': explosions_state,
-            'powerups': powerups_state,
-        }
+        snapshot = build_replay_snapshot(self)
         self.replay_buffer.append((self.current_time, snapshot))
         # Trim to buffer window
         min_time = self.current_time - REPLAY_BUFFER_MS
@@ -1022,6 +996,15 @@ class Game:
                             # Change web player color
                             current_color = self.prep_web_player_colors.get(player_info['id'], player_info['color'])
                             self.prep_web_player_colors[player_info['id']] = (current_color - 1) % len(colors)
+                elif str(getattr(event, "unicode", "")).lower() == "t":
+                    # Toggle team assignment for local players
+                    all_players_info = self.get_all_players_info()
+                    if player_index < len(all_players_info):
+                        player_info = all_players_info[player_index]
+                        if player_info['type'] == 'local':
+                            source_idx = player_info['source']
+                            self.prep_player_teams[source_idx] = (self.prep_player_teams[source_idx] + 1) % 2
+                            self.create_players()
         
         elif self.prep_section == 'start_game':
             # Start game
@@ -1145,7 +1128,7 @@ class Game:
         triggered_explosions = []
         for bomb in self.bombs[:]:
             if bomb.update(self.current_time):
-                exp = Explosion(self.get_explosion_cells(bomb), self.current_time, bomb.quad_damage)
+                exp = Explosion(self.get_explosion_cells(bomb), self.current_time, bomb.quad_damage, owner=bomb.owner)
                 triggered_explosions.append(exp)
                 bomb.owner.active_bombs -= 1
                 self.bombs.remove(bomb)
@@ -1158,7 +1141,7 @@ class Game:
             chain_triggered = False
             for bomb in self.bombs[:]:
                 if (bomb.x, bomb.y) in chain_cells:
-                    exp = Explosion(self.get_explosion_cells(bomb), self.current_time,bomb.quad_damage)
+                    exp = Explosion(self.get_explosion_cells(bomb), self.current_time, bomb.quad_damage, owner=bomb.owner)
                     triggered_explosions.append(exp)
                     for cell in exp.cells:
                         chain_cells.add(cell)
@@ -1177,15 +1160,17 @@ class Game:
                     if pu.type == "bomb":
                         player.bomb_capacity += 1
                         bonus_sound.play()
+                        player.powerups_collected += 1
                     elif pu.type == "fire":
                         player.fire_power += 1
                         bonus_sound.play()
+                        player.powerups_collected += 1
                     elif pu.type == "death_bonus":
                         # Randomly apply one of the effects:
                         # - Speed x1.05
                         # - +2 fire power
                         # - +3 bomb capacity
-                        choice = random.choice(["speed", "fire", "bomb"])
+                        choice = choose_death_bonus_effect()
                         if choice == "speed":
                             # Multiply current speed by 1.05 (respect quad damage later when applied)
                             player.speed = int(player.speed * 1.05)
@@ -1200,12 +1185,14 @@ class Game:
                             player.pickup_message = "+3 BOMBS"
                             player.pickup_message_end_time = self.current_time + 3000
                         bonus_sound.play()
+                        player.powerups_collected += 1
                     elif pu.type == "quad_damage":
                         player.quad_damage = True
                         player.quad_damage_start_time = self.current_time
                         player.bomb_capacity += QUAD_DAMAGE_POWER
                         player.fire_power += QUAD_DAMAGE_POWER
                         qd_sound.play()
+                        player.powerups_collected += 1
                     self.powerups.remove(pu)
                     
         # Use adjustable powerup logic
@@ -1215,8 +1202,10 @@ class Game:
         self.handle_crushing_walls()
         
         alive_players = [p for p in self.players if p.alive]
-        # If round appears to be over (0 or 1 alive), start a 0.5s hold if not started
-        if len(alive_players) <= 1 and self.post_win_target_state is None:
+        alive_teams = {getattr(p, "team", 0) for p in alive_players}
+        round_over = len(alive_players) <= 1 or len(alive_teams) <= 1
+        # If round appears to be over (0/1 alive or only one team alive), start a 0.5s hold if not started
+        if round_over and self.post_win_target_state is None:
             if self.endgame_hold_until is None:
                 self.endgame_hold_until = self.current_time + 500  # 0.5 seconds
             # Once hold elapses, resolve winner or tie and schedule post-win transition
@@ -1226,9 +1215,15 @@ class Game:
                     # Tie: no trophy assignment
                     self.post_win_target_state = "win"
                 else:
-                    # Single survivor gets the trophy
+                    # Winner is surviving player (or first player on surviving team)
                     if alive_players:
                         winner = alive_players[0]
+                        if len(alive_teams) == 1:
+                            winner_team = next(iter(alive_teams))
+                            for player in alive_players:
+                                if getattr(player, "team", 0) == winner_team:
+                                    winner = player
+                                    break
                         winner.trophies += 1
                         trophy_threshold = TROPHY_WIN_THRESHOLD
                         if winner.trophies >= trophy_threshold:

@@ -122,14 +122,31 @@ INDESTRUCTIBLE = 1
 DESTRUCTIBLE = 2
 
 
-# --- IMGS ---
-quad_damage_image = pygame.image.load('img\\qd.png')
-fire_powerup_image = pygame.image.load('img\\fireup.png')
-blast_image = pygame.image.load('img\\blast.png')
-blast_image_qd = pygame.image.load('img\\blast_qd.png')
-blast_centre_image = pygame.image.load('img\\blast_centre.png')
-blast_centre_image_qd = pygame.image.load('img\\blast_centre_qd.png')
-logo_image = pygame.image.load('img\\logo.png')
+# --- IMGS (loaded lazily after pygame init) ---
+quad_damage_image = None
+fire_powerup_image = None
+blast_image = None
+blast_image_qd = None
+blast_centre_image = None
+blast_centre_image_qd = None
+logo_image = None
+
+
+def init_assets():
+    """Load pygame image assets after pygame has been initialized."""
+    global quad_damage_image, fire_powerup_image, blast_image, blast_image_qd, blast_centre_image, blast_centre_image_qd, logo_image
+    if logo_image is not None:
+        return
+    from bm_assets import load_images
+
+    images = load_images()
+    quad_damage_image = images["quad_damage_image"]
+    fire_powerup_image = images["fire_powerup_image"]
+    blast_image = images["blast_image"]
+    blast_image_qd = images["blast_image_qd"]
+    blast_centre_image = images["blast_centre_image"]
+    blast_centre_image_qd = images["blast_centre_image_qd"]
+    logo_image = images["logo_image"]
 
 
 # Internal constants and pre-calculation

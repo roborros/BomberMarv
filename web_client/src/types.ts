@@ -10,6 +10,11 @@ export interface PlayerState {
     death_anim_time: number | null;
     fire_power?: number;
     bomb_capacity?: number;
+    walls_destroyed?: number;
+    players_killed?: number;
+    powerups_collected?: number;
+    cells_walked?: number;
+    team?: number;
 }
 
 export interface BombState {

@@ -32,6 +32,11 @@ from net_protocol import (
 )
 from queue_utils import put_latest_nonblocking
 
+try:
+    import msgpack  # type: ignore
+except Exception:  # pragma: no cover
+    msgpack = None
+
 PORT = 8765
 HTTP_PORT = 8080
 WS_SERVER_VERSION = "2.0.0"
@@ -81,7 +86,7 @@ def setup_logging(logfile: str) -> logging.Logger:
     return logger
 
 
-def run_server_with_queue(input_queue, state_queue=None, log_path=None):
+def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_path=None):
     logger = setup_logging(log_path or "ws_server.log")
 
     client_id_counter = 0
@@ -118,6 +123,8 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
         "broadcast_payload_bytes_samples": [],
         "broadcast_delta_frames": 0,
         "broadcast_key_frames": 0,
+        "status_queue_sent": 0,
+        "status_queue_dropped": 0,
     }
 
     def enqueue_input_event(event: Dict[str, Any]) -> None:
@@ -136,6 +143,46 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
         bucket.append(float(value))
         if len(bucket) > limit:
             del bucket[:-limit]
+
+    def build_status_snapshot() -> Dict[str, Any]:
+        with tracking_lock:
+            status = {"clients": {}, "players": {}}
+            for client_id, client_data in clients.items():
+                samples = client_data.get("latency_samples", [])
+                values = []
+                for entry in samples:
+                    if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                        values.append(float(entry[1]))
+                    elif isinstance(entry, (int, float)):
+                        values.append(float(entry))
+                avg_latency = (sum(values) / len(values)) if values else 0.0
+                status["clients"][client_id] = {
+                    "players": client_data["players"],
+                    "last_seen": client_data["last_seen"],
+                    "avg_latency": round(avg_latency, 2),
+                    "avg_latency_5s": round(avg_latency, 2),
+                    "latency_samples": len(values),
+                    "latency_samples_5s": len(values),
+                    "registered": client_data.get("registered", False),
+                    "slot": client_data.get("slot"),
+                    "display_name": client_data.get("display_name"),
+                }
+            for player_id, pdata in players.items():
+                status["players"][player_id] = {"client_id": pdata["client_id"], "keys": pdata["keys"]}
+        with slots_lock:
+            status["slots"] = {k: (v is not None) for k, v in slots.items()}
+        return status
+
+    def enqueue_status_snapshot() -> None:
+        if status_queue is None:
+            return
+        put_latest_nonblocking(
+            status_queue,
+            {"type": "status", "status": build_status_snapshot(), "server_timestamp": int(time.time() * 1000)},
+            metrics,
+            sent_key="status_queue_sent",
+            dropped_key="status_queue_dropped",
+        )
 
     def state_reader_loop():
         nonlocal latest_game_state, latest_state_seq, last_state_json, last_state_seq_sent
@@ -203,6 +250,11 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
         raw = json.dumps(payload, separators=(",", ":"))
         await ws.send(raw)
 
+    def encode_payload(payload: Dict[str, Any], codec: str) -> Any:
+        if codec == "msgpack" and msgpack is not None:
+            return msgpack.packb(payload, use_bin_type=True)
+        return json.dumps(payload, separators=(",", ":"))
+
     async def broadcast_loop():
         nonlocal last_state_json, last_state_seq_sent
         logger.info("Broadcast loop started")
@@ -229,6 +281,7 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
                                 "client_id": cid,
                                 "websocket": cdata["websocket"],
                                 "last_state_seq": int(cdata.get("last_state_seq", -1)),
+                                "codec": str(cdata.get("codec", "json")),
                             }
                         )
             if not recipients:
@@ -255,6 +308,7 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
             )
             keyframe_json = json.dumps(keyframe_payload, separators=(",", ":"))
             delta_json: Optional[str] = None
+            delta_payload: Optional[Dict[str, Any]] = None
             delta_available = False
             if not force_keyframe and isinstance(last_full_state, dict):
                 delta = build_state_delta(last_full_state, current_state)
@@ -278,7 +332,10 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
                     or not delta_available
                     or client_last_seq != last_broadcast_seq
                 )
+                payload_dict = keyframe_payload if needs_keyframe else (delta_payload if delta_available else keyframe_payload)
                 payload = keyframe_json if needs_keyframe else (delta_json or keyframe_json)
+                if recipient.get("codec") == "msgpack":
+                    payload = encode_payload(payload_dict, "msgpack")
                 send_plan.append(
                     {
                         "client_id": recipient["client_id"],
@@ -287,7 +344,7 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
                         "is_keyframe": needs_keyframe,
                     }
                 )
-                total_payload_bytes += len(payload)
+                total_payload_bytes += len(payload) if isinstance(payload, (bytes, bytearray)) else len(str(payload))
 
             if total_payload_bytes:
                 add_sample("broadcast_payload_bytes_samples", total_payload_bytes / max(1, len(send_plan)))
@@ -345,6 +402,11 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
                 except Exception:
                     pass
 
+    async def status_snapshot_loop():
+        while True:
+            await asyncio.sleep(1.0)
+            enqueue_status_snapshot()
+
     async def handle_client(websocket):
         nonlocal client_id_counter
         with client_id_lock:
@@ -362,7 +424,9 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
                 "registered": False,
                 "slot": None,
                 "last_state_seq": -1,
+                "codec": "json",
             }
+        enqueue_status_snapshot()
 
         await send_json(websocket, envelope(MSG_CLIENT_ID, client_id=client_id))
 
@@ -387,6 +451,11 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
                 msg_type = data["type"]
 
                 if msg_type == MSG_HELLO:
+                    requested_codec = str(data.get("encoding", "json")).lower()
+                    if requested_codec == "msgpack" and msgpack is not None:
+                        with tracking_lock:
+                            if client_id in clients:
+                                clients[client_id]["codec"] = "msgpack"
                     await send_json(
                         websocket,
                         envelope("hello_ack", server="bombermarv", ws_version=WS_SERVER_VERSION),
@@ -396,6 +465,7 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
                 if msg_type == MSG_REQUEST_SLOT_LIST:
                     slot_info = build_slot_list()
                     await send_json(websocket, envelope(MSG_SLOT_LIST, **slot_info))
+                    enqueue_status_snapshot()
                     continue
 
                 if msg_type == MSG_SET_NAME:
@@ -405,6 +475,7 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
                             clients[client_id]["display_name"] = name_value[:20] if name_value else None
                     slot_info = build_slot_list()
                     await send_json(websocket, envelope(MSG_SLOT_LIST, **slot_info))
+                    enqueue_status_snapshot()
                     continue
 
                 if msg_type == MSG_SELECT_SLOT:
@@ -438,6 +509,7 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
                         await send_json(websocket, envelope(MSG_REGISTRATION_REJECTED, message=message))
                         slot_info = build_slot_list()
                         await send_json(websocket, envelope(MSG_SLOT_LIST, **slot_info))
+                        enqueue_status_snapshot()
                         continue
                     with tracking_lock:
                         clients[client_id]["slot"] = requested_slot
@@ -450,6 +522,14 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
                             "client_id": client_id,
                             "keys": {"up": 0, "down": 0, "left": 0, "right": 0, "bomb": 0},
                         }
+                    enqueue_input_event(
+                        {
+                            "type": "player_joined",
+                            "client_id": client_id,
+                            "slot": requested_slot,
+                            "ws_received_timestamp": int(time.time() * 1000),
+                        }
+                    )
                     await send_json(
                         websocket,
                         envelope(
@@ -462,6 +542,7 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
                     )
                     slot_info = build_slot_list()
                     await send_json(websocket, envelope(MSG_SLOT_LIST, **slot_info))
+                    enqueue_status_snapshot()
                     continue
 
                 if msg_type == MSG_GAME_INPUT:
@@ -566,6 +647,7 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
                     if cid == client_id:
                         slots[slot_id] = None
                         logger.info("Released slot %s for client %s", slot_id, client_id)
+            enqueue_status_snapshot()
 
     async def handle_versions(request):
         return web.json_response({"ws_server": WS_SERVER_VERSION, "http_server": HTTP_SERVER_VERSION})
@@ -583,33 +665,7 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
         )
 
     async def handle_status(request):
-        with tracking_lock:
-            status = {"clients": {}, "players": {}}
-            for client_id, client_data in clients.items():
-                samples = client_data.get("latency_samples", [])
-                values = []
-                for entry in samples:
-                    if isinstance(entry, (list, tuple)) and len(entry) >= 2:
-                        values.append(float(entry[1]))
-                    elif isinstance(entry, (int, float)):
-                        values.append(float(entry))
-                avg_latency = (sum(values) / len(values)) if values else 0.0
-                status["clients"][client_id] = {
-                    "players": client_data["players"],
-                    "last_seen": client_data["last_seen"],
-                    "avg_latency": round(avg_latency, 2),
-                    "avg_latency_5s": round(avg_latency, 2),
-                    "latency_samples": len(values),
-                    "latency_samples_5s": len(values),
-                    "registered": client_data.get("registered", False),
-                    "slot": client_data.get("slot"),
-                    "display_name": client_data.get("display_name"),
-                }
-            for player_id, pdata in players.items():
-                status["players"][player_id] = {"client_id": pdata["client_id"], "keys": pdata["keys"]}
-        with slots_lock:
-            status["slots"] = {k: (v is not None) for k, v in slots.items()}
-        return web.json_response(status)
+        return web.json_response(build_status_snapshot())
 
     async def handle_metrics(request):
         result = dict(metrics)
@@ -664,6 +720,7 @@ def run_server_with_queue(input_queue, state_queue=None, log_path=None):
         threading.Thread(target=start_http_server, daemon=True, name="http-server").start()
         asyncio.create_task(broadcast_loop())
         asyncio.create_task(cleanup_stale_clients_loop())
+        asyncio.create_task(status_snapshot_loop())
         ws_server = await websockets.serve(
             handle_client,
             "0.0.0.0",

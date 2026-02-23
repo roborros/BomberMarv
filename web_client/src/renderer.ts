@@ -35,6 +35,7 @@ export class Renderer {
     private blastCenter: HTMLImageElement | null = null;
     private blastCenterQd: HTMLImageElement | null = null;
     private lastCanvasScale = 1;
+    private avatarCache: Map<string, HTMLImageElement | null> = new Map();
 
     constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
@@ -86,6 +87,9 @@ export class Renderer {
         state.bombs.forEach(b => this.drawBomb(b));
         state.players.forEach(player => this.drawPlayer(player));
         state.explosions.forEach(e => this.drawExplosion(e, state.time));
+        if (state.state === 'win' || state.state === 'champion') {
+            this.drawWinStats(state);
+        }
         const renderDurationMs = performance.now() - renderStart;
         this.renderSamplesMs.push(renderDurationMs);
         if (this.renderSamplesMs.length > 240) {
@@ -178,13 +182,31 @@ export class Renderer {
         this.ctx.ellipse(px, py + size * 0.42, size * 0.45, size * 0.2, 0, 0, Math.PI * 2);
         this.ctx.fill();
 
-        // Draw Player Body
-        const color = player.color ? `rgb(${player.color[0]},${player.color[1]},${player.color[2]})` : PLAYER_COLORS[player.id % PLAYER_COLORS.length];
-        this.ctx.fillStyle = color;
-        this.ctx.beginPath();
-        // Backend pixels are already centered. Remove the + CELL_SIZE / 2 offset.
-        this.ctx.arc(px, py, size / 2, 0, Math.PI * 2);
-        this.ctx.fill();
+        const avatarKey = (player.name || '').trim();
+        let avatarImg: HTMLImageElement | null = null;
+        if (avatarKey) {
+            if (!this.avatarCache.has(avatarKey)) {
+                const img = new Image();
+                img.src = `/img/avatars/${encodeURIComponent(avatarKey)}.png`;
+                this.avatarCache.set(avatarKey, img);
+            }
+            avatarImg = this.avatarCache.get(avatarKey) ?? null;
+        }
+
+        if (avatarImg && avatarImg.complete && avatarImg.naturalWidth > 0) {
+            this.ctx.save();
+            this.ctx.beginPath();
+            this.ctx.arc(px, py, size / 2, 0, Math.PI * 2);
+            this.ctx.clip();
+            this.ctx.drawImage(avatarImg, px - size / 2, py - size / 2, size, size);
+            this.ctx.restore();
+        } else {
+            const color = player.color ? `rgb(${player.color[0]},${player.color[1]},${player.color[2]})` : PLAYER_COLORS[player.id % PLAYER_COLORS.length];
+            this.ctx.fillStyle = color;
+            this.ctx.beginPath();
+            this.ctx.arc(px, py, size / 2, 0, Math.PI * 2);
+            this.ctx.fill();
+        }
 
         // Draw Outline
         this.ctx.strokeStyle = '#222';
@@ -364,6 +386,28 @@ export class Renderer {
         const sorted = [...this.renderSamplesMs].sort((a, b) => a - b);
         const idx = Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95));
         return sorted[idx];
+    }
+
+    private drawWinStats(state: GameState) {
+        const panelWidth = Math.min(this.width - 20, 980);
+        const panelX = Math.max(10, (this.width - panelWidth) / 2);
+        const panelY = Math.max(10, this.height - 200);
+        this.ctx.fillStyle = 'rgba(12, 18, 28, 0.8)';
+        this.ctx.fillRect(panelX, panelY, panelWidth, 180);
+        this.ctx.strokeStyle = 'rgba(170, 200, 240, 0.7)';
+        this.ctx.lineWidth = 1;
+        this.ctx.strokeRect(panelX, panelY, panelWidth, 180);
+        this.ctx.fillStyle = 'white';
+        this.ctx.font = 'bold 16px monospace';
+        this.ctx.textAlign = 'left';
+        this.ctx.fillText('Name       Team  Kills  Walls  Pups  Walked', panelX + 12, panelY + 22);
+        this.ctx.font = '14px monospace';
+        const sorted = [...state.players].sort((a, b) => (b.players_killed ?? 0) - (a.players_killed ?? 0));
+        for (let i = 0; i < Math.min(sorted.length, 6); i++) {
+            const p = sorted[i];
+            const line = `${(p.name || `P${p.id}`).padEnd(10).slice(0, 10)} ${(p.team ?? 0).toString().padStart(4)} ${(p.players_killed ?? 0).toString().padStart(6)} ${(p.walls_destroyed ?? 0).toString().padStart(6)} ${(p.powerups_collected ?? 0).toString().padStart(5)} ${(p.cells_walked ?? 0).toString().padStart(7)}`;
+            this.ctx.fillText(line, panelX + 12, panelY + 46 + i * 22);
+        }
     }
 
     private buildDebugLine(state: GameState, metrics?: { latency5sMs?: number; fps5s?: number; hostFps5s?: number; hostRenderFps5s?: number; renderPipelineP95Ms?: number; presentDelayP95Ms?: number; decodeP95Ms?: number; }, renderP95Ms?: number): string {

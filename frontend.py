@@ -167,6 +167,7 @@ class FrontendManager:
     def _initialize_globals(self):
         """Initialize global variables that were previously in bm_params.py"""
         import bm_params
+        bm_params.init_assets()
         
         # Initialize fonts
         bm_params.arcade_font = pygame.font.SysFont('Comic Sans MS', 90)

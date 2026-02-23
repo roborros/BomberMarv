@@ -21,6 +21,8 @@ import bm_params
 from bm_params import BASE_HEIGHT, BASE_WIDTH
 from bm_classes import Game
 from queue_utils import put_latest_nonblocking
+from bm_sounds import bonus_sound
+from lobby import build_status_signature
 import ws_stream_server
 
 
@@ -47,9 +49,12 @@ def is_port_in_use(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
-def start_ws_server_with_queue(input_queue, state_queue):
+def start_ws_server_with_queue(input_queue, state_queue, status_queue):
     # Start the server in a process, passing input queue and state queue, and log output to ws_server.log
-    p = multiprocessing.Process(target=ws_stream_server.run_server_with_queue, args=(input_queue, state_queue, "ws_server.log"))
+    p = multiprocessing.Process(
+        target=ws_stream_server.run_server_with_queue,
+        args=(input_queue, state_queue, status_queue, "ws_server.log"),
+    )
     p.daemon = True
     p.start()
     return p
@@ -101,7 +106,8 @@ if __name__ == "__main__":
     # Start the input server with a multiprocessing queue for input only
     input_queue = multiprocessing.Queue(maxsize=2048)
     state_queue = multiprocessing.Queue(maxsize=16)
-    ws_process = start_ws_server_with_queue(input_queue, state_queue)
+    status_queue = multiprocessing.Queue(maxsize=128)
+    ws_process = start_ws_server_with_queue(input_queue, state_queue, status_queue)
     runtime_metrics = {
         "input_events_processed": 0,
         "input_events_errors": 0,
@@ -163,6 +169,12 @@ if __name__ == "__main__":
         while True:
             try:
                 event = input_queue.get_nowait()
+                if isinstance(event, dict) and event.get("type") == "player_joined":
+                    try:
+                        bonus_sound.play()
+                    except Exception:
+                        pass
+                    continue
                 if isinstance(event, dict) and event.get('type') == 'client_key_debug':
                     print(f"DEBUG: CLIENT DEBUG -> event={event.get('event')} key={event.get('key')} pressed={event.get('pressed_keys')}")
                 received_ts = event.get("ws_received_timestamp") if isinstance(event, dict) else None
@@ -187,33 +199,25 @@ if __name__ == "__main__":
             return
         previous_status_sig = getattr(theGame, "_last_status_signature", None)
         theGame._refresh_client_status()
-        new_status_sig = None
-        if isinstance(getattr(theGame, "_cached_status", None), dict):
-            status = theGame._cached_status
-            clients = status.get("clients", {})
-            slots = status.get("slots", {})
-            clients_sig = []
-            for cid, info in clients.items():
-                if not isinstance(info, dict):
-                    continue
-                clients_sig.append(
-                    (
-                        str(cid),
-                        bool(info.get("registered", False)),
-                        info.get("slot"),
-                        str(info.get("display_name") or ""),
-                        round(float(info.get("avg_latency_5s", 0.0)), 1),
-                    )
-                )
-            slots_sig = [(str(slot_id), bool(is_taken)) for slot_id, is_taken in slots.items()]
-            new_status_sig = (
-                tuple(sorted(clients_sig)),
-                tuple(sorted(slots_sig)),
-            )
+        new_status_sig = build_status_signature(getattr(theGame, "_cached_status", None))
         theGame._last_status_signature = new_status_sig
         if theGame.game_state == "game_prep" and new_status_sig != previous_status_sig:
             theGame.create_players()
         theGame._last_status_refresh = theGame.current_time
+
+    def drain_status_updates():
+        latest_status = None
+        while True:
+            try:
+                message = status_queue.get_nowait()
+                if isinstance(message, dict) and message.get("type") == "status":
+                    latest_status = message.get("status")
+            except queue.Empty:
+                break
+            except Exception:
+                break
+        if isinstance(latest_status, dict):
+            theGame._cached_status = latest_status
 
     def build_state_payload():
         state_payload = theGame.to_dict()
@@ -238,14 +242,25 @@ if __name__ == "__main__":
         state_payload["_host_published_at_ms"] = int(time.time() * 1000)
         return state_payload
 
+    last_countdown_second = [None]
+
     def simulate_step(step_ms):
         step_started = time.perf_counter()
         theGame.dt = int(step_ms)
         theGame.current_time = pygame.time.get_ticks()
         runtime_metrics["sim_loop_timestamps_ms"].append(theGame.current_time)
         drain_remote_input()
+        drain_status_updates()
         maybe_refresh_lobby_status()
         if theGame.game_state == "get_ready":
+            remaining_ms = max(0, int(theGame.game_start_time - theGame.current_time))
+            remaining_sec = (remaining_ms + 999) // 1000
+            if remaining_sec != last_countdown_second[0]:
+                last_countdown_second[0] = remaining_sec
+                try:
+                    bonus_sound.play()
+                except Exception:
+                    pass
             if theGame.current_time >= theGame.game_start_time:
                 theGame.game_state = "playing"
         elif theGame.game_state == "playing":
@@ -298,7 +313,17 @@ if __name__ == "__main__":
             draw_game_screen(game_surface, theGame)
             draw_get_ready(game_surface)
         elif theGame.game_state == "playing":
-            draw_game_screen(game_surface, theGame)
+            just_died = any((not p.alive) and getattr(p, "death_animation_time", 0) > 800 for p in theGame.players)
+            if just_died:
+                temp_surface = pygame.Surface(game_surface.get_size())
+                temp_surface.fill((0, 0, 0))
+                draw_game_screen(temp_surface, theGame)
+                shake_x = int((time.time() * 1000) % 7) - 3
+                shake_y = int((time.time() * 1300) % 7) - 3
+                game_surface.fill((0, 0, 0))
+                game_surface.blit(temp_surface, (shake_x, shake_y))
+            else:
+                draw_game_screen(game_surface, theGame)
         elif theGame.game_state == "win":
             draw_title_page(game_surface, alpha=255)
             alive_players = [p for p in theGame.players if p.alive]
