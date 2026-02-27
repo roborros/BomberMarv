@@ -308,6 +308,8 @@ class Player:
             'powerups_collected': int(self.powerups_collected),
             'cells_walked': int(self.cells_walked),
             'team': int(self.team),
+            'owner_client_id': int(getattr(self, 'client_id', -1)) if getattr(self, 'client_id', None) is not None else None,
+            'owner_client_player_id': int(getattr(self, 'client_player_id', -1)) if getattr(self, 'client_player_id', None) is not None else None,
         }
 
 class Bomb:
@@ -392,6 +394,8 @@ class Game:
         self.frontend = None  # Will be set after frontend is available
         self.backend_logic = BackendGameLogic(self)
         self.friendly_fire = False
+        # Team rules are opt-in; default gameplay remains free-for-all.
+        self.team_mode_enabled = False
         self._cached_status = None
         
         # Crushing walls feature variables
@@ -812,7 +816,8 @@ class Game:
                 for player in self.players:
                     if player.alive:
                         if (
-                            not self.friendly_fire
+                            self.team_mode_enabled
+                            and not self.friendly_fire
                             and explosion.owner is not None
                             and getattr(explosion.owner, "team", None) == getattr(player, "team", None)
                             and explosion.owner is not player
@@ -1002,6 +1007,7 @@ class Game:
                     if player_index < len(all_players_info):
                         player_info = all_players_info[player_index]
                         if player_info['type'] == 'local':
+                            self.team_mode_enabled = True
                             source_idx = player_info['source']
                             self.prep_player_teams[source_idx] = (self.prep_player_teams[source_idx] + 1) % 2
                             self.create_players()
@@ -1203,7 +1209,9 @@ class Game:
         
         alive_players = [p for p in self.players if p.alive]
         alive_teams = {getattr(p, "team", 0) for p in alive_players}
-        round_over = len(alive_players) <= 1 or len(alive_teams) <= 1
+        round_over = len(alive_players) <= 1
+        if self.team_mode_enabled:
+            round_over = round_over or len(alive_teams) <= 1
         # If round appears to be over (0/1 alive or only one team alive), start a 0.5s hold if not started
         if round_over and self.post_win_target_state is None:
             if self.endgame_hold_until is None:
@@ -1218,7 +1226,7 @@ class Game:
                     # Winner is surviving player (or first player on surviving team)
                     if alive_players:
                         winner = alive_players[0]
-                        if len(alive_teams) == 1:
+                        if self.team_mode_enabled and len(alive_teams) == 1:
                             winner_team = next(iter(alive_teams))
                             for player in alive_players:
                                 if getattr(player, "team", 0) == winner_team:

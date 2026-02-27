@@ -261,7 +261,8 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
         last_broadcast_seq = -1
         last_broadcast_time = 0.0
         last_full_state: Optional[Dict[str, Any]] = None
-        keyframe_interval_seq = 20
+        # Lower interval reduces visible stalls on WiFi if a delta continuity gap occurs.
+        keyframe_interval_seq = 10
         keepalive_interval_s = 0.2
         while True:
             loop_started = time.perf_counter()

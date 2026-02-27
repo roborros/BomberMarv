@@ -10,12 +10,94 @@ from timing_abstraction import get_ticks
 from lib_collisions import circle_rect_collision
 
 _AVATAR_CACHE = {}
+_ASSETS_READY = False
+_SCALED_IMAGE_CACHE = {}
+_BOARD_LAYER_CACHE = {"signature": None, "surface": None}
+_BLAST_ARM_CACHE = {}
+_TEXT_CACHE = {}
 
 
 def _get_image_asset(name):
     """Resolve image assets lazily from bm_params at runtime."""
-    bmp.init_assets()
+    global _ASSETS_READY
+    if not _ASSETS_READY:
+        bmp.init_assets()
+        _ASSETS_READY = True
     return getattr(bmp, name, None)
+
+
+def _get_scaled_image(name, width, height):
+    key = (name, int(width), int(height))
+    cached = _SCALED_IMAGE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    image = _get_image_asset(name)
+    if image is None:
+        return None
+    scaled = pygame.transform.smoothscale(image, (int(width), int(height)))
+    _SCALED_IMAGE_CACHE[key] = scaled
+    return scaled
+
+
+def _board_signature(theGame):
+    return tuple(tuple(int(cell) for cell in row) for row in theGame.board)
+
+
+def _build_board_layer(theGame):
+    layer = pygame.Surface((BASE_WIDTH, BASE_HEIGHT))
+    layer.fill(COLOR_BG)
+    for y in range(GRID_HEIGHT):
+        for x in range(GRID_WIDTH):
+            rect = np.array([x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE], dtype=np.float64)
+            if theGame.board[y][x] == EMPTY:
+                pygame.gfxdraw.box(layer, rect, COLOR_BG)
+            elif theGame.board[y][x] == INDESTRUCTIBLE:
+                pygame.gfxdraw.box(layer, rect, COLOR_INDESTRUCTIBLE)
+                pygame.draw.rect(layer, (80, 80, 80), rect, 1)
+            elif theGame.board[y][x] == DESTRUCTIBLE:
+                pygame.gfxdraw.box(layer, rect, COLOR_DESTRUCTIBLE)
+                draw_brick_pattern(rect, layer)
+                pygame.draw.rect(layer, (80, 80, 80), rect, 1)
+    return layer
+
+
+def _get_board_layer(theGame):
+    signature = _board_signature(theGame)
+    if _BOARD_LAYER_CACHE["signature"] != signature or _BOARD_LAYER_CACHE["surface"] is None:
+        _BOARD_LAYER_CACHE["signature"] = signature
+        _BOARD_LAYER_CACHE["surface"] = _build_board_layer(theGame)
+    return _BOARD_LAYER_CACHE["surface"]
+
+
+def _get_blast_arm_surface(image, length, thickness, direction):
+    cache_key = (id(image), int(length), int(thickness), direction)
+    cached = _BLAST_ARM_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    if direction in ("left", "right"):
+        scaled = pygame.transform.smoothscale(image, (int(length), int(thickness)))
+    else:
+        scaled = pygame.transform.smoothscale(image, (int(thickness), int(length)))
+    if direction == "left":
+        out = pygame.transform.rotate(scaled, 180)
+    elif direction == "up":
+        out = pygame.transform.rotate(scaled, 90)
+    elif direction == "down":
+        out = pygame.transform.rotate(scaled, -90)
+    else:
+        out = scaled
+    _BLAST_ARM_CACHE[cache_key] = out
+    return out
+
+
+def _get_cached_text(font_obj, text, color):
+    key = (id(font_obj), str(text), tuple(color))
+    cached = _TEXT_CACHE.get(key)
+    if cached is not None:
+        return cached
+    rendered = font_obj.render(str(text), True, color)
+    _TEXT_CACHE[key] = rendered
+    return rendered
 
 
 def _load_avatar_by_name(name, size):
@@ -154,18 +236,7 @@ def draw_trophy_icon(surface, pos, size):
     pygame.draw.rect(surface, trophy_color, base_rect)
     
 def draw_board(surface,theGame):
-    for y in range(GRID_HEIGHT):
-        for x in range(GRID_WIDTH):
-            rect = np.array([x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE], dtype=np.float64)
-            if theGame.board[y][x] == EMPTY:
-                pygame.gfxdraw.box(surface, rect, COLOR_BG)
-            elif theGame.board[y][x] == INDESTRUCTIBLE:
-                pygame.gfxdraw.box(surface, rect, COLOR_INDESTRUCTIBLE)
-                pygame.draw.rect(surface, (80,80,80), rect, 1)
-            elif theGame.board[y][x] == DESTRUCTIBLE:
-                pygame.gfxdraw.box(surface, rect, COLOR_DESTRUCTIBLE)
-                draw_brick_pattern(rect, surface)
-                pygame.draw.rect(surface, (80,80,80), rect, 1)
+    surface.blit(_get_board_layer(theGame), (0, 0))
                 
                 
 
@@ -207,11 +278,9 @@ def draw_fire_powerup_icon(surface, center, size):
     blue_border = (0, 255, 255)
     pygame.draw.rect(surface, blue_border, rect, 4)
     
-    fire_powerup_image = _get_image_asset("fire_powerup_image")
-    if fire_powerup_image is None:
+    scaled_image = _get_scaled_image("fire_powerup_image", size, size)
+    if scaled_image is None:
         return
-    # Scale the fire powerup image to fit the size
-    scaled_image = pygame.transform.smoothscale(fire_powerup_image, (size, size))
     
     # Get the rectangle for the scaled image and center it
     image_rect = scaled_image.get_rect(center=center)
@@ -220,11 +289,9 @@ def draw_fire_powerup_icon(surface, center, size):
     surface.blit(scaled_image, image_rect)
 
 def draw_quad_damage_powerup_icon(surface, center, size):
-    quad_damage_image = _get_image_asset("quad_damage_image")
-    if quad_damage_image is None:
+    scaled_image = _get_scaled_image("quad_damage_image", size, size)
+    if scaled_image is None:
         return
-    # Scale the quad damage image to fit the size
-    scaled_image = pygame.transform.smoothscale(quad_damage_image, (size, size))
     
     # Get the rectangle for the scaled image and center it
     image_rect = scaled_image.get_rect(center=center)
@@ -303,7 +370,7 @@ def draw_players(surface, players):
                 pygame.draw.rect(surface, (0, 255, 255), rect, 4)
             
             # Draw player name
-            name_text = font_small.render(player.name, True, (255, 255, 255))
+            name_text = _get_cached_text(font_small, player.name, (255, 255, 255))
             name_rect = name_text.get_rect(center=(pos[0], pos[1] - r - 10))
             surface.blit(name_text, name_rect)
             # Draw pickup message if active
@@ -371,7 +438,11 @@ def draw_explosions(surface, current_time, explosions):
             continue
         
         # Draw the center of the explosion using the center image
-        scaled_center_img = pygame.transform.smoothscale(center_img, (CELL_SIZE * FLAME_ARM_THICKNESS_RATIO, CELL_SIZE * FLAME_ARM_THICKNESS_RATIO))
+        center_size = int(CELL_SIZE * FLAME_ARM_THICKNESS_RATIO)
+        center_key = "blast_centre_image_qd" if explosion.quad_damage else "blast_centre_image"
+        scaled_center_img = _get_scaled_image(center_key, center_size, center_size)
+        if scaled_center_img is None:
+            continue
         center_rect = scaled_center_img.get_rect(center=center_pixel)
         surface.blit(scaled_center_img, center_rect)
         
@@ -470,35 +541,24 @@ def draw_blast_arm(surface, start_pos, end_offset, image):
     x1, y1 = start_pos
     x2, y2 = x1 + end_offset[0], y1 + end_offset[1]
     length = math.hypot(x2 - x1, y2 - y1)
-    
-    # Calculate the angle for rotation
-    angle = math.degrees(math.atan2(y2 - y1, x2 - x1))
-    
-    # Scale the image to the length of the arm
-    scaled_image = pygame.transform.smoothscale(image, (int(length), int(CELL_SIZE * FLAME_ARM_THICKNESS_RATIO)))
-    
-    # Rotate the image
-    if angle == 0:
-        rotated_image = pygame.transform.rotate(scaled_image, 180)
-    elif angle == 180:
-        rotated_image = scaled_image
+    if length <= 0:
+        return
+    thickness = int(CELL_SIZE * FLAME_ARM_THICKNESS_RATIO)
+    if abs(end_offset[0]) >= abs(end_offset[1]):
+        direction = "right" if end_offset[0] > 0 else "left"
     else:
-        rotated_image = pygame.transform.rotate(scaled_image, angle)
-    
-     # Get the rectangle for the rotated image and place its right edge at the center of the starting cell
-    image_rect = rotated_image.get_rect()
-    image_rect.center = (x1, y1)
-    if angle == -90:
+        direction = "down" if end_offset[1] > 0 else "up"
+    arm_surface = _get_blast_arm_surface(image, int(length), thickness, direction)
+    image_rect = arm_surface.get_rect(center=(x1, y1))
+    if direction == "up":
         image_rect.bottom = y1
-    elif angle == 0:
-        image_rect.left = x1
-    elif angle == 90:
+    elif direction == "down":
         image_rect.top = y1
-    else:
+    elif direction == "left":
         image_rect.right = x1
-    
-    # Blit the rotated image onto the surface
-    surface.blit(rotated_image, image_rect)
+    else:
+        image_rect.left = x1
+    surface.blit(arm_surface, image_rect)
 
 def draw_controls(surface, players):
     font = pygame.font.SysFont("arial", 40)

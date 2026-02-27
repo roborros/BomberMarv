@@ -15,12 +15,16 @@ import { isServerMessage } from './types'
 const PROTOCOL_VERSION = 2
 const INPUT_HEARTBEAT_MS = 120
 const MAX_SEND_FPS = 60
+const MAX_RENDER_FPS = 60
 const PING_INTERVAL_MS = 10000
 const RECONNECT_BASE_MS = 500
 const RECONNECT_MAX_MS = 6000
 const SNAPSHOT_BUFFER_LIMIT = 16
 const KEYFRAME_STALE_MS = 1500
 const AUDIO_COOLDOWN_MS = 40
+const EXTRAPOLATE_MAX_MS = 70
+const LOCAL_PREDICTION_MAX_OFFSET_PX = 9
+const LOCAL_PREDICTION_LERP = 0.38
 
 window.onerror = (msg, url, line, col, error) => {
   console.error('GLOBAL ERROR:', msg, url, line, col, error)
@@ -103,6 +107,13 @@ let arrivalIntervalsMs: number[] = []
 let pipelineSamplesMs: number[] = []
 let presentDelaySamplesMs: number[] = []
 let decodeSamplesMs: number[] = []
+let serverClockOffsetMs = 0
+let hasServerClockOffset = false
+let smoothedRenderDelayMs = 12
+let localVisualOffset: { x: number; y: number } = { x: 0, y: 0 }
+let localPredictionErrorPx: number[] = []
+let localPredictionTargetKey: string | null = null
+let localLastAuthPos: { x: number; y: number } | null = null
 let audioUnlocked = false
 let lastSoundAt: Record<string, number> = {}
 let knownExplosionKeys = new Set<string>()
@@ -126,6 +137,7 @@ let keysDirty = false
 let lastInputSentAt = 0
 let lastInputHash = ''
 let lastRenderLoopTs = 0
+let lastRenderDrawTs = 0
 
 function getWsUrl(): string {
   let host = window.location.hostname
@@ -246,9 +258,18 @@ function mergeDelta(base: GameState, delta: Partial<GameState>): GameState {
   return merged
 }
 
-function ingestSnapshot(state: GameState, seq: number, serverTs?: number, recvTs = performance.now()) {
+function ingestSnapshot(state: GameState, seq: number, serverTs?: number, recvTs = Date.now()) {
   if (latestSeq >= 0 && seq <= latestSeq) return
   const previous = latestState
+  if (typeof serverTs === 'number') {
+    const sampleOffset = Date.now() - serverTs
+    if (!hasServerClockOffset) {
+      serverClockOffsetMs = sampleOffset
+      hasServerClockOffset = true
+    } else {
+      serverClockOffsetMs = (serverClockOffsetMs * 0.9) + (sampleOffset * 0.1)
+    }
+  }
   if (snapshotBuffer.length > 0) {
     const interval = recvTs - snapshotBuffer[snapshotBuffer.length - 1].recvTs
     if (interval > 0) pushLimited(arrivalIntervalsMs, interval)
@@ -282,11 +303,125 @@ function interpolateState(a: GameState, b: GameState, alpha: number): GameState 
   }
 }
 
+function extrapolateState(previous: GameState, latest: GameState, aheadMs: number): GameState {
+  const dt = latest.time - previous.time
+  if (dt <= 0 || aheadMs <= 0) return latest
+  const ahead = Math.min(EXTRAPOLATE_MAX_MS, Math.max(0, aheadMs))
+  const prevPlayers = new Map(previous.players.map((p) => [p.id, p]))
+  const boardRows = latest.board.length
+  const boardCols = latest.board[0]?.length ?? 0
+  const maxX = boardCols * 100
+  const maxY = boardRows * 100
+  const players = latest.players.map((curr) => {
+    const prev = prevPlayers.get(curr.id)
+    if (!prev || !curr.alive) return { ...curr }
+    const vx = (curr.x - prev.x) / dt
+    const vy = (curr.y - prev.y) / dt
+    const nextX = Math.max(0, Math.min(maxX, curr.x + vx * ahead))
+    const nextY = Math.max(0, Math.min(maxY, curr.y + vy * ahead))
+    return { ...curr, x: nextX, y: nextY }
+  })
+  return { ...latest, time: latest.time + ahead, players }
+}
+
+function snapshotTimelineMs(snapshot: BufferedSnapshot): number {
+  if (typeof snapshot.serverTs === 'number' && hasServerClockOffset) {
+    return snapshot.serverTs + serverClockOffsetMs
+  }
+  return snapshot.recvTs
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value))
+}
+
+function resolveLocalPredictionTargetIndex(state: GameState): number {
+  if (clientId === null || playerIds.length === 0) return -1
+  const assignedPlayerIds = new Set(playerIds)
+  return state.players.findIndex((p) => (
+    typeof p.owner_client_id === 'number'
+    && p.owner_client_id === clientId
+    && typeof p.owner_client_player_id === 'number'
+    && assignedPlayerIds.has(p.owner_client_player_id)
+  ))
+}
+
+function applyLocalPrediction(state: GameState, newestState: GameState): GameState {
+  if (!isRegistered || playerIds.length === 0) return state
+  if (state.state !== 'playing' && state.state !== 'get_ready') {
+    localVisualOffset = { x: 0, y: 0 }
+    localPredictionTargetKey = null
+    localLastAuthPos = null
+    return state
+  }
+  const idxDisplay = resolveLocalPredictionTargetIndex(state)
+  const idxNewest = resolveLocalPredictionTargetIndex(newestState)
+  if (idxDisplay < 0 || idxNewest < 0) {
+    localVisualOffset = { x: 0, y: 0 }
+    localPredictionTargetKey = null
+    localLastAuthPos = null
+    return state
+  }
+  const localAuth = newestState.players[idxNewest]
+  if (!localAuth.alive) {
+    localVisualOffset = { x: 0, y: 0 }
+    localLastAuthPos = null
+    return state
+  }
+  const targetKey = `${localAuth.owner_client_id ?? 'na'}:${localAuth.owner_client_player_id ?? 'na'}`
+  if (localPredictionTargetKey !== targetKey) {
+    localPredictionTargetKey = targetKey
+    localVisualOffset = { x: 0, y: 0 }
+    localLastAuthPos = null
+  }
+
+  const boardCols = state.board[0]?.length ?? 0
+  const boardRows = state.board.length
+  const maxX = boardCols * 100
+  const maxY = boardRows * 100
+  const prevAuth = localLastAuthPos
+  const authMoveDist = prevAuth ? Math.hypot(localAuth.x - prevAuth.x, localAuth.y - prevAuth.y) : 0
+  localLastAuthPos = { x: localAuth.x, y: localAuth.y }
+
+  let dx = 0
+  let dy = 0
+  if (keys.up) dy -= 1
+  if (keys.down) dy += 1
+  if (keys.left) dx -= 1
+  if (keys.right) dx += 1
+  const length = Math.hypot(dx, dy)
+  if (length > 1e-6) {
+    dx /= length
+    dy /= length
+  }
+
+  const inputActive = length > 1e-6
+  // When blocked against walls/bombs, remove almost all local lead to prevent jumpy corrections.
+  const blocked = inputActive && authMoveDist < 1.5
+  const targetMag = blocked ? 2.0 : LOCAL_PREDICTION_MAX_OFFSET_PX
+  const targetOffsetX = inputActive ? dx * targetMag : 0
+  const targetOffsetY = inputActive ? dy * targetMag : 0
+  localVisualOffset.x += (targetOffsetX - localVisualOffset.x) * LOCAL_PREDICTION_LERP
+  localVisualOffset.y += (targetOffsetY - localVisualOffset.y) * LOCAL_PREDICTION_LERP
+
+  const predictedX = clamp(localAuth.x + localVisualOffset.x, 0, maxX)
+  const predictedY = clamp(localAuth.y + localVisualOffset.y, 0, maxY)
+  const errDist = Math.hypot(predictedX - localAuth.x, predictedY - localAuth.y)
+  pushLimited(localPredictionErrorPx, errDist, 300)
+
+  const predictedPlayers = state.players.map((p, i) =>
+    i === idxDisplay ? { ...p, x: predictedX, y: predictedY } : p
+  )
+  return { ...state, players: predictedPlayers }
+}
+
 function getRenderDelayMs(): number {
   const p50 = percentile(arrivalIntervalsMs, 50) || 16
   const p95 = percentile(arrivalIntervalsMs, 95) || p50
   const jitter = Math.max(0, p95 - p50)
-  return Math.max(8, Math.min(24, p50 * 0.5 + jitter * 0.35))
+  const targetDelay = Math.max(6, Math.min(22, p50 * 0.35 + jitter * 0.5 + 2))
+  smoothedRenderDelayMs = (smoothedRenderDelayMs * 0.85) + (targetDelay * 0.15)
+  return smoothedRenderDelayMs
 }
 
 function renderSlots(msg: SlotListMessage) {
@@ -342,6 +477,10 @@ function handleMessage(raw: string) {
       isRegistered = true
       pendingSlotSelection = confirmed.slot
       playerIds = confirmed.player_ids || []
+      localVisualOffset = { x: 0, y: 0 }
+      localPredictionErrorPx = []
+      localPredictionTargetKey = null
+      localLastAuthPos = null
       lobbyOverlayEl.classList.add('hidden')
       statusDivEl.textContent = `Playing as P${confirmed.slot}`
       return
@@ -412,6 +551,10 @@ function connectWebSocket() {
     snapshotBuffer = []
     latestState = null
     latestSeq = -1
+    localVisualOffset = { x: 0, y: 0 }
+    localPredictionErrorPx = []
+    localPredictionTargetKey = null
+    localLastAuthPos = null
     knownExplosionKeys = new Set()
     sendMessage({ type: 'hello', protocol: PROTOCOL_VERSION, ts: Date.now() })
     if (currentPlayerName) {
@@ -442,6 +585,10 @@ function connectWebSocket() {
     snapshotBuffer = []
     latestState = null
     latestSeq = -1
+    localVisualOffset = { x: 0, y: 0 }
+    localPredictionErrorPx = []
+    localPredictionTargetKey = null
+    localLastAuthPos = null
     knownExplosionKeys = new Set()
     const waitMs = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * (2 ** (reconnectAttempts - 1)))
     if (reconnectTimer) clearTimeout(reconnectTimer)
@@ -575,42 +722,54 @@ window.addEventListener('keydown', (e) => updateKey(e.code, true))
 window.addEventListener('keyup', (e) => updateKey(e.code, false))
 
 function loop(ts: number) {
-  frameTimes5s.push(ts)
-  const cutoff = ts - 5000
-  frameTimes5s = frameTimes5s.filter((t) => t >= cutoff)
-  if (frameTimes5s.length > 1) {
-    const span = frameTimes5s[frameTimes5s.length - 1] - frameTimes5s[0]
-    avgClientFps5s = span > 0 ? ((frameTimes5s.length - 1) * 1000) / span : 0
-  } else {
-    avgClientFps5s = 0
+  const renderIntervalMs = 1000 / MAX_RENDER_FPS
+  const canRenderNow = (ts - lastRenderDrawTs) >= renderIntervalMs
+  if (canRenderNow) {
+    frameTimes5s.push(ts)
+    const cutoff = ts - 5000
+    frameTimes5s = frameTimes5s.filter((t) => t >= cutoff)
+    if (frameTimes5s.length > 1) {
+      const span = frameTimes5s[frameTimes5s.length - 1] - frameTimes5s[0]
+      avgClientFps5s = span > 0 ? ((frameTimes5s.length - 1) * 1000) / span : 0
+    } else {
+      avgClientFps5s = 0
+    }
   }
 
   if (ts - lastRenderLoopTs >= (1000 / MAX_SEND_FPS)) {
     maybeSendInput(false)
     lastRenderLoopTs = ts
   }
-  if (snapshotBuffer.length > 0 && latestState) {
-    const frameStart = performance.now()
+  if (canRenderNow && snapshotBuffer.length > 0 && latestState) {
+    const frameStartPerf = performance.now()
+    const frameNow = Date.now()
     const delayMs = getRenderDelayMs()
-    const renderTarget = frameStart - delayMs
+    const renderTarget = frameNow - delayMs
     const newest = snapshotBuffer[snapshotBuffer.length - 1]
-    if (frameStart - newest.recvTs > KEYFRAME_STALE_MS) {
+    if (frameNow - newest.recvTs > KEYFRAME_STALE_MS) {
       snapshotBuffer = [newest]
+    }
+    while (snapshotBuffer.length > 2 && snapshotTimelineMs(snapshotBuffer[1]) <= renderTarget) {
+      snapshotBuffer.shift()
     }
 
     let displayState = newest.state
     if (snapshotBuffer.length >= 2) {
       let idx = 1
-      while (idx < snapshotBuffer.length && snapshotBuffer[idx].recvTs < renderTarget) idx += 1
+      while (idx < snapshotBuffer.length && snapshotTimelineMs(snapshotBuffer[idx]) < renderTarget) idx += 1
       const right = snapshotBuffer[Math.min(snapshotBuffer.length - 1, idx)]
       const left = snapshotBuffer[Math.max(0, idx - 1)]
-      if (right.recvTs > left.recvTs && renderTarget >= left.recvTs && renderTarget <= right.recvTs) {
-        const alpha = (renderTarget - left.recvTs) / (right.recvTs - left.recvTs)
+      const rightTs = snapshotTimelineMs(right)
+      const leftTs = snapshotTimelineMs(left)
+      if (rightTs > leftTs && renderTarget >= leftTs && renderTarget <= rightTs) {
+        const alpha = (renderTarget - leftTs) / (rightTs - leftTs)
         displayState = interpolateState(left.state, right.state, alpha)
-      } else if (renderTarget < left.recvTs) {
+      } else if (renderTarget < leftTs) {
         displayState = left.state
       } else {
-        displayState = right.state
+        const prev = snapshotBuffer[Math.max(0, snapshotBuffer.length - 2)]
+        const newestTs = snapshotTimelineMs(right)
+        displayState = extrapolateState(prev.state, right.state, renderTarget - newestTs)
       }
     }
 
@@ -622,14 +781,16 @@ function loop(ts: number) {
     }
 
     if (renderEnabled) {
-      const debugText = renderer.render(displayState, {
+      const predictedState = applyLocalPrediction(displayState, newest.state)
+      const debugText = renderer.render(predictedState, {
         latency5sMs: avgLatency5sMs,
         fps5s: avgClientFps5s,
         hostFps5s: hostFps,
         hostRenderFps5s: hostRenderFps,
         renderPipelineP95Ms: percentile(pipelineSamplesMs, 95),
         presentDelayP95Ms: percentile(presentDelaySamplesMs, 95),
-        decodeP95Ms: percentile(decodeSamplesMs, 95)
+        decodeP95Ms: percentile(decodeSamplesMs, 95),
+        localCorrectionP95Px: percentile(localPredictionErrorPx, 95)
       })
       debugLineEl.textContent = debugText
     } else {
@@ -641,7 +802,8 @@ function loop(ts: number) {
       stateOnlyEl.textContent = `${humanStateName(displayState.state)} | ${latencyText} | ${fpsText} | ${hostFpsText} | ${presentDelayText} | ${decodeText}`
       debugLineEl.textContent = stateOnlyEl.textContent
     }
-    pushLimited(pipelineSamplesMs, performance.now() - frameStart)
+    pushLimited(pipelineSamplesMs, performance.now() - frameStartPerf)
+    lastRenderDrawTs = ts
   }
   requestAnimationFrame(loop)
 }

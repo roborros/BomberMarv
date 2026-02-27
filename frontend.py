@@ -95,6 +95,12 @@ class FrontendRenderer:
 
         if new_width == BASE_WIDTH and new_height == BASE_HEIGHT:
             scaled_surface = self.screen.surface
+        elif new_width < BASE_WIDTH or new_height < BASE_HEIGHT:
+            # Quality-first downscaling now that host render is capped to 60 FPS.
+            if self.use_smoothscale:
+                scaled_surface = pygame.transform.smoothscale(self.screen.surface, (new_width, new_height))
+            else:
+                scaled_surface = pygame.transform.scale(self.screen.surface, (new_width, new_height))
         elif self.use_smoothscale:
             scaled_surface = pygame.transform.smoothscale(self.screen.surface, (new_width, new_height))
         else:

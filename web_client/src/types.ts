@@ -15,6 +15,8 @@ export interface PlayerState {
     powerups_collected?: number;
     cells_walked?: number;
     team?: number;
+    owner_client_id?: number | null;
+    owner_client_player_id?: number | null;
 }
 
 export interface BombState {

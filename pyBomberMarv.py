@@ -119,6 +119,8 @@ if __name__ == "__main__":
         "render_loop_timestamps_ms": [],
         "avg_sim_fps_5s": 0.0,
         "avg_render_fps_5s": 0.0,
+        "render_draw_samples_ms": [],
+        "render_present_samples_ms": [],
         "last_metrics_log_time": 0,
     }
     
@@ -286,11 +288,14 @@ if __name__ == "__main__":
                 f"state_dropped={runtime_metrics['state_queue_dropped']} "
                 f"input_p95_ms={state_payload['_net_metrics']['input_apply_p95_ms']} "
                 f"sim_fps_5s={state_payload['_net_metrics']['host_fps_5s']} "
-                f"render_fps_5s={state_payload['_net_metrics']['host_render_fps_5s']}"
+                f"render_fps_5s={state_payload['_net_metrics']['host_render_fps_5s']} "
+                f"draw_p95_ms={round(percentile(runtime_metrics['render_draw_samples_ms'], 95), 2)} "
+                f"present_p95_ms={round(percentile(runtime_metrics['render_present_samples_ms'], 95), 2)}"
             )
         return state_payload
 
     def render_frame(state_payload):
+        draw_started = time.perf_counter()
         theGame.handle_window_events()
         game_surface = frontend.screen.get_surface()
         if theGame.game_state == "startup":
@@ -313,17 +318,8 @@ if __name__ == "__main__":
             draw_game_screen(game_surface, theGame)
             draw_get_ready(game_surface)
         elif theGame.game_state == "playing":
-            just_died = any((not p.alive) and getattr(p, "death_animation_time", 0) > 800 for p in theGame.players)
-            if just_died:
-                temp_surface = pygame.Surface(game_surface.get_size())
-                temp_surface.fill((0, 0, 0))
-                draw_game_screen(temp_surface, theGame)
-                shake_x = int((time.time() * 1000) % 7) - 3
-                shake_y = int((time.time() * 1300) % 7) - 3
-                game_surface.fill((0, 0, 0))
-                game_surface.blit(temp_surface, (shake_x, shake_y))
-            else:
-                draw_game_screen(game_surface, theGame)
+            # Keep host render path single-pass; double rendering for shake was a major FPS sink.
+            draw_game_screen(game_surface, theGame)
         elif theGame.game_state == "win":
             draw_title_page(game_surface, alpha=255)
             alive_players = [p for p in theGame.players if p.alive]
@@ -340,13 +336,25 @@ if __name__ == "__main__":
         perf_surface = get_ui_font().render(perf_text, True, (210, 230, 255))
         perf_rect = perf_surface.get_rect(bottomleft=(20, BASE_HEIGHT - 14))
         game_surface.blit(perf_surface, perf_rect)
+        draw_duration_ms = (time.perf_counter() - draw_started) * 1000.0
+        runtime_metrics["render_draw_samples_ms"].append(draw_duration_ms)
+        if len(runtime_metrics["render_draw_samples_ms"]) > 300:
+            runtime_metrics["render_draw_samples_ms"] = runtime_metrics["render_draw_samples_ms"][-300:]
+        present_started = time.perf_counter()
         frontend.render()
+        present_duration_ms = (time.perf_counter() - present_started) * 1000.0
+        runtime_metrics["render_present_samples_ms"].append(present_duration_ms)
+        if len(runtime_metrics["render_present_samples_ms"]) > 300:
+            runtime_metrics["render_present_samples_ms"] = runtime_metrics["render_present_samples_ms"][-300:]
         runtime_metrics["render_loop_timestamps_ms"].append(theGame.current_time)
 
     sim_step_ms = 1000.0 / 60.0
+    render_step_ms = 1000.0 / 60.0
     max_accumulator_ms = sim_step_ms * 5.0
+    max_sim_steps_per_frame = 4
     accumulator_ms = 0.0
     last_tick = time.perf_counter()
+    next_render_due_ms = 0.0
     latest_payload = build_state_payload()
 
     while True:
@@ -355,12 +363,26 @@ if __name__ == "__main__":
         last_tick = now
         accumulator_ms = min(max_accumulator_ms, accumulator_ms + elapsed_ms)
 
-        while accumulator_ms >= sim_step_ms:
+        sim_steps_this_frame = 0
+        while accumulator_ms >= sim_step_ms and sim_steps_this_frame < max_sim_steps_per_frame:
             latest_payload = simulate_step(sim_step_ms)
             accumulator_ms -= sim_step_ms
+            sim_steps_this_frame += 1
+
+        # If rendering stalls for a moment, drop extra catch-up debt to avoid visible hitch bursts.
+        if accumulator_ms >= sim_step_ms * (max_sim_steps_per_frame * 2):
+            accumulator_ms = min(accumulator_ms, sim_step_ms)
 
         update_rate_metrics(theGame.current_time)
-        render_frame(latest_payload)
+        now_ms = now * 1000.0
+        if now_ms >= next_render_due_ms:
+            render_frame(latest_payload)
+            next_render_due_ms = now_ms + render_step_ms
+        else:
+            # Avoid busy-spin when both sim and render are waiting.
+            wait_ms = min(render_step_ms, max(0.0, next_render_due_ms - now_ms), max(0.0, sim_step_ms - accumulator_ms))
+            if wait_ms > 0.5:
+                time.sleep(wait_ms / 1000.0)
 
         if frontend.should_quit:
             break

@@ -52,7 +52,7 @@ export class Renderer {
         window.addEventListener('resize', () => this.fitCanvasToViewport());
     }
 
-    public render(state: GameState, metrics?: { latency5sMs?: number; fps5s?: number; hostFps5s?: number; hostRenderFps5s?: number; renderPipelineP95Ms?: number; presentDelayP95Ms?: number; decodeP95Ms?: number; }): string {
+    public render(state: GameState, metrics?: { latency5sMs?: number; fps5s?: number; hostFps5s?: number; hostRenderFps5s?: number; renderPipelineP95Ms?: number; presentDelayP95Ms?: number; decodeP95Ms?: number; localCorrectionP95Px?: number; }): string {
         const renderStart = performance.now();
         // Update dimensions if needed based on board size
         if (state.board && state.board.length > 0) {
@@ -279,10 +279,16 @@ export class Renderer {
         const centerPixelX = cx * CELL_SIZE + CELL_SIZE / 2;
         const centerPixelY = cy * CELL_SIZE + CELL_SIZE / 2;
 
-        const upMax = Math.max(0, ...explosion.cells.filter(([x, y]) => x === cx && y < cy).map(([, y]) => cy - y));
-        const downMax = Math.max(0, ...explosion.cells.filter(([x, y]) => x === cx && y > cy).map(([, y]) => y - cy));
-        const leftMax = Math.max(0, ...explosion.cells.filter(([x, y]) => y === cy && x < cx).map(([x]) => cx - x));
-        const rightMax = Math.max(0, ...explosion.cells.filter(([x, y]) => y === cy && x > cx).map(([x]) => x - cx));
+        let upMax = 0;
+        let downMax = 0;
+        let leftMax = 0;
+        let rightMax = 0;
+        for (const [x, y] of explosion.cells) {
+            if (x === cx && y < cy) upMax = Math.max(upMax, cy - y);
+            else if (x === cx && y > cy) downMax = Math.max(downMax, y - cy);
+            else if (y === cy && x < cx) leftMax = Math.max(leftMax, cx - x);
+            else if (y === cy && x > cx) rightMax = Math.max(rightMax, x - cx);
+        }
 
         const upLength = armFactor * upMax * CELL_SIZE;
         const downLength = armFactor * downMax * CELL_SIZE;
@@ -410,7 +416,7 @@ export class Renderer {
         }
     }
 
-    private buildDebugLine(state: GameState, metrics?: { latency5sMs?: number; fps5s?: number; hostFps5s?: number; hostRenderFps5s?: number; renderPipelineP95Ms?: number; presentDelayP95Ms?: number; decodeP95Ms?: number; }, renderP95Ms?: number): string {
+    private buildDebugLine(state: GameState, metrics?: { latency5sMs?: number; fps5s?: number; hostFps5s?: number; hostRenderFps5s?: number; renderPipelineP95Ms?: number; presentDelayP95Ms?: number; decodeP95Ms?: number; localCorrectionP95Px?: number; }, renderP95Ms?: number): string {
         const parts: string[] = [];
         parts.push(`State: ${state.state}`);
         parts.push(`Time: ${(state.time / 1000).toFixed(1)}`);
@@ -421,6 +427,7 @@ export class Renderer {
         if (metrics?.renderPipelineP95Ms !== undefined) parts.push(`RenderPipeline p95: ${metrics.renderPipelineP95Ms.toFixed(2)} ms`);
         if (metrics?.presentDelayP95Ms !== undefined) parts.push(`PresentDelay p95: ${metrics.presentDelayP95Ms.toFixed(1)} ms`);
         if (metrics?.decodeP95Ms !== undefined) parts.push(`Decode p95: ${metrics.decodeP95Ms.toFixed(2)} ms`);
+        if (metrics?.localCorrectionP95Px !== undefined) parts.push(`LocalCorr p95: ${metrics.localCorrectionP95Px.toFixed(1)} px`);
         if (renderP95Ms !== undefined) parts.push(`CanvasDraw p95: ${renderP95Ms.toFixed(2)} ms`);
         parts.push(`Scale: ${(this.lastCanvasScale * 100).toFixed(0)}%`);
         return parts.join(' | ');
