@@ -11,6 +11,27 @@ import shutil
 
 ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 
+
+def detect_lan_ip():
+    """Best-effort local LAN IP detection for client URL output."""
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.connect(("8.8.8.8", 80))
+        ip = sock.getsockname()[0]
+        sock.close()
+        if ip and not ip.startswith("127."):
+            return ip
+    except Exception:
+        pass
+    try:
+        host = socket.gethostname()
+        ip = socket.gethostbyname(host)
+        if ip and not ip.startswith("127."):
+            return ip
+    except Exception:
+        pass
+    return "127.0.0.1"
+
 def stream_reader(process, prefix):
     """Reads output from a subprocess, strips ANSI codes, and prints it with a prefix."""
     for line in iter(process.stdout.readline, ''):
@@ -81,6 +102,18 @@ def main():
         # Unbuffered output for real-time logging
         backend_env = os.environ.copy()
         backend_env["PYTHONUNBUFFERED"] = "1"
+        backend_env.setdefault("BM_RTC_ENABLED", "1")
+        backend_env.setdefault("BM_RTC_FORCE_WS", "0")
+        backend_env.setdefault("BM_STRICT_INPUT_MODE", "0")
+        backend_env.setdefault("BM_INPUT_LEAD_TICKS", "1")
+        print(
+            f"RTC flags: BM_RTC_ENABLED={backend_env['BM_RTC_ENABLED']} "
+            f"BM_RTC_FORCE_WS={backend_env['BM_RTC_FORCE_WS']}"
+        )
+        print(
+            f"Input flags: BM_STRICT_INPUT_MODE={backend_env['BM_STRICT_INPUT_MODE']} "
+            f"BM_INPUT_LEAD_TICKS={backend_env['BM_INPUT_LEAD_TICKS']}"
+        )
         
         backend_process = subprocess.Popen(
             [sys.executable, 'pyBomberMarv.py'],
@@ -118,7 +151,7 @@ def main():
         frontend_env["FORCE_COLOR"] = "0"
         
         frontend_process = subprocess.Popen(
-            [bun_cmd, 'run', 'dev'],
+            [bun_cmd, 'run', 'dev', '--', '--host'],
             cwd=web_client_dir,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -131,7 +164,9 @@ def main():
         # Start logging thread for frontend
         threading.Thread(target=stream_reader, args=(frontend_process, "FRONTEND"), daemon=True).start()
 
+        lan_ip = detect_lan_ip()
         print("All services started. Press Ctrl+C to stop.")
+        print(f"Client URL (LAN): http://{lan_ip}:5173")
         
         # Keep main thread alive
         while True:

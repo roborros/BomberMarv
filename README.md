@@ -36,6 +36,21 @@ From repo root:
 - `GET /metrics` -> queue and runtime counters
 - `GET /config` -> input sending config
 
+## WebRTC hybrid transport (LAN/WLAN)
+
+- Control plane stays on WebSocket (`hello`, registration, slots, lobby/control).
+- Gameplay plane can use WebRTC DataChannels (`input_unreliable`, `state_unreliable`) when negotiated.
+- Runtime fallback is automatic to WS gameplay if RTC is unavailable or drops.
+- Feature flags:
+  - `BM_RTC_ENABLED=1` enables server-side RTC negotiation path.
+  - `BM_RTC_FORCE_WS=1` forces WS-only gameplay path (kill-switch).
+  - `BM_STRICT_INPUT_MODE=1` enables strict tick-indexed input path (LAN experiment).
+  - `BM_INPUT_LEAD_TICKS=1` configures input lead/apply window in ticks.
+- Optional client query flags:
+  - `?rtc=0` disables RTC on the web client.
+  - `?rtc_codec=msgpack` requests MessagePack on RTC data channels (JSON remains default).
+  - `?strict=1` enables strict tick-indexed input sending from web client.
+
 ## Protocol
 
 - Protocol version: `2`

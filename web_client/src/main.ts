@@ -1,12 +1,18 @@
 import './style.css'
+import { decode as msgpackDecode, encode as msgpackEncode } from '@msgpack/msgpack'
 import { Renderer } from './renderer'
 import { runRendererBenchmark } from './perf_benchmark'
 import type {
   GameState,
   GameStateDeltaMessage,
   GameStateMessage,
+  HelloAckMessage,
   RegistrationConfirmedMessage,
   RegistrationRejectedMessage,
+  RtcFailedMessage,
+  RtcIceCandidateMessage,
+  RtcOfferMessage,
+  RtcReadyMessage,
   ServerMessage,
   SlotListMessage
 } from './types'
@@ -25,6 +31,11 @@ const AUDIO_COOLDOWN_MS = 40
 const EXTRAPOLATE_MAX_MS = 70
 const LOCAL_PREDICTION_MAX_OFFSET_PX = 9
 const LOCAL_PREDICTION_LERP = 0.38
+const LOCAL_PREDICTION_MAX_OFFSET_RTC_PX = 6
+const RTC_ENABLED = new URLSearchParams(window.location.search).get('rtc') !== '0'
+const RTC_RETRY_MS = 4000
+const RTC_CODEC: 'json' | 'msgpack' = new URLSearchParams(window.location.search).get('rtc_codec') === 'msgpack' ? 'msgpack' : 'json'
+const STRICT_INPUT_MODE = new URLSearchParams(window.location.search).get('strict') === '1'
 
 window.onerror = (msg, url, line, col, error) => {
   console.error('GLOBAL ERROR:', msg, url, line, col, error)
@@ -96,6 +107,12 @@ let reconnectAttempts = 0
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let pingTimer: ReturnType<typeof setInterval> | null = null
 let ws: WebSocket | null = null
+let rtcPeer: RTCPeerConnection | null = null
+let rtcInputChannel: RTCDataChannel | null = null
+let rtcStateChannel: RTCDataChannel | null = null
+let rtcRetryTimer: ReturnType<typeof setTimeout> | null = null
+let transportActive: 'ws' | 'rtc' = 'ws'
+let rtcFallbackEvents = 0
 let pendingSlotSelection: number | null = null
 let currentPlayerName = ''
 let renderEnabled = true
@@ -138,6 +155,7 @@ let lastInputSentAt = 0
 let lastInputHash = ''
 let lastRenderLoopTs = 0
 let lastRenderDrawTs = 0
+let localInputTick = 0
 
 function getWsUrl(): string {
   let host = window.location.hostname
@@ -149,6 +167,116 @@ function sendMessage(message: Record<string, unknown>) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(message))
   }
+}
+
+function isRtcInputReady(): boolean {
+  return !!(rtcInputChannel && rtcInputChannel.readyState === 'open' && transportActive === 'rtc')
+}
+
+function scheduleRtcRetry() {
+  if (rtcRetryTimer) return
+  rtcRetryTimer = setTimeout(() => {
+    rtcRetryTimer = null
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      sendMessage({
+        type: 'hello',
+        protocol: PROTOCOL_VERSION,
+        ts: Date.now(),
+        webrtc_supported: RTC_ENABLED && !!window.RTCPeerConnection,
+        rtc_codec: RTC_CODEC,
+        strict_input_mode: STRICT_INPUT_MODE
+      })
+    }
+  }, RTC_RETRY_MS)
+}
+
+function closeRtcPeer() {
+  try { rtcInputChannel?.close() } catch { /* noop */ }
+  try { rtcStateChannel?.close() } catch { /* noop */ }
+  try { rtcPeer?.close() } catch { /* noop */ }
+  rtcInputChannel = null
+  rtcStateChannel = null
+  rtcPeer = null
+  transportActive = 'ws'
+}
+
+async function handleRtcOffer(msg: RtcOfferMessage) {
+  if (!RTC_ENABLED || !window.RTCPeerConnection) return
+  closeRtcPeer()
+  rtcPeer = new RTCPeerConnection({ iceServers: [] })
+  rtcPeer.onicecandidate = (ev) => {
+    if (!ev.candidate) return
+    sendMessage({
+      type: 'rtc_ice_candidate',
+      protocol: PROTOCOL_VERSION,
+      candidate: {
+        candidate: ev.candidate.candidate,
+        sdpMid: ev.candidate.sdpMid,
+        sdpMLineIndex: ev.candidate.sdpMLineIndex
+      }
+    })
+  }
+  rtcPeer.onconnectionstatechange = () => {
+    const state = rtcPeer?.connectionState
+    if (state === 'connected') {
+      transportActive = 'rtc'
+      sendMessage({ type: 'rtc_ready', protocol: PROTOCOL_VERSION, transport: 'rtc' })
+    } else if (state === 'failed' || state === 'disconnected' || state === 'closed') {
+      transportActive = 'ws'
+      rtcFallbackEvents += 1
+      sendMessage({ type: 'rtc_failed', protocol: PROTOCOL_VERSION, reason: `state:${state}` })
+      scheduleRtcRetry()
+    }
+  }
+  rtcPeer.ondatachannel = (ev) => {
+    const channel = ev.channel
+    if (channel.label === 'input_unreliable') {
+      rtcInputChannel = channel
+    } else if (channel.label === 'state_unreliable') {
+      rtcStateChannel = channel
+      rtcStateChannel.onmessage = (event) => {
+        try {
+          let parsed: unknown
+          if (typeof event.data === 'string') {
+            parsed = JSON.parse(event.data)
+          } else if (event.data instanceof ArrayBuffer) {
+            parsed = RTC_CODEC === 'msgpack' ? msgpackDecode(new Uint8Array(event.data)) : JSON.parse(new TextDecoder().decode(new Uint8Array(event.data)))
+          } else if (event.data instanceof Blob) {
+            event.data.arrayBuffer().then((buf) => {
+              try {
+                const decoded = RTC_CODEC === 'msgpack' ? msgpackDecode(new Uint8Array(buf)) : JSON.parse(new TextDecoder().decode(new Uint8Array(buf)))
+                if (!isServerMessage(decoded)) return
+                handleServerMessage(decoded as ServerMessage)
+              } catch {
+                // noop
+              }
+            })
+            return
+          } else {
+            parsed = JSON.parse(String(event.data))
+          }
+          if (!isServerMessage(parsed)) return
+          handleServerMessage(parsed as ServerMessage)
+        } catch (err) {
+          console.warn('RTC state parse error', err)
+        }
+      }
+      rtcStateChannel.onclose = () => {
+        transportActive = 'ws'
+        rtcFallbackEvents += 1
+        sendMessage({ type: 'rtc_failed', protocol: PROTOCOL_VERSION, reason: 'state_channel_closed' })
+      }
+    }
+  }
+  await rtcPeer.setRemoteDescription({ type: 'offer', sdp: msg.sdp })
+  const answer = await rtcPeer.createAnswer()
+  await rtcPeer.setLocalDescription(answer)
+  sendMessage({
+    type: 'rtc_answer',
+    protocol: PROTOCOL_VERSION,
+    sdp: answer.sdp,
+    sdp_type: 'answer'
+  })
 }
 
 function ensureAudioUnlocked() {
@@ -398,7 +526,8 @@ function applyLocalPrediction(state: GameState, newestState: GameState): GameSta
   const inputActive = length > 1e-6
   // When blocked against walls/bombs, remove almost all local lead to prevent jumpy corrections.
   const blocked = inputActive && authMoveDist < 1.5
-  const targetMag = blocked ? 2.0 : LOCAL_PREDICTION_MAX_OFFSET_PX
+  const maxOffset = transportActive === 'rtc' ? LOCAL_PREDICTION_MAX_OFFSET_RTC_PX : LOCAL_PREDICTION_MAX_OFFSET_PX
+  const targetMag = blocked ? 2.0 : maxOffset
   const targetOffsetX = inputActive ? dx * targetMag : 0
   const targetOffsetY = inputActive ? dy * targetMag : 0
   localVisualOffset.x += (targetOffsetX - localVisualOffset.x) * LOCAL_PREDICTION_LERP
@@ -418,8 +547,12 @@ function applyLocalPrediction(state: GameState, newestState: GameState): GameSta
 function getRenderDelayMs(): number {
   const p50 = percentile(arrivalIntervalsMs, 50) || 16
   const p95 = percentile(arrivalIntervalsMs, 95) || p50
+  const p99 = percentile(arrivalIntervalsMs, 99) || p95
   const jitter = Math.max(0, p95 - p50)
-  const targetDelay = Math.max(6, Math.min(22, p50 * 0.35 + jitter * 0.5 + 2))
+  const burstJitter = Math.max(0, p99 - p95)
+  const minDelay = transportActive === 'rtc' ? 3 : 6
+  const maxDelay = transportActive === 'rtc' ? 14 : (STRICT_INPUT_MODE ? 26 : 22)
+  const targetDelay = Math.max(minDelay, Math.min(maxDelay, p50 * 0.35 + jitter * 0.5 + burstJitter * 0.25 + 2))
   smoothedRenderDelayMs = (smoothedRenderDelayMs * 0.85) + (targetDelay * 0.15)
   return smoothedRenderDelayMs
 }
@@ -454,86 +587,129 @@ function startHeartbeat() {
   }, PING_INTERVAL_MS)
 }
 
+function handleServerMessage(msg: ServerMessage) {
+  if (msg.type === 'client_id') {
+    clientId = msg.client_id
+    return
+  }
+
+  if (msg.type === 'hello_ack') {
+    const ack = msg as HelloAckMessage
+    if (ack.webrtc_offered && RTC_ENABLED && !!window.RTCPeerConnection) {
+      statusDivEl.textContent = 'Connected. Negotiating low-latency transport...'
+    }
+    return
+  }
+
+  if (msg.type === 'rtc_offer') {
+    void handleRtcOffer(msg as RtcOfferMessage)
+    return
+  }
+
+  if (msg.type === 'rtc_ice_candidate') {
+    const iceMsg = msg as RtcIceCandidateMessage
+    if (rtcPeer && iceMsg.candidate?.candidate) {
+      void rtcPeer.addIceCandidate({
+        candidate: iceMsg.candidate.candidate,
+        sdpMid: iceMsg.candidate.sdpMid ?? null,
+        sdpMLineIndex: iceMsg.candidate.sdpMLineIndex ?? null
+      }).catch(() => {})
+    }
+    return
+  }
+
+  if (msg.type === 'rtc_ready') {
+    const rtcReadyMsg = msg as RtcReadyMessage
+    if (rtcReadyMsg.transport === 'rtc') {
+      transportActive = 'rtc'
+    }
+    return
+  }
+
+  if (msg.type === 'rtc_failed') {
+    const rtcFailed = msg as RtcFailedMessage
+    console.warn('RTC failed, using websocket fallback:', rtcFailed.reason)
+    transportActive = 'ws'
+    rtcFallbackEvents += 1
+    scheduleRtcRetry()
+    return
+  }
+
+  if (msg.type === 'slot_list') {
+    renderSlots(msg)
+    return
+  }
+
+  if (msg.type === 'registration_confirmed') {
+    const confirmed = msg as RegistrationConfirmedMessage
+    isRegistered = true
+    pendingSlotSelection = confirmed.slot
+    playerIds = confirmed.player_ids || []
+    localVisualOffset = { x: 0, y: 0 }
+    localPredictionErrorPx = []
+    localPredictionTargetKey = null
+    localLastAuthPos = null
+    lobbyOverlayEl.classList.add('hidden')
+    statusDivEl.textContent = `Playing as P${confirmed.slot}`
+    return
+  }
+
+  if (msg.type === 'registration_rejected') {
+    const rejected = msg as RegistrationRejectedMessage
+    lobbyStatusEl.textContent = `Error: ${rejected.message}`
+    sendMessage({ type: 'request_slot_list', protocol: PROTOCOL_VERSION })
+    return
+  }
+
+  if (msg.type === 'gamestate') {
+    const stateMsg = msg as GameStateMessage
+    if (isRegistered) {
+      ingestSnapshot(stateMsg.data, stateMsg.seq ?? (latestSeq + 1), stateMsg.server_timestamp)
+    }
+    return
+  }
+
+  if (msg.type === 'gamestate_delta') {
+    const deltaMsg = msg as GameStateDeltaMessage
+    if (!isRegistered || !latestState) return
+    if (deltaMsg.base_seq !== latestSeq) {
+      return
+    }
+    const merged = mergeDelta(latestState, deltaMsg.delta)
+    ingestSnapshot(merged, deltaMsg.seq, deltaMsg.server_timestamp)
+    return
+  }
+
+  if (msg.type === 'input_ack') {
+    const now = Date.now()
+    const original = msg.original_timestamp
+    if (typeof original === 'number') {
+      const sample = Math.max(0, now - original)
+      latencySamples5s.push({ ts: now, value: sample })
+      const cutoff = now - 5000
+      latencySamples5s = latencySamples5s.filter((s) => s.ts >= cutoff)
+      if (latencySamples5s.length > 0) {
+        const sum = latencySamples5s.reduce((acc, s) => acc + s.value, 0)
+        avgLatency5sMs = sum / latencySamples5s.length
+      } else {
+        avgLatency5sMs = 0
+      }
+    }
+    return
+  }
+
+  if (msg.type === 'error') {
+    statusDivEl.textContent = `Protocol error: ${msg.message}`
+  }
+}
+
 function handleMessage(raw: string) {
   try {
     const decodeStart = performance.now()
     const parsed = JSON.parse(raw) as unknown
     if (!isServerMessage(parsed)) return
     pushLimited(decodeSamplesMs, performance.now() - decodeStart)
-    const msg = parsed as ServerMessage
-
-    if (msg.type === 'client_id') {
-      clientId = msg.client_id
-      return
-    }
-
-    if (msg.type === 'slot_list') {
-      renderSlots(msg)
-      return
-    }
-
-    if (msg.type === 'registration_confirmed') {
-      const confirmed = msg as RegistrationConfirmedMessage
-      isRegistered = true
-      pendingSlotSelection = confirmed.slot
-      playerIds = confirmed.player_ids || []
-      localVisualOffset = { x: 0, y: 0 }
-      localPredictionErrorPx = []
-      localPredictionTargetKey = null
-      localLastAuthPos = null
-      lobbyOverlayEl.classList.add('hidden')
-      statusDivEl.textContent = `Playing as P${confirmed.slot}`
-      return
-    }
-
-    if (msg.type === 'registration_rejected') {
-      const rejected = msg as RegistrationRejectedMessage
-      lobbyStatusEl.textContent = `Error: ${rejected.message}`
-      sendMessage({ type: 'request_slot_list', protocol: PROTOCOL_VERSION })
-      return
-    }
-
-    if (msg.type === 'gamestate') {
-      const stateMsg = msg as GameStateMessage
-      if (isRegistered) {
-        ingestSnapshot(stateMsg.data, stateMsg.seq ?? (latestSeq + 1), stateMsg.server_timestamp)
-      }
-      return
-    }
-
-    if (msg.type === 'gamestate_delta') {
-      const deltaMsg = msg as GameStateDeltaMessage
-      if (!isRegistered || !latestState) return
-      if (deltaMsg.base_seq !== latestSeq) {
-        // We missed continuity; wait for the next keyframe.
-        return
-      }
-      const merged = mergeDelta(latestState, deltaMsg.delta)
-      ingestSnapshot(merged, deltaMsg.seq, deltaMsg.server_timestamp)
-      return
-    }
-
-    if (msg.type === 'input_ack') {
-      const now = Date.now()
-      const original = msg.original_timestamp
-      if (typeof original === 'number') {
-        const sample = Math.max(0, now - original)
-        latencySamples5s.push({ ts: now, value: sample })
-        const cutoff = now - 5000
-        latencySamples5s = latencySamples5s.filter((s) => s.ts >= cutoff)
-        if (latencySamples5s.length > 0) {
-          const sum = latencySamples5s.reduce((acc, s) => acc + s.value, 0)
-          avgLatency5sMs = sum / latencySamples5s.length
-        } else {
-          avgLatency5sMs = 0
-        }
-      }
-      return
-    }
-
-    if (msg.type === 'error') {
-      statusDivEl.textContent = `Protocol error: ${msg.message}`
-    }
+    handleServerMessage(parsed as ServerMessage)
   } catch (e) {
     console.error('Error parsing message:', e)
   }
@@ -551,12 +727,21 @@ function connectWebSocket() {
     snapshotBuffer = []
     latestState = null
     latestSeq = -1
+    localInputTick = 0
     localVisualOffset = { x: 0, y: 0 }
     localPredictionErrorPx = []
     localPredictionTargetKey = null
     localLastAuthPos = null
+    transportActive = 'ws'
     knownExplosionKeys = new Set()
-    sendMessage({ type: 'hello', protocol: PROTOCOL_VERSION, ts: Date.now() })
+    sendMessage({
+      type: 'hello',
+      protocol: PROTOCOL_VERSION,
+      ts: Date.now(),
+      webrtc_supported: RTC_ENABLED && !!window.RTCPeerConnection,
+      rtc_codec: RTC_CODEC,
+      strict_input_mode: STRICT_INPUT_MODE
+    })
     if (currentPlayerName) {
       sendMessage({ type: 'set_name', protocol: PROTOCOL_VERSION, name: currentPlayerName })
     }
@@ -577,6 +762,7 @@ function connectWebSocket() {
   ws.onclose = () => {
     statusDivEl.textContent = 'Disconnected. Reconnecting...'
     isRegistered = false
+    closeRtcPeer()
     if (pingTimer) {
       clearInterval(pingTimer)
       pingTimer = null
@@ -585,10 +771,12 @@ function connectWebSocket() {
     snapshotBuffer = []
     latestState = null
     latestSeq = -1
+    localInputTick = 0
     localVisualOffset = { x: 0, y: 0 }
     localPredictionErrorPx = []
     localPredictionTargetKey = null
     localLastAuthPos = null
+    transportActive = 'ws'
     knownExplosionKeys = new Set()
     const waitMs = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * (2 ** (reconnectAttempts - 1)))
     if (reconnectTimer) clearTimeout(reconnectTimer)
@@ -706,16 +894,41 @@ function maybeSendInput(force = false) {
     keys.bomb ? 1 : 0
   ]
 
-  sendMessage({
+  const payload = {
     type: 'game_input',
     protocol: PROTOCOL_VERSION,
+    tick_id: localInputTick,
     input: inputData,
+    input_frame: {
+      player_id: playerId,
+      up: keys.up ? 1 : 0,
+      down: keys.down ? 1 : 0,
+      left: keys.left ? 1 : 0,
+      right: keys.right ? 1 : 0,
+      bomb: keys.bomb ? 1 : 0
+    },
     client_timestamp: now
-  })
+  }
+  if (isRtcInputReady()) {
+    try {
+      if (RTC_CODEC === 'msgpack') {
+        rtcInputChannel!.send(msgpackEncode(payload))
+      } else {
+        rtcInputChannel!.send(JSON.stringify(payload))
+      }
+    } catch {
+      transportActive = 'ws'
+      rtcFallbackEvents += 1
+      sendMessage(payload)
+    }
+  } else {
+    sendMessage(payload)
+  }
 
   lastInputSentAt = now
   keysDirty = false
   lastInputHash = hash
+  localInputTick += 1
 }
 
 window.addEventListener('keydown', (e) => updateKey(e.code, true))
@@ -793,6 +1006,9 @@ function loop(ts: number) {
         localCorrectionP95Px: percentile(localPredictionErrorPx, 95)
       })
       debugLineEl.textContent = debugText
+      const jitterMs = Math.max(0, (percentile(arrivalIntervalsMs, 95) || 0) - (percentile(arrivalIntervalsMs, 50) || 0))
+      const simTick = predictedState._net_metrics?.sim_tick ?? 0
+      statusDivEl.textContent = `Transport: ${transportActive.toUpperCase()} | Avg latency(5s): ${avgLatency5sMs.toFixed(1)} ms | Jitter: ${jitterMs.toFixed(1)} ms | Tick: ${simTick} | Strict: ${STRICT_INPUT_MODE ? 'ON' : 'OFF'} | Fallbacks: ${rtcFallbackEvents}`
     } else {
       const latencyText = `Latency(5s): ${avgLatency5sMs.toFixed(1)} ms`
       const fpsText = `Client FPS(5s): ${avgClientFps5s.toFixed(1)}`

@@ -62,6 +62,10 @@ export interface GameState {
         input_apply_p99_ms?: number;
         sim_step_avg_ms?: number;
         sim_step_p95_ms?: number;
+        sim_tick?: number;
+        input_tick_reused?: number;
+        input_tick_buffered?: number;
+        input_tick_apply_lag_p95?: number;
     };
     _host_published_at_ms?: number;
 }
@@ -69,6 +73,18 @@ export interface GameState {
 export interface ProtocolEnvelope {
     type: string;
     protocol?: number;
+}
+
+export interface HelloAckMessage extends ProtocolEnvelope {
+    type: 'hello_ack';
+    server?: string;
+    ws_version?: string;
+    webrtc_offered?: boolean;
+    webrtc_enabled?: boolean;
+    rtc_codec?: 'json' | 'msgpack';
+    strict_input_mode?: boolean;
+    input_lead_ticks?: number;
+    transport_active?: 'ws' | 'rtc';
 }
 
 export interface ClientIdMessage extends ProtocolEnvelope {
@@ -100,6 +116,7 @@ export interface GameStateMessage extends ProtocolEnvelope {
     data: GameState;
     server_timestamp?: number;
     seq?: number;
+    tick_id?: number;
 }
 
 export interface GameStateDeltaMessage extends ProtocolEnvelope {
@@ -107,6 +124,7 @@ export interface GameStateDeltaMessage extends ProtocolEnvelope {
     base_seq: number;
     seq: number;
     server_timestamp?: number;
+    tick_id?: number;
     delta: Partial<GameState>;
 }
 
@@ -115,6 +133,8 @@ export interface InputAckMessage extends ProtocolEnvelope {
     client_id: number;
     original_timestamp?: number;
     server_timestamp: number;
+    tick_id?: number;
+    apply_tick_id?: number;
 }
 
 export interface PongMessage extends ProtocolEnvelope {
@@ -127,8 +147,42 @@ export interface ErrorMessage extends ProtocolEnvelope {
     message: string;
 }
 
+export interface RtcOfferMessage extends ProtocolEnvelope {
+    type: 'rtc_offer';
+    sdp: string;
+    sdp_type: 'offer';
+}
+
+export interface RtcAnswerMessage extends ProtocolEnvelope {
+    type: 'rtc_answer';
+    sdp: string;
+    sdp_type: 'answer';
+}
+
+export interface RtcIceCandidatePayload {
+    candidate?: string;
+    sdpMid?: string | null;
+    sdpMLineIndex?: number | null;
+}
+
+export interface RtcIceCandidateMessage extends ProtocolEnvelope {
+    type: 'rtc_ice_candidate';
+    candidate: RtcIceCandidatePayload;
+}
+
+export interface RtcReadyMessage extends ProtocolEnvelope {
+    type: 'rtc_ready';
+    transport?: 'ws' | 'rtc';
+}
+
+export interface RtcFailedMessage extends ProtocolEnvelope {
+    type: 'rtc_failed';
+    reason?: string;
+}
+
 export type ServerMessage =
     | ClientIdMessage
+    | HelloAckMessage
     | SlotListMessage
     | RegistrationConfirmedMessage
     | RegistrationRejectedMessage
@@ -136,7 +190,11 @@ export type ServerMessage =
     | GameStateDeltaMessage
     | InputAckMessage
     | PongMessage
-    | ErrorMessage;
+    | ErrorMessage
+    | RtcOfferMessage
+    | RtcIceCandidateMessage
+    | RtcReadyMessage
+    | RtcFailedMessage;
 
 export function isServerMessage(msg: unknown): msg is ServerMessage {
     if (typeof msg !== 'object' || msg === null) return false;

@@ -1100,7 +1100,24 @@ class Game:
         if player_obj is not None:
             if player_obj not in self.web_keys_by_player:
                 self.web_keys_by_player[player_obj] = set()
-            if event['type'] == 'keydown':
+            if event['type'] == 'set_input_state':
+                keys_payload = event.get('keys', {}) if isinstance(event, dict) else {}
+                new_keys = set()
+                if isinstance(keys_payload, dict):
+                    if int(keys_payload.get('up', 0)):
+                        new_keys.add('arrowup')
+                    if int(keys_payload.get('down', 0)):
+                        new_keys.add('arrowdown')
+                    if int(keys_payload.get('left', 0)):
+                        new_keys.add('arrowleft')
+                    if int(keys_payload.get('right', 0)):
+                        new_keys.add('arrowright')
+                    if int(keys_payload.get('bomb', 0)):
+                        new_keys.add('space')
+                self.web_keys_by_player[player_obj] = new_keys
+                if DEGUG:
+                    print(f"DEBUG: Player {player_obj.client_id}:{player_obj.client_player_id} KEYS SET -> {sorted(list(new_keys))}")
+            elif event['type'] == 'keydown':
                 # Normalize key to lowercase for consistent comparisons
                 keyname = str(event['key']).lower()
                 self.web_keys_by_player[player_obj].add(keyname)

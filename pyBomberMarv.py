@@ -2,6 +2,7 @@
 
 import socket
 import multiprocessing
+import os
 import psutil
 import queue
 import statistics
@@ -122,7 +123,15 @@ if __name__ == "__main__":
         "render_draw_samples_ms": [],
         "render_present_samples_ms": [],
         "last_metrics_log_time": 0,
+        "sim_tick": 0,
+        "input_tick_reused": 0,
+        "input_tick_buffered": 0,
+        "input_tick_apply_lag_samples": [],
     }
+    input_reuse_horizon_ticks = max(1, int(os.environ.get("BM_INPUT_REUSE_HORIZON_TICKS", "2") or 2))
+    pending_remote_input_by_tick = {}
+    remote_players_seen = set()
+    remote_last_applied_tick = {}
     
     # Get reference to server functions for game state updates
     # update_game_state = ws_stream_server.update_game_state # No longer needed
@@ -167,7 +176,7 @@ if __name__ == "__main__":
             ((len(runtime_metrics["render_loop_timestamps_ms"]) - 1) * 1000.0) / render_span if render_span > 0 else 0.0
         )
 
-    def drain_remote_input():
+    def drain_remote_input(current_tick):
         while True:
             try:
                 event = input_queue.get_nowait()
@@ -185,7 +194,26 @@ if __name__ == "__main__":
                     runtime_metrics["input_apply_samples_ms"].append(sample)
                     if len(runtime_metrics["input_apply_samples_ms"]) > 300:
                         runtime_metrics["input_apply_samples_ms"] = runtime_metrics["input_apply_samples_ms"][-300:]
-                theGame.handle_web_key_event(event)
+                if isinstance(event, dict) and event.get("type") == "set_input_state":
+                    player_key = (int(event.get("client_id", 0) or 0), int(event.get("player_id", 0) or 0))
+                    remote_players_seen.add(player_key)
+                    apply_tick_raw = event.get("apply_tick_id")
+                    apply_tick = int(apply_tick_raw) if isinstance(apply_tick_raw, (int, float)) else None
+                    if apply_tick is not None and apply_tick > current_tick:
+                        bucket = pending_remote_input_by_tick.setdefault(apply_tick, [])
+                        bucket.append(event)
+                        runtime_metrics["input_tick_buffered"] += 1
+                    else:
+                        theGame.handle_web_key_event(event)
+                        remote_last_applied_tick[player_key] = current_tick
+                        tick_id = event.get("tick_id")
+                        if isinstance(tick_id, (int, float)):
+                            lag = max(0, int(current_tick - int(tick_id)))
+                            runtime_metrics["input_tick_apply_lag_samples"].append(lag)
+                            if len(runtime_metrics["input_tick_apply_lag_samples"]) > 300:
+                                runtime_metrics["input_tick_apply_lag_samples"] = runtime_metrics["input_tick_apply_lag_samples"][-300:]
+                else:
+                    theGame.handle_web_key_event(event)
                 runtime_metrics["input_events_processed"] += 1
             except queue.Empty:
                 break
@@ -193,6 +221,31 @@ if __name__ == "__main__":
                 print(f"DEBUG: Exception processing input queue: {e}")
                 runtime_metrics["input_events_errors"] += 1
                 break
+
+    def apply_buffered_remote_input(current_tick):
+        due_ticks = sorted(tick for tick in pending_remote_input_by_tick.keys() if tick <= current_tick)
+        applied_player_keys = set()
+        for tick in due_ticks:
+            events = pending_remote_input_by_tick.pop(tick, [])
+            for event in events:
+                theGame.handle_web_key_event(event)
+                player_key = (int(event.get("client_id", 0) or 0), int(event.get("player_id", 0) or 0))
+                remote_last_applied_tick[player_key] = current_tick
+                applied_player_keys.add(player_key)
+                tick_id = event.get("tick_id")
+                if isinstance(tick_id, (int, float)):
+                    lag = max(0, int(current_tick - int(tick_id)))
+                    runtime_metrics["input_tick_apply_lag_samples"].append(lag)
+                    if len(runtime_metrics["input_tick_apply_lag_samples"]) > 300:
+                        runtime_metrics["input_tick_apply_lag_samples"] = runtime_metrics["input_tick_apply_lag_samples"][-300:]
+
+        # Deterministic short-horizon reuse accounting: keep last applied input state for a few ticks.
+        for player_key in remote_players_seen:
+            last_tick = remote_last_applied_tick.get(player_key)
+            if last_tick is None or player_key in applied_player_keys:
+                continue
+            if (current_tick - last_tick) <= input_reuse_horizon_ticks:
+                runtime_metrics["input_tick_reused"] += 1
 
     def maybe_refresh_lobby_status():
         if theGame.game_state not in ["startup", "game_prep"]:
@@ -225,6 +278,7 @@ if __name__ == "__main__":
         state_payload = theGame.to_dict()
         samples = runtime_metrics["input_apply_samples_ms"]
         sim_samples = runtime_metrics["sim_step_samples_ms"]
+        tick_lag_samples = runtime_metrics["input_tick_apply_lag_samples"]
         avg_input_apply = sum(samples) / len(samples) if samples else 0.0
         avg_sim_step = statistics.fmean(sim_samples) if sim_samples else 0.0
         state_payload["_net_metrics"] = {
@@ -240,18 +294,26 @@ if __name__ == "__main__":
             "sim_step_p95_ms": round(percentile(sim_samples, 95), 2),
             "host_fps_5s": round(runtime_metrics["avg_sim_fps_5s"], 1),
             "host_render_fps_5s": round(runtime_metrics["avg_render_fps_5s"], 1),
+            "sim_tick": int(runtime_metrics["sim_tick"]),
+            "input_tick_reused": int(runtime_metrics["input_tick_reused"]),
+            "input_tick_buffered": int(runtime_metrics["input_tick_buffered"]),
+            "input_tick_apply_lag_p95": round(percentile(tick_lag_samples, 95), 2),
         }
         state_payload["_host_published_at_ms"] = int(time.time() * 1000)
+        state_payload["_sim_tick"] = int(runtime_metrics["sim_tick"])
         return state_payload
 
     last_countdown_second = [None]
 
     def simulate_step(step_ms):
         step_started = time.perf_counter()
+        runtime_metrics["sim_tick"] += 1
+        current_tick = int(runtime_metrics["sim_tick"])
         theGame.dt = int(step_ms)
         theGame.current_time = pygame.time.get_ticks()
         runtime_metrics["sim_loop_timestamps_ms"].append(theGame.current_time)
-        drain_remote_input()
+        drain_remote_input(current_tick)
+        apply_buffered_remote_input(current_tick)
         drain_status_updates()
         maybe_refresh_lobby_status()
         if theGame.game_state == "get_ready":
