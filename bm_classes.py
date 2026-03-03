@@ -28,7 +28,6 @@ class Player:
         self.active_bombs = 0
         self.alive = True
         self.speed = PLAYER_SPEED
-        self.wins = 0
         self.trophies = 0
         self.draw_radius = int(CELL_SIZE * PLAYER_DRAW_SCALE / 2)
         self.collision_radius = int(CELL_SIZE * PLAYER_COLLISION_SCALE / 2)

@@ -75,9 +75,13 @@ def _get_blast_arm_surface(image, length, thickness, direction):
     if cached is not None:
         return cached
     if direction in ("left", "right"):
-        scaled = pygame.transform.smoothscale(image, (int(length), int(thickness)))
+        flipped = pygame.transform.flip(image, True, False)
     else:
-        scaled = pygame.transform.smoothscale(image, (int(thickness), int(length)))
+        flipped = pygame.transform.flip(image, False, True)
+    if direction in ("left", "right"):
+        scaled = pygame.transform.smoothscale(flipped, (int(length), int(thickness)))
+    else:
+        scaled = pygame.transform.smoothscale(flipped, (int(thickness), int(length)))
     if direction == "left":
         out = pygame.transform.rotate(scaled, 180)
     elif direction == "up":

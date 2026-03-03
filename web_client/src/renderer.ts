@@ -30,6 +30,7 @@ export class Renderer {
     private boardSignature = '';
     private renderSamplesMs: number[] = [];
     private fireIcon: HTMLImageElement | null = null;
+    private qdIcon: HTMLImageElement | null = null;
     private blastArm: HTMLImageElement | null = null;
     private blastArmQd: HTMLImageElement | null = null;
     private blastCenter: HTMLImageElement | null = null;
@@ -84,8 +85,8 @@ export class Renderer {
         this.ctx.drawImage(this.boardLayer, 0, 0);
 
         state.powerups.forEach(p => this.drawPowerUp(p));
-        state.bombs.forEach(b => this.drawBomb(b));
-        state.players.forEach(player => this.drawPlayer(player));
+        state.bombs.forEach(b => this.drawBomb(b, state.time));
+        state.players.forEach(player => this.drawPlayer(player, state.time));
         state.explosions.forEach(e => this.drawExplosion(e, state.time));
         if (state.state === 'win' || state.state === 'champion') {
             this.drawWinStats(state);
@@ -121,6 +122,7 @@ export class Renderer {
 
     private loadSpriteAssets() {
         this.fireIcon = this.loadImage('/img/fireup.png');
+        this.qdIcon = this.loadImage('/img/qd.png');
         this.blastArm = this.loadImage('/img/blast.png');
         this.blastArmQd = this.loadImage('/img/blast_qd.png');
         this.blastCenter = this.loadImage('/img/blast_centre.png');
@@ -156,16 +158,30 @@ export class Renderer {
                     this.boardLayerCtx.strokeStyle = '#999';
                     this.boardLayerCtx.lineWidth = 2;
                     this.boardLayerCtx.strokeRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-                    this.boardLayerCtx.beginPath();
-                    this.boardLayerCtx.moveTo(x * CELL_SIZE + 5, y * CELL_SIZE + 5);
-                    this.boardLayerCtx.lineTo(x * CELL_SIZE + CELL_SIZE - 5, y * CELL_SIZE + CELL_SIZE - 5);
-                    this.boardLayerCtx.stroke();
+                    // Brick pattern (host-style) - clamp to cell bounds to avoid overlap
+                    const cellLeft = x * CELL_SIZE;
+                    const cellTop = y * CELL_SIZE;
+                    const brickWidth = CELL_SIZE / 3;
+                    const brickHeight = CELL_SIZE / 2;
+                    const mortarColor = '#505050';
+                    this.boardLayerCtx.strokeStyle = mortarColor;
+                    this.boardLayerCtx.lineWidth = 1;
+                    for (let row = 0; row < 2; row++) {
+                        const offset = row % 2 === 1 ? brickWidth / 2 : 0;
+                        const by = cellTop + row * brickHeight;
+                        let bx = cellLeft + offset;
+                        while (bx < cellLeft + CELL_SIZE) {
+                            const w = Math.min(brickWidth, cellLeft + CELL_SIZE - bx);
+                            this.boardLayerCtx.strokeRect(bx, by, w, brickHeight);
+                            bx += brickWidth;
+                        }
+                    }
                 }
             }
         }
     }
 
-    private drawPlayer(player: PlayerState) {
+    private drawPlayer(player: PlayerState, currentTimeMs: number) {
         if (!player.alive) return;
 
         const PYTHON_CELL_SIZE = 100;
@@ -175,6 +191,7 @@ export class Renderer {
         let py = player.y * SCALE;
 
         const size = (PYTHON_CELL_SIZE * 0.85) * SCALE; // PLAYER_DRAW_SCALE = 0.85
+        const [dx, dy] = player.direction;
 
         // Draw Shadow
         this.ctx.fillStyle = 'rgba(0,0,0,0.3)';
@@ -213,10 +230,18 @@ export class Renderer {
         this.ctx.lineWidth = 2;
         this.ctx.stroke();
 
-        // Eyes (direction)
-        const dx = player.direction[0];
-        const dy = player.direction[1];
+        // Alternating feet (1.5x larger, animate only when moving)
+        const isMoving = dx !== 0 || dy !== 0;
+        const legOffset = isMoving ? 6 * Math.sin(currentTimeMs / 150) : 0;
+        const footSize = 6;
+        const legColor = player.color
+            ? `rgb(${Math.floor(player.color[0] / 2)},${Math.floor(player.color[1] / 2)},${Math.floor(player.color[2] / 2)})`
+            : '#333';
+        this.ctx.fillStyle = legColor;
+        this.ctx.fillRect(px - size / 4 - footSize / 2, py + size / 2 - footSize / 2 + legOffset, footSize, footSize);
+        this.ctx.fillRect(px + size / 4 - footSize / 2, py + size / 2 - footSize / 2 - legOffset, footSize, footSize);
 
+        // Eyes (direction)
         const eyeOffX = dx * (size * 0.16);
         const eyeOffY = dy * (size * 0.16);
         const eyeRadius = Math.max(4, size * 0.12);
@@ -243,20 +268,35 @@ export class Renderer {
         this.ctx.fillText(player.name || `P${player.id}`, px, py - size / 2 - 5);
     }
 
-    private drawBomb(bomb: BombState) {
+    private drawBomb(bomb: BombState, currentTimeMs: number) {
         const bx = bomb.x * CELL_SIZE;
         const by = bomb.y * CELL_SIZE;
-        const size = (CELL_SIZE * 0.9);
+        const cx = bx + CELL_SIZE / 2;
+        const cy = by + CELL_SIZE / 2;
+
+        const elapsed = currentTimeMs - bomb.start_time;
+        const pulse = 1 + 0.1 * Math.sin(2 * Math.PI * (elapsed / 300));
+        const bombRadius = (CELL_SIZE * 0.9 / 2) * pulse;
 
         this.ctx.fillStyle = BOMB_COLOR;
         this.ctx.beginPath();
-        this.ctx.arc(bx + CELL_SIZE / 2, by + CELL_SIZE / 2, size / 2, 0, Math.PI * 2);
+        this.ctx.arc(cx, cy, bombRadius, 0, Math.PI * 2);
         this.ctx.fill();
 
-        // Pulse effect based on time?
-        // For simple render just outline
-        this.ctx.strokeStyle = 'black';
+        this.ctx.strokeStyle = '#505050';
         this.ctx.lineWidth = 1;
+        this.ctx.stroke();
+
+        // Fuse (burning rope) near top-left
+        const fuseOffset = bombRadius * 0.6;
+        const fuseX = cx - fuseOffset * 0.5;
+        const fuseY = cy - fuseOffset * 0.9;
+        const fuseRadius = Math.max(2, bombRadius / 3);
+        this.ctx.fillStyle = 'rgb(255, 200, 150)';
+        this.ctx.beginPath();
+        this.ctx.arc(fuseX, fuseY, fuseRadius, 0, Math.PI * 2);
+        this.ctx.fill();
+        this.ctx.strokeStyle = 'rgb(255, 200, 150)';
         this.ctx.stroke();
     }
 
@@ -319,7 +359,13 @@ export class Renderer {
                 this.ctx.save();
                 this.ctx.translate(centerPixelX, centerPixelY);
                 this.ctx.rotate(Math.atan2(dy, dx));
-                this.ctx.drawImage(armSprite, 0, -thickness / 2, length, thickness);
+                const isHorizontal = Math.abs(dx) > Math.abs(dy);
+                if (isHorizontal) {
+                    this.ctx.scale(-1, 1);
+                    this.ctx.drawImage(armSprite, -length, -thickness / 2, length, thickness);
+                } else {
+                    this.ctx.drawImage(armSprite, 0, -thickness / 2, length, thickness);
+                }
                 this.ctx.restore();
             } else {
                 this.ctx.fillStyle = explosion.quad_damage ? 'rgba(85, 255, 255, 0.75)' : 'rgba(255, 140, 65, 0.75)';
@@ -340,51 +386,92 @@ export class Renderer {
     }
 
     private drawPowerUp(powerup: PowerUpState) {
-        // powerup.x, powerup.y are grid coordinates
         const px = powerup.x * CELL_SIZE;
         const py = powerup.y * CELL_SIZE;
-        const size = CELL_SIZE * 0.6;
+        const cx = px + CELL_SIZE / 2;
+        const cy = py + CELL_SIZE / 2;
+
+        // Teal border for all bonuses (cell-sized)
+        this.ctx.strokeStyle = 'rgb(0,255,255)';
+        this.ctx.lineWidth = 3;
+        this.ctx.strokeRect(px, py, CELL_SIZE, CELL_SIZE);
+
+        if (powerup.type === 'fire') {
+            const fireSize = CELL_SIZE / 1.3;
+            const fireOffset = (CELL_SIZE - fireSize) / 2;
+            if (this.fireIcon && this.fireIcon.complete && this.fireIcon.naturalWidth > 0) {
+                this.ctx.drawImage(this.fireIcon, px + fireOffset, py + fireOffset, fireSize, fireSize);
+            } else {
+                this.ctx.fillStyle = 'orange';
+                this.ctx.beginPath();
+                this.ctx.arc(cx, cy, fireSize * 0.3, 0, Math.PI * 2);
+                this.ctx.fill();
+                this.ctx.fillStyle = 'white';
+                this.ctx.font = 'bold 14px Arial';
+                this.ctx.textAlign = 'center';
+                this.ctx.textBaseline = 'middle';
+                this.ctx.fillText('F', cx, cy);
+            }
+            return;
+        }
+
+        if (powerup.type === 'bomb') {
+            this.drawMiniBomb(cx, cy, CELL_SIZE * 0.25 * 1.3);
+            return;
+        }
+
+        if (powerup.type === 'quad' || powerup.type === 'quad_damage') {
+            const qdSize = CELL_SIZE - 20;
+            const qdOffset = (CELL_SIZE - qdSize) / 2;
+            if (this.qdIcon && this.qdIcon.complete && this.qdIcon.naturalWidth > 0) {
+                this.ctx.drawImage(this.qdIcon, px + qdOffset, py + qdOffset, qdSize, qdSize);
+            } else {
+                this.ctx.fillStyle = 'purple';
+                this.ctx.beginPath();
+                this.ctx.arc(cx, cy, CELL_SIZE * 0.3, 0, Math.PI * 2);
+                this.ctx.fill();
+                this.ctx.fillStyle = 'white';
+                this.ctx.font = 'bold 14px Arial';
+                this.ctx.textAlign = 'center';
+                this.ctx.textBaseline = 'middle';
+                this.ctx.fillText('4x', cx, cy);
+            }
+            return;
+        }
 
         let color = 'yellow';
         let text = '?';
-
-        if (powerup.type === 'fire') {
-            const borderSize = size * 1.3;
-            this.ctx.strokeStyle = 'rgb(0,255,255)';
-            this.ctx.lineWidth = 3;
-            this.ctx.strokeRect(
-                px + (CELL_SIZE - borderSize) / 2,
-                py + (CELL_SIZE - borderSize) / 2,
-                borderSize,
-                borderSize,
-            );
-            if (this.fireIcon && this.fireIcon.complete && this.fireIcon.naturalWidth > 0) {
-                this.ctx.drawImage(
-                    this.fireIcon,
-                    px + (CELL_SIZE - size) / 2,
-                    py + (CELL_SIZE - size) / 2,
-                    size,
-                    size,
-                );
-                return;
-            }
-            color = 'orange';
-            text = 'F';
-        } else if (powerup.type === 'bomb') { color = 'gray'; text = 'B'; }
-        else if (powerup.type === 'kick') { color = 'green'; text = 'K'; }
+        if (powerup.type === 'kick') { color = 'green'; text = 'K'; }
         else if (powerup.type === 'skull') { color = 'red'; text = 'S'; }
-        else if (powerup.type === 'quad' || powerup.type === 'quad_damage') { color = 'purple'; text = '4x'; }
 
         this.ctx.fillStyle = color;
         this.ctx.beginPath();
-        this.ctx.arc(px + CELL_SIZE / 2, py + CELL_SIZE / 2, size / 2, 0, Math.PI * 2);
+        this.ctx.arc(cx, cy, CELL_SIZE * 0.3, 0, Math.PI * 2);
         this.ctx.fill();
 
         this.ctx.fillStyle = 'white';
         this.ctx.font = 'bold 14px Arial';
         this.ctx.textAlign = 'center';
         this.ctx.textBaseline = 'middle';
-        this.ctx.fillText(text, px + CELL_SIZE / 2, py + CELL_SIZE / 2);
+        this.ctx.fillText(text, cx, cy);
+    }
+
+    private drawMiniBomb(cx: number, cy: number, bombRadius: number) {
+        this.ctx.fillStyle = BOMB_COLOR;
+        this.ctx.beginPath();
+        this.ctx.arc(cx, cy, bombRadius, 0, Math.PI * 2);
+        this.ctx.fill();
+        this.ctx.strokeStyle = '#505050';
+        this.ctx.lineWidth = 1;
+        this.ctx.stroke();
+        const fuseOffset = bombRadius * 0.6;
+        const fuseX = cx - fuseOffset * 0.5;
+        const fuseY = cy - fuseOffset * 0.9;
+        const fuseRadius = Math.max(2, bombRadius / 3);
+        this.ctx.fillStyle = 'rgb(255, 200, 150)';
+        this.ctx.beginPath();
+        this.ctx.arc(fuseX, fuseY, fuseRadius, 0, Math.PI * 2);
+        this.ctx.fill();
     }
 
     private getRenderP95Ms(): number {
