@@ -61,16 +61,47 @@ class Player:
     def get_grid_pos(self):
         return (int(self.pos[0] // CELL_SIZE), int(self.pos[1] // CELL_SIZE))
 
-    def update(self, dt, board, bombs, current_time, web_keys=None):
+    def update(self, dt, board, bombs, current_time, web_keys=None, game=None):
         if not self.alive:
             if self.death_animation_time > 0:
                 self.death_animation_time -= dt
             self.direction = np.array([0.0, 0.0], dtype=np.float64)  # No direction if dead
             return
-        keys = get_pressed_keys()
         direction = np.array([0.0, 0.0], dtype=np.float64)
-        # Remap all web_keys using browser_key_to_pygame
         mapped_web_keys = set()
+        if getattr(self, 'is_ai', False) and game is not None:
+            from ai_controller import compute_ai_input
+            direction, place_bomb = compute_ai_input(self, game)
+            if DEGUG:
+                gx, gy = self.get_grid_pos()
+                print(f"[AI] {self.name} @({gx},{gy}) dir=({direction[0]:.0f},{direction[1]:.0f}) bomb={place_bomb}")
+            self.direction = direction
+            if np.dot(direction, direction) > 0:
+                self.animation_time += dt
+            else:
+                self.animation_time = 0
+            if place_bomb:
+                self.drop_bomb(bombs, current_time)
+            original_pos = self.pos.copy()
+            spd = self.speed if not self.quad_damage else int(self.speed * QUAD_DAMAGE_SPEEDUP)
+            self.pos = self.pos + direction * spd * (dt / 1000.0)
+            current_grid = self.get_grid_pos()
+            if self._last_grid_pos is not None and current_grid != self._last_grid_pos:
+                self.cells_walked += 1
+            self._last_grid_pos = current_grid
+            for bomb in bombs:
+                if bomb.owner == self and not bomb.owner_left:
+                    if self.get_grid_pos() != (bomb.x, bomb.y):
+                        bomb.owner_left = True
+            if self.collides_with_walls(board) or self.collides_with_bombs(bombs, original_pos):
+                self.pos = original_pos
+            if self.quad_damage and get_ticks() - self.quad_damage_start_time > QUAD_DAMAGE_TIME * 1000:
+                self.quad_damage = False
+                self.bomb_capacity -= QUAD_DAMAGE_POWER
+                self.fire_power -= QUAD_DAMAGE_POWER
+            return
+        keys = get_pressed_keys()
+        # Remap all web_keys using browser_key_to_pygame
         if web_keys:
             for k in web_keys:
                 mapped = browser_key_to_pygame(k)
@@ -211,11 +242,12 @@ class Player:
     def collides_with_walls(self, board):
         center_x = int(self.pos[0] // CELL_SIZE)
         center_y = int(self.pos[1] // CELL_SIZE)
+        bw, bh = len(board[0]), len(board)
         for dy in range(-1, 2):
             for dx in range(-1, 2):
                 x = center_x + dx
                 y = center_y + dy
-                if 0 <= x < GRID_WIDTH and 0 <= y < GRID_HEIGHT:
+                if 0 <= x < bw and 0 <= y < bh:
                     if board[y][x] in (INDESTRUCTIBLE, DESTRUCTIBLE):
                         wall_rect = np.array([x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE], dtype=np.float64)
                         if circle_rect_collision((self.pos[0], self.pos[1]), self.collision_radius, wall_rect):
@@ -309,6 +341,7 @@ class Player:
             'team': int(self.team),
             'owner_client_id': int(getattr(self, 'client_id', -1)) if getattr(self, 'client_id', None) is not None else None,
             'owner_client_player_id': int(getattr(self, 'client_player_id', -1)) if getattr(self, 'client_player_id', None) is not None else None,
+            'is_ai': getattr(self, 'is_ai', False),
         }
 
 class Bomb:
@@ -373,6 +406,8 @@ class PowerUp:
 class Game:
     def __init__(self):
         self.board = generate_maze()
+        self.grid_width = len(self.board[0])
+        self.grid_height = len(self.board)
         self.bombs = []
         self.explosions = []
         self.powerups = []
@@ -541,7 +576,14 @@ class Game:
             if key in previous_players:
                 p.trophies = previous_players[key]
         
-        self.board = generate_maze()
+        num_players = len(self.players)
+        from bm_params import get_grid_size, CELL_SIZE
+        grid_size = get_grid_size(num_players)
+        self.board = generate_maze(grid_size, grid_size)
+        self.grid_width = grid_size
+        self.grid_height = grid_size
+        if self.screen:
+            self.screen.surface = pygame.Surface((grid_size * CELL_SIZE, grid_size * CELL_SIZE))
         self.bombs = []
         self.explosions = []
         self.powerups = []
@@ -565,12 +607,13 @@ class Game:
             p.death_time_ms = None
             p.death_time_rel_ms = None
         
-        fixed_positions = [(1, 1), (GRID_WIDTH - 2, 1), (1, GRID_HEIGHT - 2), (GRID_WIDTH - 2, GRID_HEIGHT - 2)]
+        gw, gh = self.grid_width, self.grid_height
+        fixed_positions = [(1, 1), (gw - 2, 1), (1, gh - 2), (gw - 2, gh - 2)]
         corner_patterns = {
             (1, 1): [(0,0), (1,0), (0,1)],
-            (GRID_WIDTH - 2, 1): [(0,0), (-1,0), (0,1)],
-            (1, GRID_HEIGHT - 2): [(0,0), (1,0), (0,-1)],
-            (GRID_WIDTH - 2, GRID_HEIGHT - 2): [(0,0), (-1,0), (0,-1)]
+            (gw - 2, 1): [(0,0), (-1,0), (0,1)],
+            (1, gh - 2): [(0,0), (1,0), (0,-1)],
+            (gw - 2, gh - 2): [(0,0), (-1,0), (0,-1)]
         }
         
         random.shuffle(self.players)
@@ -581,12 +624,12 @@ class Game:
                 player.start_grid_x, player.start_grid_y = pos
                 offsets = corner_patterns.get(pos, [(0,0), (1,0), (0,1)])
             elif i == 4:
-                player.start_grid_x = GRID_WIDTH // 4
-                player.start_grid_y = GRID_HEIGHT // 2
+                player.start_grid_x = gw // 4
+                player.start_grid_y = gh // 2
                 offsets = [(0,0), (1,0), (0,1), (1,1), (-1,0), (0,-1), (-1,-1), (1,-1), (-1,1)]
             elif i == 5:
-                player.start_grid_x = 3 * GRID_WIDTH // 4
-                player.start_grid_y = GRID_HEIGHT // 2
+                player.start_grid_x = 3 * gw // 4
+                player.start_grid_y = gh // 2
                 offsets = [(0,0), (-1,0), (0,1), (-1,1), (1,0), (0,-1), (1,-1), (-1,-1), (1,1)]
             
             clear_safe_zone(self.board, player.start_grid_x, player.start_grid_y, offsets)
@@ -603,36 +646,101 @@ class Game:
         self.crushing_walls_pattern = []
         self.crushing_walls_index = 0
 
+    def init_boss_fight(self, champion):
+        """Set up 1v1 boss fight: champion vs AI. Keeps champion, adds boosted AI boss."""
+        from bm_params import (
+            BOSS_SPEED_MULTIPLIER, BOSS_START_FIRE_POWER, BOSS_START_BOMB_CAPACITY,
+            BOSS_NAME, BOSS_EXTRA_LIVES, get_grid_size
+        )
+        grid_size = get_grid_size(is_boss_fight=True)
+        self.grid_width = grid_size
+        self.grid_height = grid_size
+        champion.start_grid_x, champion.start_grid_y = 1, 1
+        boss_grid_x, boss_grid_y = grid_size - 2, grid_size - 2
+
+        boss = Player(boss_grid_x, boss_grid_y, (180, 50, 50), None, BOSS_NAME)
+        boss.is_local = False
+        boss.is_ai = True
+        boss.client_id = None
+        boss.client_player_id = None
+        boss.global_id = 999
+        boss.team = 1
+        boss.boss_lives_remaining = BOSS_EXTRA_LIVES
+        boss.bomb_capacity = BOSS_START_BOMB_CAPACITY
+        boss.fire_power = BOSS_START_FIRE_POWER
+        boss.speed = int(PLAYER_SPEED * BOSS_SPEED_MULTIPLIER)
+
+        self.players = [champion, boss]
+        self.board = generate_maze(grid_size, grid_size)
+        self.bombs = []
+        self.explosions = []
+        self.powerups = []
+        self.endgame_hold_until = None
+        self.death_events = []
+        self.post_win_transition_time = None
+        self.post_win_target_state = None
+        self.replay_buffer = []
+        self.last_replay_log_time = 0
+        self.replay_segment = None
+        self.replay_segment_start_time = 0
+        self.replay_segment_end_time = 0
+        self.replay_loop_anchor_time = None
+        self.replay_focus_player = None
+        self.replay_end_time = None
+        self.replay_start_time = None
+        self.round_start_time = self.current_time
+
+        corner_patterns = {
+            (1, 1): [(0, 0), (1, 0), (0, 1)],
+            (boss_grid_x, boss_grid_y): [(0, 0), (-1, 0), (0, -1)],
+        }
+        for p in self.players:
+            p.death_time_ms = None
+            p.death_time_rel_ms = None
+            offsets = corner_patterns.get((p.start_grid_x, p.start_grid_y), [(0, 0), (1, 0), (0, 1)])
+            clear_safe_zone(self.board, p.start_grid_x, p.start_grid_y, offsets)
+            p.reset()
+            if getattr(p, 'is_ai', False):
+                p.bomb_capacity = BOSS_START_BOMB_CAPACITY
+                p.fire_power = BOSS_START_FIRE_POWER
+                p.speed = int(PLAYER_SPEED * BOSS_SPEED_MULTIPLIER)
+
+        self.game_start_time = get_ticks() + 2000
+        self.crushing_walls_active = False
+        self.crushing_walls_last_time = 0
+        self.crushing_walls_pattern = []
+        self.crushing_walls_index = 0
+
     def generate_clockwise_pattern(self):
         """Generate a clockwise traversal pattern starting from top-left corner, 
         but skip cells that are already indestructible walls"""
         pattern = []
         visited = set()
-        
+        gw, gh = self.grid_width, self.grid_height
         # Start from the outermost layer and work inward
-        for layer in range(min(GRID_WIDTH, GRID_HEIGHT) // 2):
+        for layer in range(min(gw, gh) // 2):
             # Top row (left to right)
-            for x in range(layer, GRID_WIDTH - layer):
+            for x in range(layer, gw - layer):
                 if (x, layer) not in visited and self.board[layer][x] != INDESTRUCTIBLE:
                     pattern.append((x, layer))
                     visited.add((x, layer))
             
             # Right column (top to bottom, skip top corner)
-            for y in range(layer + 1, GRID_HEIGHT - layer):
-                if (GRID_WIDTH - 1 - layer, y) not in visited and self.board[y][GRID_WIDTH - 1 - layer] != INDESTRUCTIBLE:
-                    pattern.append((GRID_WIDTH - 1 - layer, y))
-                    visited.add((GRID_WIDTH - 1 - layer, y))
+            for y in range(layer + 1, gh - layer):
+                if (gw - 1 - layer, y) not in visited and self.board[y][gw - 1 - layer] != INDESTRUCTIBLE:
+                    pattern.append((gw - 1 - layer, y))
+                    visited.add((gw - 1 - layer, y))
             
             # Bottom row (right to left, skip right corner)
-            if GRID_HEIGHT - 1 - layer > layer:
-                for x in range(GRID_WIDTH - 2 - layer, layer - 1, -1):
-                    if (x, GRID_HEIGHT - 1 - layer) not in visited and self.board[GRID_HEIGHT - 1 - layer][x] != INDESTRUCTIBLE:
-                        pattern.append((x, GRID_HEIGHT - 1 - layer))
-                        visited.add((x, GRID_HEIGHT - 1 - layer))
+            if gh - 1 - layer > layer:
+                for x in range(gw - 2 - layer, layer - 1, -1):
+                    if (x, gh - 1 - layer) not in visited and self.board[gh - 1 - layer][x] != INDESTRUCTIBLE:
+                        pattern.append((x, gh - 1 - layer))
+                        visited.add((x, gh - 1 - layer))
             
             # Left column (bottom to top, skip both corners)
-            if GRID_WIDTH - 1 - layer > layer:
-                for y in range(GRID_HEIGHT - 2 - layer, layer, -1):
+            if gw - 1 - layer > layer:
+                for y in range(gh - 2 - layer, layer, -1):
                     if (layer, y) not in visited and self.board[y][layer] != INDESTRUCTIBLE:
                         pattern.append((layer, y))
                         visited.add((layer, y))
@@ -647,9 +755,18 @@ class Game:
     def count_destroyable_cells(self):
         """Count the number of destroyable cells on the board"""
         count = 0
-        for y in range(GRID_HEIGHT):
-            for x in range(GRID_WIDTH):
+        for y in range(self.grid_height):
+            for x in range(self.grid_width):
                 if self.board[y][x] == DESTRUCTIBLE:
+                    count += 1
+        return count
+
+    def count_empty_cells(self):
+        """Count the number of empty (walkable) cells on the board."""
+        count = 0
+        for y in range(self.grid_height):
+            for x in range(self.grid_width):
+                if self.board[y][x] == EMPTY:
                     count += 1
         return count
 
@@ -658,7 +775,8 @@ class Game:
         player_grid_x, player_grid_y = player.get_grid_pos()
         
         # Search in expanding rings around the player's current position
-        for radius in range(1, max(GRID_WIDTH, GRID_HEIGHT)):
+        gw, gh = self.grid_width, self.grid_height
+        for radius in range(1, max(gw, gh)):
             for dx in range(-radius, radius + 1):
                 for dy in range(-radius, radius + 1):
                     # Only check cells on the perimeter of the current radius
@@ -669,8 +787,8 @@ class Game:
                     new_grid_y = player_grid_y + dy
                     
                     # Skip if out of bounds
-                    if (new_grid_x < 0 or new_grid_x >= GRID_WIDTH or 
-                        new_grid_y < 0 or new_grid_y >= GRID_HEIGHT):
+                    if (new_grid_x < 0 or new_grid_x >= gw or 
+                        new_grid_y < 0 or new_grid_y >= gh):
                         continue
                     
                     # Skip if this is the cell we're trying to avoid
@@ -721,12 +839,18 @@ class Game:
         """Handle the crushing walls feature"""
         alive_players = [p for p in self.players if p.alive]
         
-        # Check if conditions are met to activate crushing walls
-        # Use configurable values from bm_params
-        crushing_delay = CRUSHING_WALLS_DELAY  # seconds
-        crushing_min_destroyable = CRUSHING_WALLS_MIN_DESTROYABLE
-        crushing_max_alive = CRUSHING_WALLS_MAX_ALIVE
-        growth_interval_ms = CRUSHING_WALLS_GROWTH_INTERVAL_MS
+        # Boss fight: 50% slower growth, start 1 minute later
+        if self.game_state == "boss_fight":
+            from bm_params import BOSS_CRUSHING_WALLS_DELAY, BOSS_CRUSHING_WALLS_GROWTH_INTERVAL_MS
+            crushing_delay = BOSS_CRUSHING_WALLS_DELAY
+            crushing_min_destroyable = CRUSHING_WALLS_MIN_DESTROYABLE
+            crushing_max_alive = CRUSHING_WALLS_MAX_ALIVE
+            growth_interval_ms = BOSS_CRUSHING_WALLS_GROWTH_INTERVAL_MS
+        else:
+            crushing_delay = CRUSHING_WALLS_DELAY
+            crushing_min_destroyable = CRUSHING_WALLS_MIN_DESTROYABLE
+            crushing_max_alive = CRUSHING_WALLS_MAX_ALIVE
+            growth_interval_ms = CRUSHING_WALLS_GROWTH_INTERVAL_MS
         
         if len(alive_players) <= crushing_max_alive and \
            (self.current_time - self.game_start_time) >= crushing_delay * 1000 and \
@@ -759,7 +883,7 @@ class Game:
                     for player in players_still_in_cell:
                         for dx, dy in [(0, -1), (1, 0), (0, 1), (-1, 0)]:  # Up, Right, Down, Left
                             adj_x, adj_y = x + dx, y + dy
-                            if (0 <= adj_x < GRID_WIDTH and 0 <= adj_y < GRID_HEIGHT and 
+                            if (0 <= adj_x < self.grid_width and 0 <= adj_y < self.grid_height and 
                                 self.board[adj_y][adj_x] == EMPTY):
                                 # Move player to adjacent empty cell
                                 player.pos = np.array([
@@ -785,13 +909,27 @@ class Game:
                     self.crushing_walls_index += 1
                     self.crushing_walls_last_time = self.current_time
 
+                    # If walls filled all empty space, all remaining players die (draw)
+                    if self.count_empty_cells() == 0:
+                        for player in alive_players:
+                            if player.alive:
+                                player.alive = False
+                                player.death_animation_time = 1000
+                                self.death_events.append(self.current_time)
+                                player.death_time_ms = self.current_time
+                                if hasattr(self, 'round_start_time') and self.round_start_time:
+                                    player.death_time_rel_ms = max(0, self.current_time - self.round_start_time)
+                                player.fire_power_at_death = player.fire_power
+                                player.bomb_capacity_at_death = player.bomb_capacity
+                                death_sound.play()
+
     def get_explosion_cells(self,bomb):
         cells = [(bomb.x, bomb.y)]
         for dx, dy in [(1,0), (-1,0), (0,1), (0,-1)]:
             for i in range(1, bomb.fire_power + 1):
                 nx = bomb.x + dx * i
                 ny = bomb.y + dy * i
-                if nx < 0 or nx >= GRID_WIDTH or ny < 0 or ny >= GRID_HEIGHT:
+                if nx < 0 or nx >= self.grid_width or ny < 0 or ny >= self.grid_height:
                     break
                 if self.board[ny][nx] == INDESTRUCTIBLE:
                     break
@@ -879,7 +1017,7 @@ class Game:
             # Only place if no quad damage powerup already exists
             if not any(pu.type == "quad_damage" for pu in self.powerups):
                 # Find empty cells
-                empty_cells = [(x, y) for y in range(GRID_HEIGHT) for x in range(GRID_WIDTH) if self.board[y][x] == EMPTY]
+                empty_cells = [(x, y) for y in range(self.grid_height) for x in range(self.grid_width) if self.board[y][x] == EMPTY]
                 if empty_cells and random.random() < QUAD_DAMAGE_PROBABILITY:
                     x, y = random.choice(empty_cells)
                     self.powerups.append(PowerUp(x, y, "quad_damage"))
@@ -1126,7 +1264,7 @@ class Game:
                 if keyname in ('enter', 'return'):
                     if self.game_state == "startup":
                         self.game_state = "game_prep"
-                    if self.game_state in ["win", "champion", "game_prep"]:
+                    if self.game_state in ["win", "champion", "boss_result", "game_prep"]:
                         self.init_game()
                         self.game_state = "get_ready"
             elif event['type'] == 'keyup':
@@ -1144,7 +1282,7 @@ class Game:
                 if idx in (0, 1):
                     allowed = {'arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' ', 'space'}
                     web_keys = set(k for k in web_keys if k.lower() in allowed)
-            player.update(self.dt, self.board, self.bombs, self.current_time, web_keys)
+            player.update(self.dt, self.board, self.bombs, self.current_time, web_keys, game=self)
         
         # update bombs & check for explosions
         triggered_explosions = []
@@ -1234,29 +1372,42 @@ class Game:
                 self.endgame_hold_until = self.current_time + 500  # 0.5 seconds
             # Once hold elapses, resolve winner or tie and schedule post-win transition
             if self.current_time >= self.endgame_hold_until:
-                recent_deaths = [t for t in self.death_events if t >= self.current_time - 500]
-                if len(recent_deaths) >= 2 or len(alive_players) == 0:
-                    # Tie: no trophy assignment
-                    self.post_win_target_state = "win"
-                else:
-                    # Winner is surviving player (or first player on surviving team)
+                # Boss fight: transition to boss_result (no trophy, reset happens on exit)
+                if self.game_state == "boss_fight":
                     if alive_players:
-                        winner = alive_players[0]
-                        if self.team_mode_enabled and len(alive_teams) == 1:
-                            winner_team = next(iter(alive_teams))
-                            for player in alive_players:
-                                if getattr(player, "team", 0) == winner_team:
-                                    winner = player
-                                    break
-                        winner.trophies += 1
-                        trophy_threshold = TROPHY_WIN_THRESHOLD
-                        if winner.trophies >= trophy_threshold:
-                            self.post_win_target_state = "champion"
+                        self.boss_fight_winner = alive_players[0]
+                    else:
+                        self.boss_fight_winner = None  # Tie
+                    self.post_win_target_state = "boss_result"
+                    self.post_win_transition_time = self.current_time + ENDGAME_POST_DELAY_MS
+                else:
+                    recent_deaths = [t for t in self.death_events if t >= self.current_time - 500]
+                    if len(recent_deaths) >= 2 or len(alive_players) == 0:
+                        # Tie: no trophy assignment
+                        self.post_win_target_state = "win"
+                    else:
+                        # Winner is surviving player (or first player on surviving team)
+                        if alive_players:
+                            winner = alive_players[0]
+                            if self.team_mode_enabled and len(alive_teams) == 1:
+                                winner_team = next(iter(alive_teams))
+                                for player in alive_players:
+                                    if getattr(player, "team", 0) == winner_team:
+                                        winner = player
+                                        break
+                            winner.trophies += 1
+                            human_count = len([p for p in self.players if not getattr(p, 'is_ai', False)])
+                            if human_count == 1:
+                                # Single human vs AI: go to boss fight immediately (no trophy grind)
+                                self.post_win_target_state = "boss_fight"
+                                self.boss_fight_champion = winner
+                            elif winner.trophies >= TROPHY_WIN_THRESHOLD:
+                                self.post_win_target_state = "champion"
+                            else:
+                                self.post_win_target_state = "win"
                         else:
                             self.post_win_target_state = "win"
-                    else:
-                        self.post_win_target_state = "win"
-                self.post_win_transition_time = self.current_time + ENDGAME_POST_DELAY_MS
+                    self.post_win_transition_time = self.current_time + ENDGAME_POST_DELAY_MS
                 # Prepare replay segment metadata: find last-dead player and replay window bounds
                 last_dead_time = None
                 last_dead_player_name = None
@@ -1279,6 +1430,21 @@ class Game:
                 # Clear schedule to avoid repeat
                 self.post_win_target_state = None
                 self.post_win_transition_time = None
+                if self.game_state == "boss_fight" and hasattr(self, 'boss_fight_champion'):
+                    self.init_boss_fight(self.boss_fight_champion)
+
+    def _serialize_boss_winner(self):
+        """Serialize boss fight winner for client display."""
+        if self.game_state != "boss_result":
+            return None
+        winner = getattr(self, 'boss_fight_winner', None)
+        if winner is None:
+            return None
+        return {
+            'name': winner.name,
+            'is_ai': getattr(winner, 'is_ai', False),
+            'color': list(winner.color) if hasattr(winner.color, '__iter__') else winner.color,
+        }
 
     def to_dict(self):
         # Ensure board is serializable (convert from numpy array if needed)
@@ -1288,6 +1454,8 @@ class Game:
             'time': self.current_time,
             'state': self.game_state,
             'board': board_data,
+            'grid_width': self.grid_width,
+            'grid_height': self.grid_height,
             'players': [p.to_dict() for p in self.players],
             'bombs': [b.to_dict() for b in self.bombs],
             'explosions': [e.to_dict() for e in self.explosions],
@@ -1297,6 +1465,7 @@ class Game:
                 'index': self.crushing_walls_index
             },
             'local_player_count': int(self.prep_num_players if self.game_state in ["startup", "game_prep"] else sum(1 for p in self.players if getattr(p, 'is_local', False))),
+            'boss_fight_winner': self._serialize_boss_winner(),
         }
             
 # Screen class and methods moved to frontend.py

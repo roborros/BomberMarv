@@ -44,10 +44,12 @@ def _board_signature(theGame):
 
 
 def _build_board_layer(theGame):
-    layer = pygame.Surface((BASE_WIDTH, BASE_HEIGHT))
+    gw = getattr(theGame, 'grid_width', len(theGame.board[0]))
+    gh = getattr(theGame, 'grid_height', len(theGame.board))
+    layer = pygame.Surface((gw * CELL_SIZE, gh * CELL_SIZE))
     layer.fill(COLOR_BG)
-    for y in range(GRID_HEIGHT):
-        for x in range(GRID_WIDTH):
+    for y in range(gh):
+        for x in range(gw):
             rect = np.array([x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE], dtype=np.float64)
             if theGame.board[y][x] == EMPTY:
                 pygame.gfxdraw.box(layer, rect, COLOR_BG)
@@ -70,24 +72,26 @@ def _get_board_layer(theGame):
 
 
 def _get_blast_arm_surface(image, length, thickness, direction):
+    """Create a blast arm surface extending in the given direction.
+    The source image is a horizontal flame strip; we scale to (length, thickness)
+    and rotate so the arm extends correctly in each direction."""
     cache_key = (id(image), int(length), int(thickness), direction)
     cached = _BLAST_ARM_CACHE.get(cache_key)
     if cached is not None:
         return cached
-    if direction in ("left", "right"):
-        flipped = pygame.transform.flip(image, True, False)
-    else:
-        flipped = pygame.transform.flip(image, False, True)
-    if direction in ("left", "right"):
-        scaled = pygame.transform.smoothscale(flipped, (int(length), int(thickness)))
-    else:
-        scaled = pygame.transform.smoothscale(flipped, (int(thickness), int(length)))
-    if direction == "left":
-        out = pygame.transform.rotate(scaled, 180)
+    # Scale to (length, thickness) for all directions - length is along the arm
+    # Flip along length so bulky base is at explosion center, pointy tip at outer end
+    scaled = pygame.transform.smoothscale(image, (int(length), int(thickness)))
+    if direction == "right":
+        out = pygame.transform.flip(scaled, True, False)
+    elif direction == "left":
+        out = scaled
     elif direction == "up":
         out = pygame.transform.rotate(scaled, 90)
+        out = pygame.transform.flip(out, False, True)
     elif direction == "down":
         out = pygame.transform.rotate(scaled, -90)
+        out = pygame.transform.flip(out, False, True)
     else:
         out = scaled
     _BLAST_ARM_CACHE[cache_key] = out
@@ -182,6 +186,8 @@ def draw_title_page(surface, alpha=255):
     # Ensure fonts are initialized
     _ensure_fonts_initialized()
     
+    sw, sh = surface.get_size()
+    
     surface.fill(COLOR_BG) 
     
     logo_image = _get_image_asset("logo_image")
@@ -191,8 +197,8 @@ def draw_title_page(surface, alpha=255):
     logo_width, logo_height = logo_image.get_size()
     
     # Calculate the scaling factor to fit the logo within the desired width and height
-    max_width = BASE_WIDTH // 2
-    max_height = BASE_HEIGHT // 4
+    max_width = sw // 2
+    max_height = sh // 4
     scale_factor = min(max_width / logo_width, max_height / logo_height)
     
     # Calculate the new dimensions while maintaining the aspect ratio
@@ -204,20 +210,20 @@ def draw_title_page(surface, alpha=255):
     logo_scaled.set_alpha(alpha)
     
     # Get the rectangle for the scaled logo and center it
-    rect = logo_scaled.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT // 4))
+    rect = logo_scaled.get_rect(center=(sw // 2, sh // 4))
     
     # Blit the scaled logo onto the surface
     surface.blit(logo_scaled, rect)
     
     # Render the game name in big arcade font
     game_name_text = arcade_font.render("BomberMarv", True, (255, 255, 255))
-    game_name_rect = game_name_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT // 2))
+    game_name_rect = game_name_text.get_rect(center=(sw // 2, sh // 2))
     surface.blit(game_name_text, game_name_rect)
     
     # Render the version tag
     version_font = pygame.font.SysFont("arial", 24)
     version_text = version_font.render(VERSION, True, (255, 255, 255))
-    version_rect = version_text.get_rect(bottomright=(BASE_WIDTH - 10, BASE_HEIGHT - 10))
+    version_rect = version_text.get_rect(bottomright=(sw - 10, sh - 10))
     surface.blit(version_text, version_rect)
     
     
@@ -352,11 +358,33 @@ def draw_players(surface, players):
             helmet_color = (min(player.color[0]+30,255), min(player.color[1]+30,255), min(player.color[2]+30,255))
             rect_head = np.array([pos[0]-r, pos[1]-r, 2*r, 2*r], dtype=np.float64)
             pygame.draw.arc(surface, helmet_color, rect_head, math.pi, 2*math.pi, 3)
-            eye_r = max(1, r//8)
-            eye_offset_x = r//3
-            eye_offset_y = r//3
-            pygame.gfxdraw.filled_circle(surface, pos[0]-eye_offset_x, pos[1]-eye_offset_y, eye_r, (0,0,0))
-            pygame.gfxdraw.filled_circle(surface, pos[0]+eye_offset_x, pos[1]-eye_offset_y, eye_r, (0,0,0))
+            # Eyes: static white circles with black pupils that turn in direction of movement
+            dx = float(getattr(player, 'direction', [0, 0])[0])
+            dy = float(getattr(player, 'direction', [0, 0])[1])
+            size = 2 * r
+            eye_radius = max(4, int(size * 0.12))
+            pupil_radius = max(1, int(size * 0.05))
+            eye_gap = size * 0.18
+            eye_offset_y = eye_gap * 0.7
+            # Static eye centers
+            left_cx = pos[0] - eye_gap
+            right_cx = pos[0] + eye_gap
+            eye_cy = pos[1] - eye_offset_y
+            # White eyes (static)
+            pygame.gfxdraw.filled_circle(surface, int(left_cx), int(eye_cy), eye_radius, (255, 255, 255))
+            pygame.gfxdraw.filled_circle(surface, int(right_cx), int(eye_cy), eye_radius, (255, 255, 255))
+            pygame.gfxdraw.aacircle(surface, int(left_cx), int(eye_cy), eye_radius, (255, 255, 255))
+            pygame.gfxdraw.aacircle(surface, int(right_cx), int(eye_cy), eye_radius, (255, 255, 255))
+            # Black pupils (move within eye as if turning to look in direction)
+            pupil_off = min(4, eye_radius - pupil_radius - 1)  # stay within eye
+            left_px = left_cx + dx * pupil_off
+            left_py = eye_cy + dy * pupil_off
+            right_px = right_cx + dx * pupil_off
+            right_py = eye_cy + dy * pupil_off
+            pygame.gfxdraw.filled_circle(surface, int(left_px), int(left_py), pupil_radius, (0, 0, 0))
+            pygame.gfxdraw.filled_circle(surface, int(right_px), int(right_py), pupil_radius, (0, 0, 0))
+            pygame.gfxdraw.aacircle(surface, int(left_px), int(left_py), pupil_radius, (0, 0, 0))
+            pygame.gfxdraw.aacircle(surface, int(right_px), int(right_py), pupil_radius, (0, 0, 0))
             leg_width = r//3
             leg_height = r//4
             leg_offset = int(6 * math.sin(player.animation_time / 150.0))
@@ -565,39 +593,41 @@ def draw_blast_arm(surface, start_pos, end_offset, image):
     surface.blit(arm_surface, image_rect)
 
 def draw_controls(surface, players):
+    sw, sh = surface.get_size()
     font = pygame.font.SysFont("arial", 40)
-    y_offset = BASE_HEIGHT - BASE_HEIGHT // 3
+    y_offset = sh - sh // 3
     control_text = "Controls: Up -  Down - Left - Right - Bomb"
     text = font.render(control_text, True, (255, 255, 255))
-    rect = text.get_rect(center=(BASE_WIDTH // 2, y_offset))
+    rect = text.get_rect(center=(sw // 2, y_offset))
     surface.blit(text, rect)
     y_offset += 50
     for i, player in enumerate(players):
         controls = player.controls
         control_text = f"{player.name}: {get_key_name(controls['up'])} - {get_key_name(controls['down'])} - {get_key_name(controls['left'])} - {get_key_name(controls['right'])} - {get_key_name(controls['bomb'])}"
         text = font.render(control_text, True, player.color)
-        rect = text.get_rect(center=(BASE_WIDTH // 2, y_offset))
+        rect = text.get_rect(center=(sw // 2, y_offset))
         surface.blit(text, rect)
         y_offset += 50
 
 def draw_stat_screen(surface, winner, players, game=None):
     _ensure_fonts_initialized()
+    sw, sh = surface.get_size()
     font = pygame.font.SysFont("arial", 48, bold=True)
     big_winner_font = pygame.font.SysFont("arial", 96, bold=True)
     draw_title_page(surface, alpha=255)
     if winner:
-        x_start = BASE_WIDTH//2 + 150
+        x_start = sw // 2 + 150
         icon_size = 24
         for i in range(winner.trophies):
-            trophy_pos = (x_start + i * (icon_size + 5), BASE_HEIGHT//2 + 70)
+            trophy_pos = (x_start + i * (icon_size + 5), sh // 2 + 70)
             draw_trophy_icon(surface, trophy_pos, icon_size)
         text = big_winner_font.render(f"{winner.name} wins!", True, winner.color)
     else:
         text = font.render("No one wins!", True, (255,255,255))
-    rect = text.get_rect(center=(BASE_WIDTH//2, BASE_HEIGHT//2 + 80))
+    rect = text.get_rect(center=(sw // 2, sh // 2 + 80))
     surface.blit(text, rect)
     font_small = pygame.font.SysFont("arial", 32)
-    y_offset = BASE_HEIGHT//2 + 110
+    y_offset = sh // 2 + 110
     # Columns: Name | Trophies | Death (s) | Flames | Bombs | Kills | Walls | PU | Cells
     name_x = 50
     trophies_x = 260
@@ -672,9 +702,9 @@ def draw_stat_screen(surface, winner, players, game=None):
     has_replay_segment = game is not None and hasattr(game, 'replay_segment') and bool(game.replay_segment)
     has_replay_buffer = game is not None and hasattr(game, 'replay_buffer') and bool(game.replay_buffer)
     if game is not None and (has_replay_segment or has_replay_buffer):
-        panel_w = int(BASE_WIDTH * REPLAY_PANEL_WIDTH_RATIO)
-        panel_h = BASE_HEIGHT - 2 * REPLAY_PANEL_PADDING
-        panel_x = BASE_WIDTH - panel_w - REPLAY_PANEL_PADDING
+        panel_w = int(sw * REPLAY_PANEL_WIDTH_RATIO)
+        panel_h = sh - 2 * REPLAY_PANEL_PADDING
+        panel_x = sw - panel_w - REPLAY_PANEL_PADDING
         panel_y = REPLAY_PANEL_PADDING
         pygame.draw.rect(surface, (30, 30, 30), (panel_x, panel_y, panel_w, panel_h))
         pygame.draw.rect(surface, (120, 120, 120), (panel_x, panel_y, panel_w, panel_h), 2)
@@ -716,7 +746,7 @@ def draw_stat_screen(surface, winner, players, game=None):
         if chosen_frame:
             players_state = chosen_frame['players']
             # Determine camera center
-            cam_x_px, cam_y_px = BASE_WIDTH // 2, BASE_HEIGHT // 2
+            cam_x_px, cam_y_px = sw // 2, sh // 2
             if focus_name:
                 for ps in players_state:
                     if ps['name'] == focus_name:
@@ -729,10 +759,12 @@ def draw_stat_screen(surface, winner, players, game=None):
             view_rect = pygame.Rect(cam_x_px - view_w // 2, cam_y_px - view_h // 2, view_w, view_h)
 
             # Create a surface for the world snapshot
-            world_surface = pygame.Surface((BASE_WIDTH, BASE_HEIGHT))
+            gw = getattr(game, 'grid_width', len(game.board[0]))
+            gh = getattr(game, 'grid_height', len(game.board))
+            world_surface = pygame.Surface((gw * CELL_SIZE, gh * CELL_SIZE))
             # Draw board cells
-            for y in range(GRID_HEIGHT):
-                for x in range(GRID_WIDTH):
+            for y in range(gh):
+                for x in range(gw):
                     r = np.array([x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE], dtype=np.float64)
                     if game.board[y][x] == EMPTY:
                         pygame.gfxdraw.box(world_surface, r, COLOR_BG)
@@ -777,6 +809,7 @@ def draw_stat_screen(surface, winner, players, game=None):
     #draw_controls(surface)
 
 def draw_champion_screen(surface, champion):
+    sw, sh = surface.get_size()
     surface.fill(COLOR_BG) # move inside drawing fcns
     font = pygame.font.SysFont("arial", 60, bold=True)
     draw_title_page(surface, alpha=255)
@@ -784,9 +817,31 @@ def draw_champion_screen(surface, champion):
     for j in range(champion.trophies):
         draw_trophy_icon(trophy_surface, (j * 30, 0), 24)
     text = font.render(f"Champion: {champion.name}", True, champion.color)
-    rect = text.get_rect(center=(BASE_WIDTH//2, BASE_HEIGHT//2 - 100))
+    rect = text.get_rect(center=(sw // 2, sh // 2 - 100))
     surface.blit(text, rect)
-    surface.blit(trophy_surface, (BASE_WIDTH//2 - 100, BASE_HEIGHT//2 + 100))
+    surface.blit(trophy_surface, (sw // 2 - 100, sh // 2 + 100))
+
+
+def draw_boss_result_screen(surface, winner):
+    """Draw boss fight result: Champion wins! or Boss wins!"""
+    sw, sh = surface.get_size()
+    surface.fill(COLOR_BG)
+    font = pygame.font.SysFont("arial", 72, bold=True)
+    font_small = pygame.font.SysFont("arial", 28)
+    draw_title_page(surface, alpha=255)
+    if winner:
+        is_boss = getattr(winner, 'is_ai', False)
+        if is_boss:
+            text = font.render("Boss wins!", True, winner.color)
+        else:
+            text = font.render(f"{winner.name} wins!", True, winner.color)
+    else:
+        text = font.render("Draw!", True, (255, 255, 255))
+    rect = text.get_rect(center=(sw // 2, sh // 2 - 80))
+    surface.blit(text, rect)
+    prompt = font_small.render("Press Enter to continue", True, (200, 200, 200))
+    prompt_rect = prompt.get_rect(center=(sw // 2, sh // 2 + 60))
+    surface.blit(prompt, prompt_rect)
     
 
 def draw_game_screen(surface, theGame):

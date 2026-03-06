@@ -7,9 +7,10 @@ from timing_abstraction import get_ticks
 
 
 def clear_safe_zone(board, sx, sy, offsets):
+    w, h = len(board[0]), len(board)
     for dx, dy in offsets:
         nx, ny = sx + dx, sy + dy
-        if 0 <= nx < GRID_WIDTH and 0 <= ny < GRID_HEIGHT:
+        if 0 <= nx < w and 0 <= ny < h:
             if board[ny][nx] == DESTRUCTIBLE:
                 board[ny][nx] = EMPTY
 
@@ -27,11 +28,13 @@ def get_random_L_pattern():
     ]
     return random.choice(patterns)
 
-def generate_maze():
-    board = [[EMPTY for _ in range(GRID_WIDTH)] for _ in range(GRID_HEIGHT)]
-    for y in range(GRID_HEIGHT):
-        for x in range(GRID_WIDTH):
-            if x == 0 or y == 0 or x == GRID_WIDTH - 1 or y == GRID_HEIGHT - 1:
+def generate_maze(width=None, height=None):
+    w = width if width is not None else GRID_WIDTH
+    h = height if height is not None else GRID_HEIGHT
+    board = [[EMPTY for _ in range(w)] for _ in range(h)]
+    for y in range(h):
+        for x in range(w):
+            if x == 0 or y == 0 or x == w - 1 or y == h - 1:
                 board[y][x] = INDESTRUCTIBLE
             elif x % 2 == 0 and y % 2 == 0:
                 board[y][x] = INDESTRUCTIBLE

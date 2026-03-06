@@ -91,6 +91,9 @@ export class Renderer {
         if (state.state === 'win' || state.state === 'champion') {
             this.drawWinStats(state);
         }
+        if (state.state === 'boss_result') {
+            this.drawBossResult(state);
+        }
         const renderDurationMs = performance.now() - renderStart;
         this.renderSamplesMs.push(renderDurationMs);
         if (this.renderSamplesMs.length > 240) {
@@ -364,6 +367,7 @@ export class Renderer {
                     this.ctx.scale(-1, 1);
                     this.ctx.drawImage(armSprite, -length, -thickness / 2, length, thickness);
                 } else {
+                    this.ctx.scale(1, -1);
                     this.ctx.drawImage(armSprite, 0, -thickness / 2, length, thickness);
                 }
                 this.ctx.restore();
@@ -479,6 +483,29 @@ export class Renderer {
         const sorted = [...this.renderSamplesMs].sort((a, b) => a - b);
         const idx = Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95));
         return sorted[idx];
+    }
+
+    private drawBossResult(state: GameState) {
+        const winner = state.boss_fight_winner;
+        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+        this.ctx.fillRect(0, 0, this.width, this.height);
+        this.ctx.fillStyle = 'white';
+        this.ctx.font = 'bold 48px sans-serif';
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'middle';
+        let text: string;
+        if (winner) {
+            text = winner.is_ai ? 'Boss wins!' : `${winner.name} wins!`;
+            if (winner.color && winner.color.length >= 3) {
+                this.ctx.fillStyle = `rgb(${winner.color[0]}, ${winner.color[1]}, ${winner.color[2]})`;
+            }
+        } else {
+            text = 'Draw!';
+        }
+        this.ctx.fillText(text, this.width / 2, this.height / 2 - 40);
+        this.ctx.fillStyle = 'rgba(200, 200, 200, 0.9)';
+        this.ctx.font = '24px sans-serif';
+        this.ctx.fillText('Press Enter to continue', this.width / 2, this.height / 2 + 40);
     }
 
     private drawWinStats(state: GameState) {

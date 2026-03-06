@@ -826,6 +826,10 @@ function humanStateName(rawState: string | undefined): string {
       return 'Round finished.'
     case 'champion':
       return 'Champion screen.'
+    case 'boss_fight':
+      return 'Boss fight!'
+    case 'boss_result':
+      return 'Boss fight result.'
     default:
       return 'Waiting for game state...'
   }

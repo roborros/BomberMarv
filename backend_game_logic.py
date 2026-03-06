@@ -42,7 +42,10 @@ class BackendGameLogic:
             },
             "champion": {
                 GameCommand.RESTART_GAME: self._transition_champion_to_ready,
-            }
+            },
+            "boss_result": {
+                GameCommand.RESTART_GAME: self._transition_boss_result_to_ready,
+            },
         }
         
         state_transitions = transitions.get(current_state, {})
@@ -139,6 +142,14 @@ class BackendGameLogic:
     def _transition_champion_to_ready(self, data: Dict[str, Any]) -> bool:
         """Transition from champion to ready state"""
         # Reset trophy counters now that champion has been announced
+        if hasattr(self.game, 'reset_trophies'):
+            self.game.reset_trophies()
+        self.game.init_game()
+        self.game.game_state = "get_ready"
+        return True
+
+    def _transition_boss_result_to_ready(self, data: Dict[str, Any]) -> bool:
+        """Transition from boss result to ready state. Reset trophies and start fresh."""
         if hasattr(self.game, 'reset_trophies'):
             self.game.reset_trophies()
         self.game.init_game()

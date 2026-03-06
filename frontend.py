@@ -85,17 +85,18 @@ class FrontendRenderer:
         current_window_size = self.window.window.get_size()
         self.screen.update_window_size(current_window_size)
         
-        factor = min(self.screen.window_size[0] / BASE_WIDTH, 
-                    self.screen.window_size[1] / BASE_HEIGHT)
-        new_width = int(BASE_WIDTH * factor)
-        new_height = int(BASE_HEIGHT * factor)
+        surf_w, surf_h = self.screen.surface.get_size()
+        factor = min(self.screen.window_size[0] / surf_w, 
+                    self.screen.window_size[1] / surf_h)
+        new_width = int(surf_w * factor)
+        new_height = int(surf_h * factor)
 
         if new_width <= 0 or new_height <= 0:
             return
 
-        if new_width == BASE_WIDTH and new_height == BASE_HEIGHT:
+        if new_width == surf_w and new_height == surf_h:
             scaled_surface = self.screen.surface
-        elif new_width < BASE_WIDTH or new_height < BASE_HEIGHT:
+        elif new_width < surf_w or new_height < surf_h:
             # Quality-first downscaling now that host render is capped to 60 FPS.
             if self.use_smoothscale:
                 scaled_surface = pygame.transform.smoothscale(self.screen.surface, (new_width, new_height))

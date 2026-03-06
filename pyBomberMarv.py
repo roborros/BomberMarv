@@ -10,6 +10,7 @@ import time
 import pygame
 from frontend import FrontendManager
 from bm_drawing import (
+    draw_boss_result_screen,
     draw_champion_screen,
     draw_controls,
     draw_game_prep,
@@ -327,6 +328,17 @@ if __name__ == "__main__":
                     pass
             if theGame.current_time >= theGame.game_start_time:
                 theGame.game_state = "playing"
+        elif theGame.game_state == "boss_fight":
+            remaining_ms = max(0, int(theGame.game_start_time - theGame.current_time))
+            remaining_sec = (remaining_ms + 999) // 1000
+            if remaining_sec != last_countdown_second[0]:
+                last_countdown_second[0] = remaining_sec
+                try:
+                    bonus_sound.play()
+                except Exception:
+                    pass
+            if theGame.current_time >= theGame.game_start_time:
+                theGame.update()
         elif theGame.game_state == "playing":
             theGame.update()
         step_duration_ms = (time.perf_counter() - step_started) * 1000.0
@@ -379,6 +391,10 @@ if __name__ == "__main__":
         elif theGame.game_state == "get_ready":
             draw_game_screen(game_surface, theGame)
             draw_get_ready(game_surface)
+        elif theGame.game_state == "boss_fight":
+            draw_game_screen(game_surface, theGame)
+            if theGame.current_time < theGame.game_start_time:
+                draw_get_ready(game_surface)
         elif theGame.game_state == "playing":
             # Keep host render path single-pass; double rendering for shake was a major FPS sink.
             draw_game_screen(game_surface, theGame)
@@ -389,6 +405,9 @@ if __name__ == "__main__":
         elif theGame.game_state == "champion":
             alive_players = [p for p in theGame.players if p.alive]
             draw_champion_screen(game_surface, alive_players[0] if alive_players else None)
+        elif theGame.game_state == "boss_result":
+            winner = getattr(theGame, 'boss_fight_winner', None)
+            draw_boss_result_screen(game_surface, winner)
 
         perf = state_payload["_net_metrics"]
         perf_text = (

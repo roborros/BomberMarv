@@ -17,6 +17,7 @@ export interface PlayerState {
     team?: number;
     owner_client_id?: number | null;
     owner_client_player_id?: number | null;
+    is_ai?: boolean;
 }
 
 export interface BombState {
@@ -44,6 +45,12 @@ export interface CrushingWallsState {
     index: number;
 }
 
+export interface BossFightWinner {
+    name: string;
+    is_ai: boolean;
+    color: [number, number, number];
+}
+
 export interface GameState {
     time: number;
     state: string;
@@ -53,6 +60,7 @@ export interface GameState {
     explosions: ExplosionState[];
     powerups: PowerUpState[];
     crushing_walls: CrushingWallsState;
+    boss_fight_winner?: BossFightWinner | null;
     _net_metrics?: {
         host_fps_5s?: number;
         host_render_fps_5s?: number;

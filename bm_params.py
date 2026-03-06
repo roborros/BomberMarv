@@ -29,6 +29,15 @@ POWERUP_PROBABILITY = 0.25  # Chance to spawn a powerup when a block is destroye
 
 TROPHY_WIN_THRESHOLD = 5   # Number of trophies needed to become Champion
 
+# Boss fight (AI) parameters
+BOSS_SPEED_MULTIPLIER = 1.4
+BOSS_EXTRA_LIVES = 1
+BOSS_START_FIRE_POWER = 2
+BOSS_START_BOMB_CAPACITY = 2
+BOSS_NAME = "Boss"
+BOSS_CRUSHING_WALLS_DELAY = 60       # Delay before crushing walls in boss fight (seconds)
+BOSS_CRUSHING_WALLS_GROWTH_INTERVAL_MS = 600  # 50% slower than normal (400 * 1.5)
+
 QUAD_DAMAGE_PROBABILITY = 0.0005 # Chance to spawn a Quad Damage powerup
 QUAD_DAMAGE_TIME = 20 # Duration of Quad Damage effect (s)
 QUAD_DAMAGE_POWER = 10    # Powerup bonus to bomb capacity and fire power
@@ -41,7 +50,23 @@ CRUSHING_WALLS_MIN_DESTROYABLE = 500      # Minimum destroyable cells before act
 CRUSHING_WALLS_MAX_ALIVE = 2              # Max alive players to allow activation (<= triggers)
 CRUSHING_WALLS_GROWTH_INTERVAL_MS = 400  # Interval between new walls once active (ms)
 
-GRID_SIZE = 21
+# Grid size (odd) - unified constants
+GRID_SIZE_DEFAULT = 21      # 3-4 players
+GRID_SIZE_2_PLAYERS = 17    # 2 players starting
+GRID_SIZE_5_PLUS = 27       # 5+ players
+GRID_SIZE_BOSS = 17         # Boss fight (1v1, same as 2-player)
+
+
+def get_grid_size(player_count=None, is_boss_fight=False):
+    """Return grid size (odd) for the given context."""
+    if is_boss_fight:
+        return GRID_SIZE_BOSS
+    if player_count == 2:
+        return GRID_SIZE_2_PLAYERS
+    if player_count is not None and player_count >= 5:
+        return GRID_SIZE_5_PLUS
+    return GRID_SIZE_DEFAULT
+
 
 BOMB_TIMER = 3000
 EXPLOSION_DURATION = 400
@@ -150,12 +175,9 @@ def init_assets():
 
 
 # Internal constants and pre-calculation
-
-if NUM_PLAYERS > 4:
-    GRID_WIDTH = int(GRID_SIZE * 1.3)
-else:
-    GRID_WIDTH = GRID_SIZE
-GRID_HEIGHT = GRID_WIDTH
+# Default for prep/startup (no game running)
+GRID_WIDTH = GRID_SIZE_DEFAULT
+GRID_HEIGHT = GRID_SIZE_DEFAULT
 
 BASE_WIDTH = CELL_SIZE * GRID_WIDTH
 BASE_HEIGHT = CELL_SIZE * GRID_HEIGHT

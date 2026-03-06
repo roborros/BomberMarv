@@ -253,9 +253,9 @@ class GameCommandHandler:
             self.game.handle_prep_key_event(mock_event)
             return True
         
-        elif self.game.game_state in ["win", "champion"]:
-            # When leaving champion, reset trophies after announcement
-            if self.game.game_state == "champion" and hasattr(self.game, 'reset_trophies'):
+        elif self.game.game_state in ["win", "champion", "boss_result"]:
+            # When leaving champion or boss result, reset trophies and start fresh
+            if self.game.game_state in ("champion", "boss_result") and hasattr(self.game, 'reset_trophies'):
                 self.game.reset_trophies()
             self.game.init_game()
             self.game.game_state = "get_ready"
