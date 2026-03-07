@@ -107,7 +107,7 @@ KEY_SEND_FREQUENCY_LIMIT = 20  # Minimum milliseconds between key events (20ms =
 # Higher values = less responsive but lower server load
 # Recommended range: 10-50ms (100Hz-20Hz)
 
-player_names = ["Tom", "Sobi", "Marv", "Zelda", "Ondra", "Sasa"]
+player_names = ["Marv", "Sobi", "Tom", "Zelda", "Ondra", "Sasa"]
 #players = []
 colors = [
     (100, 150, 200),  # Light Blue
@@ -121,9 +121,9 @@ colors = [
 FPS = 60
 
 controls_list = [
-    {'up': pygame.K_i, 'down': pygame.K_k, 'left': pygame.K_j, 'right': pygame.K_l, 'bomb': pygame.K_h},
     {'up': pygame.K_w, 'down': pygame.K_s, 'left': pygame.K_a, 'right': pygame.K_d, 'bomb': pygame.K_LCTRL},
-    {'up': pygame.K_f , 'down': pygame.K_v, 'left': pygame.K_c, 'right': pygame.K_b, 'bomb': pygame.K_SPACE},
+    {'up': pygame.K_i, 'down': pygame.K_k, 'left': pygame.K_j, 'right': pygame.K_l, 'bomb': pygame.K_SPACE},
+    {'up': pygame.K_f , 'down': pygame.K_v, 'left': pygame.K_c, 'right': pygame.K_b, 'bomb': pygame.K_h},
     {'up': pygame.K_KP5, 'down': pygame.K_KP2, 'left': pygame.K_KP1, 'right': pygame.K_KP3, 'bomb': pygame.K_RCTRL},
     {'up': pygame.K_HOME, 'down': pygame.K_END, 'left': pygame.K_DELETE, 'right': pygame.K_PAGEDOWN, 'bomb': pygame.K_BACKSPACE},
     {'up': pygame.K_KP_DIVIDE, 'down': pygame.K_KP8, 'left': pygame.K_KP7, 'right': pygame.K_KP9, 'bomb': pygame.K_KP0},

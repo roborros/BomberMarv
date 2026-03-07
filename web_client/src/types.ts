@@ -13,6 +13,7 @@ export interface PlayerState {
     walls_destroyed?: number;
     players_killed?: number;
     powerups_collected?: number;
+    quad_damage_collected?: number;
     cells_walked?: number;
     team?: number;
     owner_client_id?: number | null;

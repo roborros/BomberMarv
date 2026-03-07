@@ -520,12 +520,12 @@ export class Renderer {
         this.ctx.fillStyle = 'white';
         this.ctx.font = 'bold 16px monospace';
         this.ctx.textAlign = 'left';
-        this.ctx.fillText('Name       Team  Kills  Walls  Pups  Walked', panelX + 12, panelY + 22);
+        this.ctx.fillText('Name       Team  Kills  Walls Exploded  Pickups  QDs  Cells Walked', panelX + 12, panelY + 22);
         this.ctx.font = '14px monospace';
         const sorted = [...state.players].sort((a, b) => (b.players_killed ?? 0) - (a.players_killed ?? 0));
         for (let i = 0; i < Math.min(sorted.length, 6); i++) {
             const p = sorted[i];
-            const line = `${(p.name || `P${p.id}`).padEnd(10).slice(0, 10)} ${(p.team ?? 0).toString().padStart(4)} ${(p.players_killed ?? 0).toString().padStart(6)} ${(p.walls_destroyed ?? 0).toString().padStart(6)} ${(p.powerups_collected ?? 0).toString().padStart(5)} ${(p.cells_walked ?? 0).toString().padStart(7)}`;
+            const line = `${(p.name || `P${p.id}`).padEnd(10).slice(0, 10)} ${(p.team ?? 0).toString().padStart(4)} ${(p.players_killed ?? 0).toString().padStart(6)} ${(p.walls_destroyed ?? 0).toString().padStart(10)} ${(p.powerups_collected ?? 0).toString().padStart(7)} ${(p.quad_damage_collected ?? 0).toString().padStart(5)} ${(p.cells_walked ?? 0).toString().padStart(12)}`;
             this.ctx.fillText(line, panelX + 12, panelY + 46 + i * 22);
         }
     }

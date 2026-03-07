@@ -138,6 +138,7 @@ if __name__ == "__main__":
     # update_game_state = ws_stream_server.update_game_state # No longer needed
 
     theGame = Game()
+    theGame.set_status_queue(status_queue)
     # Don't call init_game() here - we want to start in prep mode
     # theGame.init_game()
 

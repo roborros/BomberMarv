@@ -627,27 +627,29 @@ def draw_stat_screen(surface, winner, players, game=None):
     rect = text.get_rect(center=(sw // 2, sh // 2 + 80))
     surface.blit(text, rect)
     font_small = pygame.font.SysFont("arial", 32)
-    y_offset = sh // 2 + 110
-    # Columns: Name | Trophies | Death (s) | Flames | Bombs | Kills | Walls | PU | Cells
-    name_x = 50
-    trophies_x = 260
-    death_x = 450
-    flames_x = 590
-    bombs_x = 680
-    kills_x = 760
-    walls_x = 840
-    pups_x = 920
-    walked_x = 1000
+    y_offset = sh // 2 + 155
+    # Columns: Player | WINS | Death Time (s) | Flames | Bombs | Kills | Walls Exploded | Pickups | QDs | Cells Walked (50% more spacing)
+    name_x = 25
+    trophies_x = 198
+    death_x = 378
+    flames_x = 588
+    bombs_x = 738
+    kills_x = 873
+    walls_x = 1008
+    pups_x = 1218
+    qd_x = 1383
+    walked_x = 1548
     header_color = (200, 200, 200)
     surface.blit(font_small.render("Player", True, header_color), (name_x, y_offset))
-    surface.blit(font_small.render("Trophies", True, header_color), (trophies_x, y_offset))
-    surface.blit(font_small.render("Death (s)", True, header_color), (death_x, y_offset))
+    surface.blit(font_small.render("WINS", True, header_color), (trophies_x, y_offset))
+    surface.blit(font_small.render("Death Time (s)", True, header_color), (death_x, y_offset))
     surface.blit(font_small.render("Flames", True, header_color), (flames_x, y_offset))
     surface.blit(font_small.render("Bombs", True, header_color), (bombs_x, y_offset))
     surface.blit(font_small.render("Kills", True, header_color), (kills_x, y_offset))
-    surface.blit(font_small.render("Walls", True, header_color), (walls_x, y_offset))
-    surface.blit(font_small.render("PU", True, header_color), (pups_x, y_offset))
-    surface.blit(font_small.render("Cells", True, header_color), (walked_x, y_offset))
+    surface.blit(font_small.render("Walls Exploded", True, header_color), (walls_x, y_offset))
+    surface.blit(font_small.render("Pickups", True, header_color), (pups_x, y_offset))
+    surface.blit(font_small.render("QDs", True, header_color), (qd_x, y_offset))
+    surface.blit(font_small.render("Cells Walked", True, header_color), (walked_x, y_offset))
     y_offset += 34
     for i, player in enumerate(players):
         # Name
@@ -689,12 +691,14 @@ def draw_stat_screen(surface, winner, players, game=None):
         kills_text = font_small.render(str(getattr(player, 'players_killed', 0)), True, (255, 180, 180))
         walls_text = font_small.render(str(getattr(player, 'walls_destroyed', 0)), True, (220, 200, 170))
         pups_text = font_small.render(str(getattr(player, 'powerups_collected', 0)), True, (180, 255, 180))
+        qd_text = font_small.render(str(getattr(player, 'quad_damage_collected', 0)), True, (100, 220, 255))
         walked_text = font_small.render(str(getattr(player, 'cells_walked', 0)), True, (180, 220, 255))
         surface.blit(flames_text, (flames_x, y_offset))
         surface.blit(bombs_text, (bombs_x, y_offset))
         surface.blit(kills_text, (kills_x, y_offset))
         surface.blit(walls_text, (walls_x, y_offset))
         surface.blit(pups_text, (pups_x, y_offset))
+        surface.blit(qd_text, (qd_x, y_offset))
         surface.blit(walked_text, (walked_x, y_offset))
         y_offset += 36
 

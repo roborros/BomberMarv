@@ -50,6 +50,7 @@ class Player:
         self.walls_destroyed = 0
         self.players_killed = 0
         self.powerups_collected = 0
+        self.quad_damage_collected = 0
         self.cells_walked = 0
         self._last_grid_pos = None
         # Team mode (0 by default, assigned in create_players)
@@ -85,16 +86,16 @@ class Player:
             original_pos = self.pos.copy()
             spd = self.speed if not self.quad_damage else int(self.speed * QUAD_DAMAGE_SPEEDUP)
             self.pos = self.pos + direction * spd * (dt / 1000.0)
-            current_grid = self.get_grid_pos()
-            if self._last_grid_pos is not None and current_grid != self._last_grid_pos:
-                self.cells_walked += 1
-            self._last_grid_pos = current_grid
             for bomb in bombs:
                 if bomb.owner == self and not bomb.owner_left:
                     if self.get_grid_pos() != (bomb.x, bomb.y):
                         bomb.owner_left = True
             if self.collides_with_walls(board) or self.collides_with_bombs(bombs, original_pos):
                 self.pos = original_pos
+            current_grid = self.get_grid_pos()
+            if self._last_grid_pos is not None and current_grid != self._last_grid_pos:
+                self.cells_walked += 1
+            self._last_grid_pos = current_grid
             if self.quad_damage and get_ticks() - self.quad_damage_start_time > QUAD_DAMAGE_TIME * 1000:
                 self.quad_damage = False
                 self.bomb_capacity -= QUAD_DAMAGE_POWER
@@ -209,10 +210,6 @@ class Player:
         original_pos = self.pos.copy()
         spd = self.speed if not self.quad_damage else int(self.speed * QUAD_DAMAGE_SPEEDUP)
         self.pos = self.pos + direction * spd * (dt / 1000.0)
-        current_grid = self.get_grid_pos()
-        if self._last_grid_pos is not None and current_grid != self._last_grid_pos:
-            self.cells_walked += 1
-        self._last_grid_pos = current_grid
 
         # Update bomb ownership if the player has left their bomb cell.
         for bomb in bombs:
@@ -225,13 +222,21 @@ class Player:
             # Try moving only along x
             self.pos = original_pos + np.array([direction[0] * spd * (dt / 1000.0), 0], dtype=np.float64)
             if not (self.collides_with_walls(board) or self.collides_with_bombs(bombs, original_pos)):
-                return
-            # Try moving only along y
-            self.pos = original_pos + np.array([0, direction[1] * spd * (dt / 1000.0)], dtype=np.float64)
-            if not (self.collides_with_walls(board) or self.collides_with_bombs(bombs, original_pos)):
-                return
-            # Both attempts failed, revert.
-            self.pos = original_pos
+                pass  # x-only succeeded
+            else:
+                # Try moving only along y
+                self.pos = original_pos + np.array([0, direction[1] * spd * (dt / 1000.0)], dtype=np.float64)
+                if not (self.collides_with_walls(board) or self.collides_with_bombs(bombs, original_pos)):
+                    pass  # y-only succeeded
+                else:
+                    # Both attempts failed, revert.
+                    self.pos = original_pos
+
+        # Count cells walked only after final position is known (avoid counting when we collide and revert)
+        current_grid = self.get_grid_pos()
+        if self._last_grid_pos is not None and current_grid != self._last_grid_pos:
+            self.cells_walked += 1
+        self._last_grid_pos = current_grid
 
         # Handle quad damage duration.
         if self.quad_damage and get_ticks() - self.quad_damage_start_time > QUAD_DAMAGE_TIME * 1000:
@@ -317,6 +322,7 @@ class Player:
         self.walls_destroyed = 0
         self.players_killed = 0
         self.powerups_collected = 0
+        self.quad_damage_collected = 0
         self.cells_walked = 0
         self._last_grid_pos = self.get_grid_pos()
 
@@ -337,6 +343,7 @@ class Player:
             'walls_destroyed': int(self.walls_destroyed),
             'players_killed': int(self.players_killed),
             'powerups_collected': int(self.powerups_collected),
+            'quad_damage_collected': int(self.quad_damage_collected),
             'cells_walked': int(self.cells_walked),
             'team': int(self.team),
             'owner_client_id': int(getattr(self, 'client_id', -1)) if getattr(self, 'client_id', None) is not None else None,
@@ -431,6 +438,7 @@ class Game:
         # Team rules are opt-in; default gameplay remains free-for-all.
         self.team_mode_enabled = False
         self._cached_status = None
+        self._status_queue = None  # Optional: for draining web client status before init_game
         
         # Crushing walls feature variables
         self.crushing_walls_active = False
@@ -560,11 +568,25 @@ class Game:
         """Status refresh is now queue-driven in the host loop."""
         return self._cached_status
     
+    def set_status_queue(self, queue):
+        """Set the status queue for draining web client status (used for grid size)."""
+        self._status_queue = queue
+
     def init_game(self):
+        # Drain status queue to get latest web client count (local + web = total for grid size)
+        if getattr(self, '_status_queue', None) is not None:
+            try:
+                import queue as queue_module
+                while True:
+                    msg = self._status_queue.get_nowait()
+                    if isinstance(msg, dict) and msg.get("type") == "status":
+                        self._cached_status = msg.get("status")
+            except queue_module.Empty:
+                pass
         # Refresh client status before creating players
         self._refresh_client_status()
         
-        # Recreate players based on current prep settings and client players
+        # Recreate players based on current prep settings and client players (local + web)
         # Preserve existing trophies by mapping old players to new by identity (local) or client ids
         previous_players = {}
         for p in getattr(self, 'players', []):
@@ -1352,7 +1374,7 @@ class Game:
                         player.bomb_capacity += QUAD_DAMAGE_POWER
                         player.fire_power += QUAD_DAMAGE_POWER
                         qd_sound.play()
-                        player.powerups_collected += 1
+                        player.quad_damage_collected += 1
                     self.powerups.remove(pu)
                     
         # Use adjustable powerup logic

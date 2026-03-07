@@ -115,7 +115,7 @@ let transportActive: 'ws' | 'rtc' = 'ws'
 let rtcFallbackEvents = 0
 let pendingSlotSelection: number | null = null
 let currentPlayerName = ''
-let renderEnabled = true
+let renderEnabled = false
 let latencySamples5s: Array<{ ts: number; value: number }> = []
 let avgLatency5sMs = 0
 let frameTimes5s: number[] = []
@@ -806,11 +806,13 @@ playerNameInputEl.addEventListener('change', () => {
   }
 })
 
-renderToggleEl.addEventListener('change', () => {
+function applyRenderToggleState() {
   renderEnabled = renderToggleEl.checked
   canvasEl.classList.toggle('hidden', !renderEnabled)
   stateOnlyEl.classList.toggle('hidden', renderEnabled)
-})
+}
+applyRenderToggleState()
+renderToggleEl.addEventListener('change', applyRenderToggleState)
 
 function humanStateName(rawState: string | undefined): string {
   switch (rawState) {
