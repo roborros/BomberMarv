@@ -37,6 +37,7 @@ export class Renderer {
     private blastCenterQd: HTMLImageElement | null = null;
     private lastCanvasScale = 1;
     private avatarCache: Map<string, HTMLImageElement | null> = new Map();
+    private playerScaredUntil: Map<number, number> = new Map();
 
     constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
@@ -86,7 +87,7 @@ export class Renderer {
 
         state.powerups.forEach(p => this.drawPowerUp(p));
         state.bombs.forEach(b => this.drawBomb(b, state.time));
-        state.players.forEach(player => this.drawPlayer(player, state.time));
+        state.players.forEach(player => this.drawPlayer(player, state));
         state.explosions.forEach(e => this.drawExplosion(e, state.time));
         if (state.state === 'win' || state.state === 'champion') {
             this.drawWinStats(state);
@@ -184,9 +185,44 @@ export class Renderer {
         }
     }
 
-    private drawPlayer(player: PlayerState, currentTimeMs: number) {
+    private getExplosionActiveCells(explosion: ExplosionState, currentTimeMs: number): [number, number][] {
+        const norm = Math.min(1, Math.max(0, (currentTimeMs - explosion.start_time) / EXPLOSION_DURATION_MS));
+        let armFactor = 0;
+        if (norm < 0.2) armFactor = norm / 0.2;
+        else if (norm <= 0.7) armFactor = 1;
+        else armFactor = Math.max(0, 1 - ((norm - 0.7) / 0.3));
+        if (armFactor <= 0 || !explosion.cells?.length) return [];
+        const [cx, cy] = explosion.cells[0];
+        const cells: [number, number][] = [[cx, cy]];
+        let upMax = 0, downMax = 0, leftMax = 0, rightMax = 0;
+        for (const [x, y] of explosion.cells) {
+            if (x === cx && y < cy) upMax = Math.max(upMax, cy - y);
+            else if (x === cx && y > cy) downMax = Math.max(downMax, y - cy);
+            else if (y === cy && x < cx) leftMax = Math.max(leftMax, cx - x);
+            else if (y === cy && x > cx) rightMax = Math.max(rightMax, x - cx);
+        }
+        for (let i = 1; i <= Math.floor(armFactor * upMax); i++) cells.push([cx, cy - i]);
+        for (let i = 1; i <= Math.floor(armFactor * downMax); i++) cells.push([cx, cy + i]);
+        for (let i = 1; i <= Math.floor(armFactor * leftMax); i++) cells.push([cx - i, cy]);
+        for (let i = 1; i <= Math.floor(armFactor * rightMax); i++) cells.push([cx + i, cy]);
+        return cells;
+    }
+
+    private isPlayerNearExplosion(player: PlayerState, explosions: ExplosionState[], currentTimeMs: number): boolean {
+        const px = Math.floor(player.x / CELL_SIZE);
+        const py = Math.floor(player.y / CELL_SIZE);
+        for (const explosion of explosions) {
+            for (const [ex, ey] of this.getExplosionActiveCells(explosion, currentTimeMs)) {
+                if (Math.abs(px - ex) <= 1 && Math.abs(py - ey) <= 1) return true;
+            }
+        }
+        return false;
+    }
+
+    private drawPlayer(player: PlayerState, state: GameState) {
         if (!player.alive) return;
 
+        const currentTimeMs = state.time;
         const PYTHON_CELL_SIZE = 100;
         const SCALE = CELL_SIZE / PYTHON_CELL_SIZE;
 
@@ -195,6 +231,14 @@ export class Renderer {
 
         const size = (PYTHON_CELL_SIZE * 0.85) * SCALE; // PLAYER_DRAW_SCALE = 0.85
         const [dx, dy] = player.direction;
+
+        // Scared state: explosion nearby (max 1 cell) triggers O-mouth + bigger eyes for 1s
+        let scared = false;
+        if (this.isPlayerNearExplosion(player, state.explosions || [], currentTimeMs)) {
+            this.playerScaredUntil.set(player.id, currentTimeMs + 1000);
+        }
+        scared = currentTimeMs < (this.playerScaredUntil.get(player.id) ?? 0);
+        if (!scared) this.playerScaredUntil.delete(player.id);
 
         // Draw Shadow
         this.ctx.fillStyle = 'rgba(0,0,0,0.3)';
@@ -244,10 +288,11 @@ export class Renderer {
         this.ctx.fillRect(px - size / 4 - footSize / 2, py + size / 2 - footSize / 2 + legOffset, footSize, footSize);
         this.ctx.fillRect(px + size / 4 - footSize / 2, py + size / 2 - footSize / 2 - legOffset, footSize, footSize);
 
-        // Eyes (direction)
+        // Eyes (direction) - bigger when scared
         const eyeOffX = dx * (size * 0.16);
         const eyeOffY = dy * (size * 0.16);
-        const eyeRadius = Math.max(4, size * 0.12);
+        let eyeRadius = Math.max(4, size * 0.12);
+        if (scared) eyeRadius *= 1.5;
         const pupilRadius = Math.max(1.5, size * 0.05);
         const eyeGap = size * 0.18;
 
@@ -263,6 +308,19 @@ export class Renderer {
         this.ctx.arc(px + eyeOffX - eyeGap + dx * 2, py + eyeOffY - eyeGap * 0.7 + dy * 2, pupilRadius, 0, Math.PI * 2);
         this.ctx.arc(px + eyeOffX + eyeGap + dx * 2, py + eyeOffY - eyeGap * 0.7 + dy * 2, pupilRadius, 0, Math.PI * 2);
         this.ctx.fill();
+
+        // Mouth: line by default, circle when scared
+        const mouthY = py + eyeGap * 0.8;
+        this.ctx.fillStyle = 'rgb(40, 40, 40)';
+        if (scared) {
+            const mouthR = Math.max(2, size * 0.06);
+            this.ctx.beginPath();
+            this.ctx.arc(px, mouthY, mouthR, 0, Math.PI * 2);
+            this.ctx.fill();
+        } else {
+            const mouthW = size * 0.25;
+            this.ctx.fillRect(px - mouthW, mouthY - 1, mouthW * 2, 2);
+        }
 
         // Determine name
         this.ctx.fillStyle = 'white';

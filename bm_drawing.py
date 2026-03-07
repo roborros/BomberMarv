@@ -8,8 +8,10 @@ from bm_params import *
 from input_abstraction import get_key_name
 from timing_abstraction import get_ticks
 from lib_collisions import circle_rect_collision
+from explosions import compute_explosion_active_cells
 
 _AVATAR_CACHE = {}
+_PLAYER_SCARED_UNTIL = {}  # player_id -> ticks when scared expression ends
 _ASSETS_READY = False
 _SCALED_IMAGE_CACHE = {}
 _BOARD_LAYER_CACHE = {"signature": None, "surface": None}
@@ -339,8 +341,20 @@ def draw_trophy_icon(surface, pos, size):
     base_rect = np.array([x + int(width * 0.3), y + int(height * 0.85), int(width * 0.4), int(height * 0.15)], dtype=np.float64)
     pygame.draw.rect(surface, trophy_color, base_rect)
 
-def draw_players(surface, players):
+def _is_player_near_explosion(player, explosions, current_time):
+    """Return True if any active explosion cell is within 1 cell (Chebyshev) of the player."""
+    px, py = player.get_grid_pos()
+    for explosion in explosions:
+        active = compute_explosion_active_cells(explosion, current_time, EXPLOSION_DURATION)
+        for (ex, ey) in active:
+            if abs(px - ex) <= 1 and abs(py - ey) <= 1:
+                return True
+    return False
+
+
+def draw_players(surface, players, explosions=None, current_time=None):
     _ensure_fonts_initialized()
+    global _PLAYER_SCARED_UNTIL
     for player in players:
         if not player.alive and player.death_animation_time <= 0:
             continue
@@ -358,11 +372,22 @@ def draw_players(surface, players):
             helmet_color = (min(player.color[0]+30,255), min(player.color[1]+30,255), min(player.color[2]+30,255))
             rect_head = np.array([pos[0]-r, pos[1]-r, 2*r, 2*r], dtype=np.float64)
             pygame.draw.arc(surface, helmet_color, rect_head, math.pi, 2*math.pi, 3)
+            # Scared state: explosion nearby (max 1 cell) triggers O-mouth + bigger eyes for 1s
+            scared = False
+            player_key = getattr(player, 'global_id', id(player))
+            if explosions is not None and current_time is not None:
+                if _is_player_near_explosion(player, explosions, current_time):
+                    _PLAYER_SCARED_UNTIL[player_key] = current_time + 1000
+                scared = current_time < _PLAYER_SCARED_UNTIL.get(player_key, 0)
+                if not scared and player_key in _PLAYER_SCARED_UNTIL:
+                    _PLAYER_SCARED_UNTIL.pop(player_key, None)
             # Eyes: static white circles with black pupils that turn in direction of movement
             dx = float(getattr(player, 'direction', [0, 0])[0])
             dy = float(getattr(player, 'direction', [0, 0])[1])
             size = 2 * r
             eye_radius = max(4, int(size * 0.12))
+            if scared:
+                eye_radius = int(eye_radius * 1.5)
             pupil_radius = max(1, int(size * 0.05))
             eye_gap = size * 0.18
             eye_offset_y = eye_gap * 0.7
@@ -385,6 +410,16 @@ def draw_players(surface, players):
             pygame.gfxdraw.filled_circle(surface, int(right_px), int(right_py), pupil_radius, (0, 0, 0))
             pygame.gfxdraw.aacircle(surface, int(left_px), int(left_py), pupil_radius, (0, 0, 0))
             pygame.gfxdraw.aacircle(surface, int(right_px), int(right_py), pupil_radius, (0, 0, 0))
+            # Mouth: line by default, circle when scared
+            mouth_y = pos[1] + eye_gap * 0.8
+            mouth_color = (40, 40, 40)
+            if scared:
+                mouth_r = max(2, int(size * 0.06))
+                pygame.gfxdraw.filled_circle(surface, int(pos[0]), int(mouth_y), mouth_r, mouth_color)
+                pygame.gfxdraw.aacircle(surface, int(pos[0]), int(mouth_y), mouth_r, mouth_color)
+            else:
+                mouth_w = int(size * 0.25)
+                pygame.draw.line(surface, mouth_color, (int(pos[0] - mouth_w), int(mouth_y)), (int(pos[0] + mouth_w), int(mouth_y)), 2)
             leg_width = r//3
             leg_height = r//4
             leg_offset = int(6 * math.sin(player.animation_time / 150.0))
@@ -885,7 +920,7 @@ def draw_game_screen(surface, theGame):
     draw_explosions(surface, theGame.current_time, theGame.explosions)
     if SHOW_EXPLOSION_COLLISION_DEBUG:
         draw_explosion_collision_debug(surface, theGame.current_time, theGame.explosions, theGame.players)
-    draw_players(surface, theGame.players)
+    draw_players(surface, theGame.players, theGame.explosions, theGame.current_time)
     if SHOW_PLAYER_DIRECTIONS:
         draw_player_directions(surface, theGame.players, theGame)
         
