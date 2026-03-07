@@ -571,7 +571,7 @@ function renderSlots(msg: SlotListMessage) {
     if (isTaken) {
       label = reason === 'local' ? 'Local' : 'Remote'
     }
-    btn.innerHTML = `P${i}<br><span style="font-size:12px">${label}</span>`
+    btn.innerHTML = `P${i}<br><span style="font-size:24px">${label}</span>`
     slotContainerEl.appendChild(btn)
   }
 }

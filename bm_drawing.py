@@ -162,9 +162,9 @@ def _ensure_fonts_initialized():
     """Ensure fonts are initialized before use"""
     global arcade_font, font_small
     if arcade_font is None:
-        arcade_font = pygame.font.SysFont('Comic Sans MS', 90)
+        arcade_font = pygame.font.SysFont('Comic Sans MS', 180)
     if font_small is None:
-        font_small = pygame.font.SysFont("arial", 32)
+        font_small = pygame.font.SysFont("arial", 64)
 
 def draw_brick_pattern(rect, surface):
     brick_height = rect[3] // 4
@@ -221,7 +221,7 @@ def draw_title_page(surface, alpha=255):
     surface.blit(game_name_text, game_name_rect)
     
     # Render the version tag
-    version_font = pygame.font.SysFont("arial", 24)
+    version_font = pygame.font.SysFont("arial", 48)
     version_text = version_font.render(VERSION, True, (255, 255, 255))
     version_rect = version_text.get_rect(bottomright=(sw - 10, sh - 10))
     surface.blit(version_text, version_rect)
@@ -403,12 +403,12 @@ def draw_players(surface, players):
             
             # Draw player name
             name_text = _get_cached_text(font_small, player.name, (255, 255, 255))
-            name_rect = name_text.get_rect(center=(pos[0], pos[1] - r - 10))
+            name_rect = name_text.get_rect(center=(pos[0], pos[1] - r - 20))
             surface.blit(name_text, name_rect)
             # Draw pickup message if active
             if getattr(player, 'pickup_message_end_time', 0) and get_ticks() < player.pickup_message_end_time:
                 msg_text = font_small.render(player.pickup_message, True, (255, 255, 0))
-                msg_rect = msg_text.get_rect(center=(pos[0], pos[1] - r - 40))
+                msg_rect = msg_text.get_rect(center=(pos[0], pos[1] - r - 80))
                 # Draw a semi-transparent dark background for readability
                 bg_rect = msg_rect.inflate(10, 6)
                 bg_surface = pygame.Surface((bg_rect[2], bg_rect[3]), pygame.SRCALPHA)
@@ -594,7 +594,7 @@ def draw_blast_arm(surface, start_pos, end_offset, image):
 
 def draw_controls(surface, players):
     sw, sh = surface.get_size()
-    font = pygame.font.SysFont("arial", 40)
+    font = pygame.font.SysFont("arial", 80)
     y_offset = sh - sh // 3
     control_text = "Controls: Up -  Down - Left - Right - Bomb"
     text = font.render(control_text, True, (255, 255, 255))
@@ -612,8 +612,8 @@ def draw_controls(surface, players):
 def draw_stat_screen(surface, winner, players, game=None):
     _ensure_fonts_initialized()
     sw, sh = surface.get_size()
-    font = pygame.font.SysFont("arial", 48, bold=True)
-    big_winner_font = pygame.font.SysFont("arial", 96, bold=True)
+    font = pygame.font.SysFont("arial", 96, bold=True)
+    big_winner_font = pygame.font.SysFont("arial", 192, bold=True)
     draw_title_page(surface, alpha=255)
     if winner:
         x_start = sw // 2 + 150
@@ -626,8 +626,30 @@ def draw_stat_screen(surface, winner, players, game=None):
         text = font.render("No one wins!", True, (255,255,255))
     rect = text.get_rect(center=(sw // 2, sh // 2 + 80))
     surface.blit(text, rect)
-    font_small = pygame.font.SysFont("arial", 32)
+    font_small = pygame.font.SysFont("arial", 64)
+    font_small_bold = pygame.font.SysFont("arial", 64, bold=True)
     y_offset = sh // 2 + 155
+    # Precompute max values per column for bold highlighting
+    death_vals = []
+    flames_vals = []
+    bombs_vals = []
+    for p in players:
+        if hasattr(p, 'death_time_rel_ms') and p.death_time_rel_ms is not None:
+            death_vals.append(int(round(p.death_time_rel_ms / 1000.0)))
+        else:
+            death_vals.append(999999)  # Alive = best
+        fp = p.fire_power_at_death if hasattr(p, 'fire_power_at_death') and p.fire_power_at_death is not None else getattr(p, 'fire_power', 0)
+        bp = p.bomb_capacity_at_death if hasattr(p, 'bomb_capacity_at_death') and p.bomb_capacity_at_death is not None else getattr(p, 'bomb_capacity', 0)
+        flames_vals.append(fp)
+        bombs_vals.append(bp)
+    max_death = max(death_vals) if death_vals else 0
+    max_flames = max(flames_vals) if flames_vals else 0
+    max_bombs = max(bombs_vals) if bombs_vals else 0
+    max_kills = max((getattr(p, 'total_players_killed', 0) for p in players), default=0)
+    max_walls = max((getattr(p, 'total_walls_destroyed', 0) for p in players), default=0)
+    max_pups = max((getattr(p, 'total_powerups_collected', 0) for p in players), default=0)
+    max_qd = max((getattr(p, 'total_quad_damage_collected', 0) for p in players), default=0)
+    max_walked = max((getattr(p, 'total_cells_walked', 0) for p in players), default=0)
     # Columns: Player | WINS | Death Time (s) | Flames | Bombs | Kills | Walls Exploded | Pickups | QDs | Cells Walked (50% more spacing)
     name_x = 25
     trophies_x = 198
@@ -656,7 +678,7 @@ def draw_stat_screen(surface, winner, players, game=None):
         name_text = font_small.render(f"{player.name}", True, player.color)
         surface.blit(name_text, (name_x, y_offset))
 
-        # Trophies icons
+        # Trophies icons (bold if max)
         trophy_surface = pygame.Surface((160, 36), pygame.SRCALPHA)
         for j in range(player.trophies):
             draw_trophy_icon(trophy_surface, (j * 28, 6), 24)
@@ -668,39 +690,46 @@ def draw_stat_screen(surface, winner, players, game=None):
             secs_rounded = int(round(secs))
             death_text_str = f"{secs_rounded}"
             death_color = (255, 160, 160)
+            death_val = secs_rounded
         else:
             death_text_str = "—"
             death_color = (160, 255, 160)
-        death_text = font_small.render(death_text_str, True, death_color)
+            death_val = 999999
+        death_font = font_small_bold if death_vals[i] == max_death and max_death > 0 else font_small
+        death_text = death_font.render(death_text_str, True, death_color)
         surface.blit(death_text, (death_x, y_offset))
 
         # Flames and Bombs snapshot (alive players show current values)
-        flames_val = None
-        bombs_val = None
-        if hasattr(player, 'fire_power_at_death') and player.fire_power_at_death is not None:
-            flames_val = player.fire_power_at_death
-        else:
-            flames_val = getattr(player, 'fire_power', 0)
-        if hasattr(player, 'bomb_capacity_at_death') and player.bomb_capacity_at_death is not None:
-            bombs_val = player.bomb_capacity_at_death
-        else:
-            bombs_val = getattr(player, 'bomb_capacity', 0)
-
-        flames_text = font_small.render(str(flames_val), True, (255, 220, 160))
-        bombs_text = font_small.render(str(bombs_val), True, (160, 220, 255))
-        kills_text = font_small.render(str(getattr(player, 'players_killed', 0)), True, (255, 180, 180))
-        walls_text = font_small.render(str(getattr(player, 'walls_destroyed', 0)), True, (220, 200, 170))
-        pups_text = font_small.render(str(getattr(player, 'powerups_collected', 0)), True, (180, 255, 180))
-        qd_text = font_small.render(str(getattr(player, 'quad_damage_collected', 0)), True, (100, 220, 255))
-        walked_text = font_small.render(str(getattr(player, 'cells_walked', 0)), True, (180, 220, 255))
+        flames_val = flames_vals[i]
+        bombs_val = bombs_vals[i]
+        flames_font = font_small_bold if flames_val == max_flames and max_flames > 0 else font_small
+        bombs_font = font_small_bold if bombs_val == max_bombs and max_bombs > 0 else font_small
+        flames_text = flames_font.render(str(flames_val), True, (255, 220, 160))
+        bombs_text = bombs_font.render(str(bombs_val), True, (160, 220, 255))
         surface.blit(flames_text, (flames_x, y_offset))
         surface.blit(bombs_text, (bombs_x, y_offset))
+
+        kills_val = getattr(player, 'total_players_killed', 0)
+        walls_val = getattr(player, 'total_walls_destroyed', 0)
+        pups_val = getattr(player, 'total_powerups_collected', 0)
+        qd_val = getattr(player, 'total_quad_damage_collected', 0)
+        walked_val = getattr(player, 'total_cells_walked', 0)
+        kills_font = font_small_bold if kills_val == max_kills and max_kills > 0 else font_small
+        walls_font = font_small_bold if walls_val == max_walls and max_walls > 0 else font_small
+        pups_font = font_small_bold if pups_val == max_pups and max_pups > 0 else font_small
+        qd_font = font_small_bold if qd_val == max_qd and max_qd > 0 else font_small
+        walked_font = font_small_bold if walked_val == max_walked and max_walked > 0 else font_small
+        kills_text = kills_font.render(str(kills_val), True, (255, 180, 180))
+        walls_text = walls_font.render(str(walls_val), True, (220, 200, 170))
+        pups_text = pups_font.render(str(pups_val), True, (180, 255, 180))
+        qd_text = qd_font.render(str(qd_val), True, (100, 220, 255))
+        walked_text = walked_font.render(str(walked_val), True, (180, 220, 255))
         surface.blit(kills_text, (kills_x, y_offset))
         surface.blit(walls_text, (walls_x, y_offset))
         surface.blit(pups_text, (pups_x, y_offset))
         surface.blit(qd_text, (qd_x, y_offset))
         surface.blit(walked_text, (walked_x, y_offset))
-        y_offset += 36
+        y_offset += 72
 
     # Draw replay panel on the right side (if replay data is available)
     has_replay_segment = game is not None and hasattr(game, 'replay_segment') and bool(game.replay_segment)
@@ -815,7 +844,7 @@ def draw_stat_screen(surface, winner, players, game=None):
 def draw_champion_screen(surface, champion):
     sw, sh = surface.get_size()
     surface.fill(COLOR_BG) # move inside drawing fcns
-    font = pygame.font.SysFont("arial", 60, bold=True)
+    font = pygame.font.SysFont("arial", 120, bold=True)
     draw_title_page(surface, alpha=255)
     trophy_surface = pygame.Surface((200, 40), pygame.SRCALPHA)
     for j in range(champion.trophies):
@@ -830,8 +859,8 @@ def draw_boss_result_screen(surface, winner):
     """Draw boss fight result: Champion wins! or Boss wins!"""
     sw, sh = surface.get_size()
     surface.fill(COLOR_BG)
-    font = pygame.font.SysFont("arial", 72, bold=True)
-    font_small = pygame.font.SysFont("arial", 28)
+    font = pygame.font.SysFont("arial", 144, bold=True)
+    font_small = pygame.font.SysFont("arial", 56)
     draw_title_page(surface, alpha=255)
     if winner:
         is_boss = getattr(winner, 'is_ai', False)
@@ -917,13 +946,13 @@ def draw_game_prep(surface, Game):
     surface.fill((24, 28, 34))
     pulse = 0.5 + 0.5 * math.sin(time.time() * 8.0)
 
-    # Header
-    title_font = pygame.font.SysFont("arial", 54, bold=True)
-    subtitle_font = pygame.font.SysFont("arial", 28)
+    # Header (scaled for 2x text)
+    title_font = pygame.font.SysFont("arial", 108, bold=True)
+    subtitle_font = pygame.font.SysFont("arial", 56)
     title = title_font.render("BomberMarv Lobby", True, (238, 244, 255))
     subtitle = subtitle_font.render("Host setup and connected clients", True, (160, 176, 200))
-    surface.blit(title, (40, 22))
-    surface.blit(subtitle, (42, 72))
+    surface.blit(title, (50, 28))
+    surface.blit(subtitle, (52, 92))
     # Game._cached_status is refreshed by the main loop; do not block drawing here.
     if not hasattr(Game, '_cached_status'):
         Game._cached_status = None
@@ -977,30 +1006,30 @@ def draw_game_prep(surface, Game):
             })
             global_player_id += 1
 
-    # Panels
-    top_y = 120
-    panel_h = BASE_HEIGHT - 250
-    left_panel = pygame.Rect(34, top_y, int(BASE_WIDTH * 0.62), panel_h)
-    right_panel = pygame.Rect(left_panel.right + 14, top_y, BASE_WIDTH - left_panel.right - 48, panel_h)
+    # Panels (scaled for 2x text)
+    top_y = 160
+    panel_h = BASE_HEIGHT - 320
+    left_panel = pygame.Rect(44, top_y, int(BASE_WIDTH * 0.62), panel_h)
+    right_panel = pygame.Rect(left_panel.right + 20, top_y, BASE_WIDTH - left_panel.right - 64, panel_h)
 
     pygame.draw.rect(surface, (34, 41, 52), left_panel, border_radius=14)
     pygame.draw.rect(surface, (69, 87, 112), left_panel, 2, border_radius=14)
     pygame.draw.rect(surface, (30, 37, 48), right_panel, border_radius=14)
     pygame.draw.rect(surface, (64, 80, 104), right_panel, 2, border_radius=14)
 
-    section_font = pygame.font.SysFont("arial", 32, bold=True)
-    surface.blit(section_font.render("Players", True, (235, 242, 255)), (left_panel.x + 18, left_panel.y + 12))
-    surface.blit(section_font.render("Remote Clients", True, (235, 242, 255)), (right_panel.x + 18, right_panel.y + 12))
+    section_font = pygame.font.SysFont("arial", 64, bold=True)
+    surface.blit(section_font.render("Players", True, (235, 242, 255)), (left_panel.x + 24, left_panel.y + 16))
+    surface.blit(section_font.render("Remote Clients", True, (235, 242, 255)), (right_panel.x + 24, right_panel.y + 16))
 
     # Local player count controls
-    label_font = pygame.font.SysFont("arial", 26, bold=True)
-    surface.blit(label_font.render("Local player count", True, (185, 214, 180)), (left_panel.x + 20, left_panel.y + 56))
+    label_font = pygame.font.SysFont("arial", 52, bold=True)
+    surface.blit(label_font.render("Local player count", True, (185, 214, 180)), (left_panel.x + 24, left_panel.y + 72))
 
-    button_y = left_panel.y + 88
-    button_w = 52
-    button_h = 34
+    button_y = left_panel.y + 120
+    button_w = 68
+    button_h = 56
     for idx in range(6):
-        rect = pygame.Rect(left_panel.x + 20 + idx * (button_w + 8), button_y, button_w, button_h)
+        rect = pygame.Rect(left_panel.x + 24 + idx * (button_w + 12), button_y, button_w, button_h)
         selected = (Game.prep_section == 'local_players' and Game.prep_cursor_row == 0 and Game.prep_cursor_col == idx)
         if selected:
             glow = int(180 + 60 * pulse)
@@ -1010,17 +1039,17 @@ def draw_game_prep(surface, Game):
             fill = (74, 90, 112) if idx + 1 != Game.prep_num_players else (106, 144, 216)
             text_col = (236, 241, 248)
         pygame.draw.rect(surface, fill, rect, border_radius=8)
-        pygame.draw.rect(surface, (196, 209, 228), rect, 1, border_radius=8)
+        pygame.draw.rect(surface, (196, 209, 228), rect, 1, border_radius=10)
         txt = label_font.render(str(idx + 1), True, text_col)
         surface.blit(txt, txt.get_rect(center=rect.center))
 
-    # Player rows
-    row_y = button_y + button_h + 22
-    row_h = 44
-    max_rows = max(1, (left_panel.bottom - row_y - 10) // row_h)
+    # Player rows (scaled for 68px name font)
+    row_y = button_y + button_h + 28
+    row_h = 88
+    max_rows = max(1, (left_panel.bottom - row_y - 16) // row_h)
     shown_players = all_players[:max_rows]
     for i, p in enumerate(shown_players):
-        rect = pygame.Rect(left_panel.x + 14, row_y + i * row_h, left_panel.width - 28, row_h - 4)
+        rect = pygame.Rect(left_panel.x + 18, row_y + i * row_h, left_panel.width - 36, row_h - 8)
         selected = (Game.prep_section == 'local_players' and Game.prep_cursor_row == i + 1)
         editing = (Game.prep_editing_name and Game.prep_name_edit_index == i)
         if selected:
@@ -1029,12 +1058,12 @@ def draw_game_prep(surface, Game):
         else:
             row_bg = (43, 52, 66)
         pygame.draw.rect(surface, row_bg, rect, border_radius=8)
-        pygame.draw.rect(surface, (102, 122, 148), rect, 1, border_radius=8)
+        pygame.draw.rect(surface, (102, 122, 148), rect, 1, border_radius=10)
 
-        # color chip
-        chip_rect = pygame.Rect(rect.x + 8, rect.y + 8, 18, 18)
-        pygame.draw.rect(surface, colors[p['color'] % len(colors)], chip_rect, border_radius=4)
-        pygame.draw.rect(surface, (220, 232, 248), chip_rect, 1, border_radius=4)
+        # color chip (scaled for 2x text)
+        chip_rect = pygame.Rect(rect.x + 12, rect.y + (row_h - 36) // 2, 36, 36)
+        pygame.draw.rect(surface, colors[p['color'] % len(colors)], chip_rect, border_radius=8)
+        pygame.draw.rect(surface, (220, 232, 248), chip_rect, 1, border_radius=8)
 
         name = p['name'] + "_" if editing else p['name']
         if p['type'] == 'local':
@@ -1049,20 +1078,21 @@ def draw_game_prep(surface, Game):
             status_text = f"{p['status']} | {int(round(float(p.get('latency_5s', 0))))} ms"
         status_text = f"{team_text} | {status_text}"
 
-        line_font = pygame.font.SysFont("arial", 34, bold=True)
-        status_font = pygame.font.SysFont("arial", 28, bold=True)
-        surface.blit(line_font.render(name, True, name_color), (chip_rect.right + 10, rect.y + 1))
-        surface.blit(status_font.render(status_text, True, status_color), (rect.x + int(rect.width * 0.60), rect.y + 4))
+        line_font = pygame.font.SysFont("arial", 68, bold=True)
+        status_font = pygame.font.SysFont("arial", 56, bold=True)
+        surface.blit(line_font.render(name, True, name_color), (chip_rect.right + 16, rect.y + (row_h - 68) // 2))
+        surface.blit(status_font.render(status_text, True, status_color), (rect.x + int(rect.width * 0.58), rect.y + (row_h - 56) // 2))
 
     if len(all_players) > max_rows:
         more = len(all_players) - max_rows
-        surface.blit(font_small.render(f"... and {more} more", True, (180, 188, 200)), (left_panel.x + 20, left_panel.bottom - 28))
+        surface.blit(font_small.render(f"... and {more} more", True, (180, 188, 200)), (left_panel.x + 24, left_panel.bottom - 44))
 
-    # Right panel client cards
-    client_card_y = right_panel.y + 52
+    # Right panel client cards (scaled for 64px font)
+    client_card_y = right_panel.y + 72
+    card_h = 120
     if cached_clients:
         for client_id, info in cached_clients.items():
-            if client_card_y > right_panel.bottom - 70:
+            if client_card_y > right_panel.bottom - card_h - 20:
                 break
             last_seen = info.get('last_seen', 0)
             age = time.time() - last_seen
@@ -1071,29 +1101,29 @@ def draw_game_prep(surface, Game):
             display_name = str(info.get('display_name', '') or '').strip()
             latency = info.get('avg_latency_5s', info.get('avg_latency', 0))
             samples = info.get('latency_samples_5s', info.get('latency_samples', 0))
-            card = pygame.Rect(right_panel.x + 12, client_card_y, right_panel.width - 24, 62)
-            pygame.draw.rect(surface, (43, 52, 66), card, border_radius=8)
-            pygame.draw.rect(surface, (95, 116, 140), card, 1, border_radius=8)
+            card = pygame.Rect(right_panel.x + 16, client_card_y, right_panel.width - 32, card_h)
+            pygame.draw.rect(surface, (43, 52, 66), card, border_radius=10)
+            pygame.draw.rect(surface, (95, 116, 140), card, 1, border_radius=10)
             line1 = f"Client {client_id} - {reg}"
             if display_name:
                 line1 += f" ({display_name})"
             line2 = f"Players: {len(info.get('players', []))}   Latency(5s): {latency}ms ({samples})"
-            surface.blit(font_small.render(line1, True, online_col), (card.x + 10, card.y + 4))
-            surface.blit(font_small.render(line2, True, (188, 204, 224)), (card.x + 10, card.y + 30))
-            client_card_y += 70
+            surface.blit(font_small.render(line1, True, online_col), (card.x + 16, card.y + 12))
+            surface.blit(font_small.render(line2, True, (188, 204, 224)), (card.x + 16, card.y + 52))
+            client_card_y += card_h + 16
     else:
-        surface.blit(font_small.render("No remote clients connected.", True, (172, 184, 204)), (right_panel.x + 14, right_panel.y + 58))
+        surface.blit(font_small.render("No remote clients connected.", True, (172, 184, 204)), (right_panel.x + 20, right_panel.y + 72))
 
-    # Footer panel and start action
-    footer = pygame.Rect(34, BASE_HEIGHT - 112, BASE_WIDTH - 68, 78)
+    # Footer panel and start action (scaled for 2x text)
+    footer = pygame.Rect(44, BASE_HEIGHT - 160, BASE_WIDTH - 88, 120)
     pygame.draw.rect(surface, (28, 34, 43), footer, border_radius=12)
     pygame.draw.rect(surface, (80, 97, 121), footer, 2, border_radius=12)
 
     total_players = len(all_players)
     totals = label_font.render(f"Total players: {total_players} (Local {Game.prep_num_players})", True, (232, 239, 250))
-    surface.blit(totals, (footer.x + 18, footer.y + 14))
+    surface.blit(totals, (footer.x + 24, footer.y + 20))
 
-    start_rect = pygame.Rect(footer.right - 208, footer.y + 14, 188, 48)
+    start_rect = pygame.Rect(footer.right - 320, footer.y + 20, 280, 72)
     start_selected = (Game.prep_section == 'start_game')
     if start_selected:
         glow = int(132 + 50 * pulse)
@@ -1106,5 +1136,5 @@ def draw_game_prep(surface, Game):
     start_text = label_font.render("START GAME", True, start_text_col)
     surface.blit(start_text, start_text.get_rect(center=start_rect.center))
 
-    help_text = "ARROWS navigate | ENTER select/edit | LEFT/RIGHT color | T team | TAB switch | ESC back"
-    surface.blit(font_small.render(help_text, True, (160, 176, 198)), (footer.x + 18, footer.y + 44))
+    help_text = "ARROWS navigate | ENTER select/edit | LEFT/RIGHT color | T team | TAB switch | ESC back | F11 fullscreen"
+    surface.blit(font_small.render(help_text, True, (160, 176, 198)), (footer.x + 24, footer.y + 68))

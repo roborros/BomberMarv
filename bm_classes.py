@@ -46,12 +46,18 @@ class Player:
         # Stats snapshot at death
         self.fire_power_at_death = None
         self.bomb_capacity_at_death = None
-        # Match statistics
+        # Match statistics (per-round)
         self.walls_destroyed = 0
         self.players_killed = 0
         self.powerups_collected = 0
         self.quad_damage_collected = 0
         self.cells_walked = 0
+        # Cumulative stats across rounds (persistent until champion)
+        self.total_walls_destroyed = 0
+        self.total_players_killed = 0
+        self.total_powerups_collected = 0
+        self.total_quad_damage_collected = 0
+        self.total_cells_walked = 0
         self._last_grid_pos = None
         # Team mode (0 by default, assigned in create_players)
         self.team = 0
@@ -345,6 +351,11 @@ class Player:
             'powerups_collected': int(self.powerups_collected),
             'quad_damage_collected': int(self.quad_damage_collected),
             'cells_walked': int(self.cells_walked),
+            'total_walls_destroyed': int(getattr(self, 'total_walls_destroyed', 0)),
+            'total_players_killed': int(getattr(self, 'total_players_killed', 0)),
+            'total_powerups_collected': int(getattr(self, 'total_powerups_collected', 0)),
+            'total_quad_damage_collected': int(getattr(self, 'total_quad_damage_collected', 0)),
+            'total_cells_walked': int(getattr(self, 'total_cells_walked', 0)),
             'team': int(self.team),
             'owner_client_id': int(getattr(self, 'client_id', -1)) if getattr(self, 'client_id', None) is not None else None,
             'owner_client_player_id': int(getattr(self, 'client_player_id', -1)) if getattr(self, 'client_player_id', None) is not None else None,
@@ -587,16 +598,35 @@ class Game:
         self._refresh_client_status()
         
         # Recreate players based on current prep settings and client players (local + web)
-        # Preserve existing trophies by mapping old players to new by identity (local) or client ids
+        # Accumulate round stats into totals, then preserve trophies and totals by player identity
         previous_players = {}
         for p in getattr(self, 'players', []):
+            # Accumulate this round's stats into cumulative totals
+            p.total_walls_destroyed = getattr(p, 'total_walls_destroyed', 0) + p.walls_destroyed
+            p.total_players_killed = getattr(p, 'total_players_killed', 0) + p.players_killed
+            p.total_powerups_collected = getattr(p, 'total_powerups_collected', 0) + p.powerups_collected
+            p.total_quad_damage_collected = getattr(p, 'total_quad_damage_collected', 0) + p.quad_damage_collected
+            p.total_cells_walked = getattr(p, 'total_cells_walked', 0) + p.cells_walked
             key = ('local', getattr(p, 'name', ''), getattr(p, 'color', None)) if getattr(p, 'is_local', False) else ('client', getattr(p, 'client_id', None), getattr(p, 'client_player_id', None))
-            previous_players[key] = p.trophies
+            previous_players[key] = {
+                'trophies': p.trophies,
+                'total_walls_destroyed': p.total_walls_destroyed,
+                'total_players_killed': p.total_players_killed,
+                'total_powerups_collected': p.total_powerups_collected,
+                'total_quad_damage_collected': p.total_quad_damage_collected,
+                'total_cells_walked': p.total_cells_walked,
+            }
         self.create_players()
         for p in self.players:
             key = ('local', getattr(p, 'name', ''), getattr(p, 'color', None)) if getattr(p, 'is_local', False) else ('client', getattr(p, 'client_id', None), getattr(p, 'client_player_id', None))
             if key in previous_players:
-                p.trophies = previous_players[key]
+                data = previous_players[key]
+                p.trophies = data['trophies']
+                p.total_walls_destroyed = data['total_walls_destroyed']
+                p.total_players_killed = data['total_players_killed']
+                p.total_powerups_collected = data['total_powerups_collected']
+                p.total_quad_damage_collected = data['total_quad_damage_collected']
+                p.total_cells_walked = data['total_cells_walked']
         
         num_players = len(self.players)
         from bm_params import get_grid_size, CELL_SIZE
@@ -770,9 +800,14 @@ class Game:
         return pattern
 
     def reset_trophies(self):
-        """Reset all players' trophies (call when leaving champion screen)."""
+        """Reset all players' trophies and cumulative stats (call when leaving champion screen)."""
         for p in self.players:
             p.trophies = 0
+            p.total_walls_destroyed = 0
+            p.total_players_killed = 0
+            p.total_powerups_collected = 0
+            p.total_quad_damage_collected = 0
+            p.total_cells_walked = 0
 
     def count_destroyable_cells(self):
         """Count the number of destroyable cells on the board"""

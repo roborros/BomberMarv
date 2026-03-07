@@ -153,7 +153,7 @@ if __name__ == "__main__":
     def get_ui_font():
         if bm_params.font_small is not None:
             return bm_params.font_small
-        return pygame.font.SysFont("arial", 24)
+        return pygame.font.SysFont("arial", 48)
 
     def update_rate_metrics(now_ms):
         sim_series = runtime_metrics["sim_loop_timestamps_ms"]
@@ -410,14 +410,15 @@ if __name__ == "__main__":
             winner = getattr(theGame, 'boss_fight_winner', None)
             draw_boss_result_screen(game_surface, winner)
 
-        perf = state_payload["_net_metrics"]
-        perf_text = (
-            f"SIM FPS(5s): {perf['host_fps_5s']} | RENDER FPS(5s): {perf['host_render_fps_5s']} "
-            f"| INPUT p95: {perf['input_apply_p95_ms']}ms"
-        )
-        perf_surface = get_ui_font().render(perf_text, True, (210, 230, 255))
-        perf_rect = perf_surface.get_rect(bottomleft=(20, BASE_HEIGHT - 14))
-        game_surface.blit(perf_surface, perf_rect)
+        if bm_params.DEBUG_MODE:
+            perf = state_payload["_net_metrics"]
+            perf_text = (
+                f"SIM FPS(5s): {perf['host_fps_5s']} | RENDER FPS(5s): {perf['host_render_fps_5s']} "
+                f"| INPUT p95: {perf['input_apply_p95_ms']}ms"
+            )
+            perf_surface = get_ui_font().render(perf_text, True, (210, 230, 255))
+            perf_rect = perf_surface.get_rect(bottomleft=(20, BASE_HEIGHT - 14))
+            game_surface.blit(perf_surface, perf_rect)
         draw_duration_ms = (time.perf_counter() - draw_started) * 1000.0
         runtime_metrics["render_draw_samples_ms"].append(draw_duration_ms)
         if len(runtime_metrics["render_draw_samples_ms"]) > 300:

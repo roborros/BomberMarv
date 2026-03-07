@@ -14,7 +14,8 @@ NUM_PLAYERS = 1  # Default players (min 1, max 6)
 
 CELL_SIZE = 100  # Cell size (overall resolution)
 
-PLAYER_SPEED = int(CELL_SIZE*2.5)  # Default player speed (pixels per second)
+PLAYER_SPEED_MULTIPLIER = 1.15  # Configurable: 1.0 = default, 1.15 = 15% faster
+PLAYER_SPEED = int(CELL_SIZE * 2.5 * PLAYER_SPEED_MULTIPLIER)  # Default player speed (pixels per second)
 
 PLAYER_DRAW_SCALE = 0.85     # Drawn sprite diameter = 85% of cell edge
 PLAYER_COLLISION_SCALE = 0.7 # Collision circle = 75% of cell edge
@@ -53,7 +54,7 @@ CRUSHING_WALLS_GROWTH_INTERVAL_MS = 400  # Interval between new walls once activ
 # Grid size (odd) - unified constants
 GRID_SIZE_DEFAULT = 21      # 3-4 players
 GRID_SIZE_2_PLAYERS = 17    # 2 players starting
-GRID_SIZE_5_PLUS = 27       # 5+ players
+GRID_SIZE_5_PLUS = 21       # 5+ players
 GRID_SIZE_BOSS = 17         # Boss fight (1v1, same as 2-player)
 
 
@@ -121,8 +122,8 @@ colors = [
 FPS = 60
 
 controls_list = [
-    {'up': pygame.K_w, 'down': pygame.K_s, 'left': pygame.K_a, 'right': pygame.K_d, 'bomb': pygame.K_LCTRL},
-    {'up': pygame.K_i, 'down': pygame.K_k, 'left': pygame.K_j, 'right': pygame.K_l, 'bomb': pygame.K_SPACE},
+    {'up': pygame.K_w, 'down': pygame.K_s, 'left': pygame.K_a, 'right': pygame.K_d, 'bomb': pygame.K_SPACE},
+    {'up': pygame.K_i, 'down': pygame.K_k, 'left': pygame.K_j, 'right': pygame.K_l, 'bomb': pygame.K_LCTRL},
     {'up': pygame.K_f , 'down': pygame.K_v, 'left': pygame.K_c, 'right': pygame.K_b, 'bomb': pygame.K_h},
     {'up': pygame.K_KP5, 'down': pygame.K_KP2, 'left': pygame.K_KP1, 'right': pygame.K_KP3, 'bomb': pygame.K_RCTRL},
     {'up': pygame.K_HOME, 'down': pygame.K_END, 'left': pygame.K_DELETE, 'right': pygame.K_PAGEDOWN, 'bomb': pygame.K_BACKSPACE},

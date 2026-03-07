@@ -176,9 +176,9 @@ class FrontendManager:
         import bm_params
         bm_params.init_assets()
         
-        # Initialize fonts
-        bm_params.arcade_font = pygame.font.SysFont('Comic Sans MS', 90)
-        bm_params.font_small = pygame.font.SysFont("arial", 32)
+        # Initialize fonts (2x size)
+        bm_params.arcade_font = pygame.font.SysFont('Comic Sans MS', 180)
+        bm_params.font_small = pygame.font.SysFont("arial", 64)
         
         # Set default window size (will be updated after window creation)
         bm_params.INITIAL_WINDOW_SIZE = (1200, 800)

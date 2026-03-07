@@ -15,6 +15,11 @@ export interface PlayerState {
     powerups_collected?: number;
     quad_damage_collected?: number;
     cells_walked?: number;
+    total_walls_destroyed?: number;
+    total_players_killed?: number;
+    total_powerups_collected?: number;
+    total_quad_damage_collected?: number;
+    total_cells_walked?: number;
     team?: number;
     owner_client_id?: number | null;
     owner_client_player_id?: number | null;

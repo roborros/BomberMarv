@@ -266,7 +266,7 @@ export class Renderer {
 
         // Determine name
         this.ctx.fillStyle = 'white';
-        this.ctx.font = `${Math.max(14, Math.floor(size * 0.24))}px Arial`;
+        this.ctx.font = `${Math.max(28, Math.floor(size * 0.48))}px Arial`;
         this.ctx.textAlign = 'center';
         this.ctx.fillText(player.name || `P${player.id}`, px, py - size / 2 - 5);
     }
@@ -411,7 +411,7 @@ export class Renderer {
                 this.ctx.arc(cx, cy, fireSize * 0.3, 0, Math.PI * 2);
                 this.ctx.fill();
                 this.ctx.fillStyle = 'white';
-                this.ctx.font = 'bold 14px Arial';
+                this.ctx.font = 'bold 28px Arial';
                 this.ctx.textAlign = 'center';
                 this.ctx.textBaseline = 'middle';
                 this.ctx.fillText('F', cx, cy);
@@ -435,7 +435,7 @@ export class Renderer {
                 this.ctx.arc(cx, cy, CELL_SIZE * 0.3, 0, Math.PI * 2);
                 this.ctx.fill();
                 this.ctx.fillStyle = 'white';
-                this.ctx.font = 'bold 14px Arial';
+                this.ctx.font = 'bold 28px Arial';
                 this.ctx.textAlign = 'center';
                 this.ctx.textBaseline = 'middle';
                 this.ctx.fillText('4x', cx, cy);
@@ -454,7 +454,7 @@ export class Renderer {
         this.ctx.fill();
 
         this.ctx.fillStyle = 'white';
-        this.ctx.font = 'bold 14px Arial';
+        this.ctx.font = 'bold 28px Arial';
         this.ctx.textAlign = 'center';
         this.ctx.textBaseline = 'middle';
         this.ctx.fillText(text, cx, cy);
@@ -490,7 +490,7 @@ export class Renderer {
         this.ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
         this.ctx.fillRect(0, 0, this.width, this.height);
         this.ctx.fillStyle = 'white';
-        this.ctx.font = 'bold 48px sans-serif';
+        this.ctx.font = 'bold 96px sans-serif';
         this.ctx.textAlign = 'center';
         this.ctx.textBaseline = 'middle';
         let text: string;
@@ -504,29 +504,57 @@ export class Renderer {
         }
         this.ctx.fillText(text, this.width / 2, this.height / 2 - 40);
         this.ctx.fillStyle = 'rgba(200, 200, 200, 0.9)';
-        this.ctx.font = '24px sans-serif';
+        this.ctx.font = '48px sans-serif';
         this.ctx.fillText('Press Enter to continue', this.width / 2, this.height / 2 + 40);
     }
 
     private drawWinStats(state: GameState) {
         const panelWidth = Math.min(this.width - 20, 980);
         const panelX = Math.max(10, (this.width - panelWidth) / 2);
-        const panelY = Math.max(10, this.height - 200);
+        const panelY = Math.max(10, this.height - 320);
         this.ctx.fillStyle = 'rgba(12, 18, 28, 0.8)';
-        this.ctx.fillRect(panelX, panelY, panelWidth, 180);
+        this.ctx.fillRect(panelX, panelY, panelWidth, 320);
         this.ctx.strokeStyle = 'rgba(170, 200, 240, 0.7)';
         this.ctx.lineWidth = 1;
-        this.ctx.strokeRect(panelX, panelY, panelWidth, 180);
+        this.ctx.strokeRect(panelX, panelY, panelWidth, 320);
         this.ctx.fillStyle = 'white';
-        this.ctx.font = 'bold 16px monospace';
+        this.ctx.font = 'bold 32px monospace';
         this.ctx.textAlign = 'left';
         this.ctx.fillText('Name       Team  Kills  Walls Exploded  Pickups  QDs  Cells Walked', panelX + 12, panelY + 22);
-        this.ctx.font = '14px monospace';
-        const sorted = [...state.players].sort((a, b) => (b.players_killed ?? 0) - (a.players_killed ?? 0));
+        const sorted = [...state.players].sort((a, b) => (b.total_players_killed ?? b.players_killed ?? 0) - (a.total_players_killed ?? a.players_killed ?? 0));
+        const maxKills = Math.max(0, ...sorted.map(p => p.total_players_killed ?? p.players_killed ?? 0));
+        const maxWalls = Math.max(0, ...sorted.map(p => p.total_walls_destroyed ?? p.walls_destroyed ?? 0));
+        const maxPups = Math.max(0, ...sorted.map(p => p.total_powerups_collected ?? p.powerups_collected ?? 0));
+        const maxQds = Math.max(0, ...sorted.map(p => p.total_quad_damage_collected ?? p.quad_damage_collected ?? 0));
+        const maxWalked = Math.max(0, ...sorted.map(p => p.total_cells_walked ?? p.cells_walked ?? 0));
+        const nameX = panelX + 12;
+        const teamX = panelX + 155;
+        const killsX = panelX + 210;
+        const wallsX = panelX + 300;
+        const pupsX = panelX + 420;
+        const qdsX = panelX + 510;
+        const walkedX = panelX + 570;
         for (let i = 0; i < Math.min(sorted.length, 6); i++) {
             const p = sorted[i];
-            const line = `${(p.name || `P${p.id}`).padEnd(10).slice(0, 10)} ${(p.team ?? 0).toString().padStart(4)} ${(p.players_killed ?? 0).toString().padStart(6)} ${(p.walls_destroyed ?? 0).toString().padStart(10)} ${(p.powerups_collected ?? 0).toString().padStart(7)} ${(p.quad_damage_collected ?? 0).toString().padStart(5)} ${(p.cells_walked ?? 0).toString().padStart(12)}`;
-            this.ctx.fillText(line, panelX + 12, panelY + 46 + i * 22);
+            const kills = p.total_players_killed ?? p.players_killed ?? 0;
+            const walls = p.total_walls_destroyed ?? p.walls_destroyed ?? 0;
+            const pups = p.total_powerups_collected ?? p.powerups_collected ?? 0;
+            const qds = p.total_quad_damage_collected ?? p.quad_damage_collected ?? 0;
+            const walked = p.total_cells_walked ?? p.cells_walked ?? 0;
+            const y = panelY + 46 + i * 44;
+            this.ctx.font = '28px monospace';
+            this.ctx.fillText((p.name || `P${p.id}`).padEnd(10).slice(0, 10), nameX, y);
+            this.ctx.fillText((p.team ?? 0).toString().padStart(4), teamX, y);
+            this.ctx.font = (kills === maxKills && maxKills > 0) ? 'bold 28px monospace' : '28px monospace';
+            this.ctx.fillText(kills.toString().padStart(6), killsX, y);
+            this.ctx.font = (walls === maxWalls && maxWalls > 0) ? 'bold 28px monospace' : '28px monospace';
+            this.ctx.fillText(walls.toString().padStart(10), wallsX, y);
+            this.ctx.font = (pups === maxPups && maxPups > 0) ? 'bold 28px monospace' : '28px monospace';
+            this.ctx.fillText(pups.toString().padStart(7), pupsX, y);
+            this.ctx.font = (qds === maxQds && maxQds > 0) ? 'bold 28px monospace' : '28px monospace';
+            this.ctx.fillText(qds.toString().padStart(5), qdsX, y);
+            this.ctx.font = (walked === maxWalked && maxWalked > 0) ? 'bold 28px monospace' : '28px monospace';
+            this.ctx.fillText(walked.toString().padStart(12), walkedX, y);
         }
     }
 
