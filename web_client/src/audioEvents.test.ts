@@ -1,0 +1,67 @@
+import { describe, expect, it } from 'vitest'
+import {
+  collectGameAudioCues,
+  collectNewExplosionKeys,
+  collectPlayerAudioCues,
+  crossedBigExplosionThreshold,
+  explosionEventKey,
+  shouldResetBigExplosionTracking,
+  uniqueTilesInWindow,
+  BIG_EXPLOSION_TILE_THRESHOLD
+} from './audioEvents'
+import { samplePlayer, sampleState } from './testFixtures'
+
+describe('audioEvents', () => {
+  it('keys explosions by origin cell and style', () => {
+    expect(explosionEventKey({ start_time: 10, cells: [[3, 4]], quad_damage: true })).toBe('10:3:4:1')
+    expect(explosionEventKey({ start_time: 10, cells: [], quad_damage: false })).toBeNull()
+  })
+
+  it('detects newly seen explosions', () => {
+    const known = new Set(['1:0:0:0'])
+    const { newlySeen, keys } = collectNewExplosionKeys(
+      [
+        { start_time: 1, cells: [[0, 0]], quad_damage: false },
+        { start_time: 2, cells: [[1, 1]], quad_damage: true }
+      ],
+      known
+    )
+    expect(newlySeen).toHaveLength(1)
+    expect(newlySeen[0].quadDamage).toBe(true)
+    expect(keys.size).toBe(2)
+  })
+
+  it('counts unique tiles inside the window', () => {
+    const events = [
+      { startTime: 0, cells: [[0, 0], [1, 0]] as [number, number][] },
+      { startTime: 900, cells: [[1, 0], [2, 0]] as [number, number][] }
+    ]
+    expect(uniqueTilesInWindow(events, 1000, 200)).toBe(2)
+    expect(uniqueTilesInWindow(events, 1000, 1000)).toBe(3)
+  })
+
+  it('crosses the big-explosion threshold once', () => {
+    expect(crossedBigExplosionThreshold(false, BIG_EXPLOSION_TILE_THRESHOLD + 1)).toBe(true)
+    expect(crossedBigExplosionThreshold(true, BIG_EXPLOSION_TILE_THRESHOLD + 10)).toBe(false)
+    expect(crossedBigExplosionThreshold(false, BIG_EXPLOSION_TILE_THRESHOLD)).toBe(false)
+  })
+
+  it('emits player audio cues for death, QD, and pickups', () => {
+    const prev = samplePlayer({ alive: true, quad_damage: false, fire_power: 1, bomb_capacity: 1 })
+    expect(collectPlayerAudioCues(prev, { ...prev, alive: false })).toEqual(['death'])
+    expect(collectPlayerAudioCues(prev, { ...prev, quad_damage: true })).toEqual(['qd'])
+    expect(collectPlayerAudioCues(prev, { ...prev, fire_power: 2 })).toEqual(['bonus'])
+  })
+
+  it('collects cues across a snapshot pair', () => {
+    const previous = sampleState({ players: [samplePlayer({ id: 1, alive: true })] })
+    const current = sampleState({ players: [samplePlayer({ id: 1, alive: false })] })
+    expect(collectGameAudioCues(previous, current)).toEqual(['death'])
+    expect(collectGameAudioCues(null, current)).toEqual([])
+  })
+
+  it('resets tracking in lobby states', () => {
+    expect(shouldResetBigExplosionTracking('game_prep')).toBe(true)
+    expect(shouldResetBigExplosionTracking('playing')).toBe(false)
+  })
+})

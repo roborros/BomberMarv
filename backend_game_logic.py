@@ -41,10 +41,12 @@ class BackendGameLogic:
                 GameCommand.RESTART_GAME: self._transition_win_to_ready,
             },
             "champion": {
-                GameCommand.RESTART_GAME: self._transition_champion_to_ready,
+                GameCommand.RESTART_GAME: self._transition_champion_to_boss,
+                GameCommand.RESET_SERIES: self._transition_reset_series,
             },
             "boss_result": {
-                GameCommand.RESTART_GAME: self._transition_boss_result_to_ready,
+                GameCommand.RESTART_GAME: self._transition_reset_series,
+                GameCommand.RESET_SERIES: self._transition_reset_series,
             },
         }
         
@@ -139,18 +141,17 @@ class BackendGameLogic:
         self.game.game_state = "get_ready"
         return True
     
-    def _transition_champion_to_ready(self, data: Dict[str, Any]) -> bool:
-        """Transition from champion to ready state"""
-        # Reset trophy counters now that champion has been announced
-        if hasattr(self.game, 'reset_trophies'):
-            self.game.reset_trophies()
+    def _transition_champion_to_boss(self, data: Dict[str, Any]) -> bool:
+        if hasattr(self.game, "continue_from_champion"):
+            return bool(self.game.continue_from_champion())
         self.game.init_game()
         self.game.game_state = "get_ready"
         return True
 
-    def _transition_boss_result_to_ready(self, data: Dict[str, Any]) -> bool:
-        """Transition from boss result to ready state. Reset trophies and start fresh."""
-        if hasattr(self.game, 'reset_trophies'):
+    def _transition_reset_series(self, data: Dict[str, Any]) -> bool:
+        if hasattr(self.game, "reset_series_and_start"):
+            return bool(self.game.reset_series_and_start())
+        if hasattr(self.game, "reset_trophies"):
             self.game.reset_trophies()
         self.game.init_game()
         self.game.game_state = "get_ready"

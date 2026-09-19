@@ -49,12 +49,13 @@ From repo root:
 - Optional client query flags:
   - `?rtc=0` disables RTC on the web client.
   - `?rtc_codec=msgpack` requests MessagePack on RTC data channels (JSON remains default).
+  - `?ws_codec=json` keeps WebSocket gameplay as JSON (MessagePack is the default request).
   - `?strict=1` enables strict tick-indexed input sending from web client.
 
 ## Protocol
 
 - Protocol version: `2`
-- Client uses typed JSON messages (`hello`, `request_slot_list`, `select_slot`, `game_input`, `ping`).
+- Client uses typed messages (`hello`, `request_slot_list`, `select_slot`, `game_input`, `ping`). Control frames are JSON; gameplay can be MessagePack when `hello.encoding=msgpack` is accepted.
 - Server replies with typed envelopes and includes `protocol` in payloads.
 
 See:
@@ -67,7 +68,12 @@ See:
 
 - Python smoke imports: `python test_imports.py`
 - Python unit tests: `python -m unittest discover -s tests -p "test_*.py"`
+- Web client unit tests: `cd web_client && bun test` (or `bun run test` for Vitest)
 - Web client build/typecheck: `cd web_client && bun run build`
+
+Python coverage includes collisions, maze generation, explosions, protocol validation, lobby signatures, host game rules, latency/queue-delay helpers, gameplay input-to-sim, and a live WebSocket + HTTP diagnostics server on ephemeral ports.
+
+Web coverage includes snapshot merge/interpolation/keepalive, input hashing, board hashing, canvas backing-store scaling, wire JSON/msgpack codecs, explosion arm timing, win-stat highlighting, and lobby/reconnect helpers.
 
 ## Notes
 

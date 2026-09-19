@@ -1,15 +1,10 @@
+import { percentile } from './math'
+
 export interface BenchmarkResult {
   mode: 'canvas2d' | 'webgl';
   fps: number;
   avgFrameMs: number;
   p95FrameMs: number;
-}
-
-function percentile(values: number[], p: number): number {
-  if (values.length === 0) return 0
-  const sorted = [...values].sort((a, b) => a - b)
-  const idx = Math.max(0, Math.min(sorted.length - 1, Math.floor((p / 100) * (sorted.length - 1))))
-  return sorted[idx]
 }
 
 async function runCanvas2dBenchmark(canvas: HTMLCanvasElement, durationMs = 3000): Promise<BenchmarkResult> {

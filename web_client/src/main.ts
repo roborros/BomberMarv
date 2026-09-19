@@ -7,6 +7,7 @@ import type {
   GameStateDeltaMessage,
   GameStateMessage,
   HelloAckMessage,
+  NetMetricsMessage,
   RegistrationConfirmedMessage,
   RegistrationRejectedMessage,
   RtcFailedMessage,
@@ -14,9 +15,46 @@ import type {
   RtcOfferMessage,
   RtcReadyMessage,
   ServerMessage,
-  SlotListMessage
+  SlotListMessage,
+  StateKeepaliveMessage
 } from './types'
 import { isServerMessage } from './types'
+import { clamp, percentile, pushLimited, reconnectWaitMs } from './math'
+import {
+  applyKeyCode,
+  buildGameInputPayload,
+  hashInput,
+  resolveInputTickId,
+  shouldSendInput,
+  type InputKeys
+} from './input'
+import {
+  clipDisplayName,
+  computeRenderDelayMs,
+  extrapolateState,
+  humanStateName,
+  interpolateState,
+  mergeDelta,
+  applyKeepalive,
+  resolveLocalPredictionTargetIndex as findLocalPredictionIndex,
+  shouldDropSnapshot,
+  slotButtonLabel,
+  SNAPSHOT_BUFFER_LIMIT,
+  trimSnapshotBuffer,
+  updateServerClockOffset
+} from './netState'
+import { buildWsUrl } from './wsUrl'
+import { decodeIncomingWsData, encodeWsFrame, preferredWsCodec, type WsCodec } from './wireCodec'
+import { samplePresentAgeMs, sampleRttMs } from './latency'
+import {
+  BIG_EXPLOSION_TILE_THRESHOLD,
+  BIG_EXPLOSION_WINDOW_MS,
+  collectNewExplosionKeys,
+  collectPlayerAudioCues,
+  crossedBigExplosionThreshold,
+  shouldResetBigExplosionTracking,
+  uniqueTilesInWindow
+} from './audioEvents'
 
 const PROTOCOL_VERSION = 2
 const INPUT_HEARTBEAT_MS = 120
@@ -25,16 +63,16 @@ const MAX_RENDER_FPS = 60
 const PING_INTERVAL_MS = 10000
 const RECONNECT_BASE_MS = 500
 const RECONNECT_MAX_MS = 6000
-const SNAPSHOT_BUFFER_LIMIT = 16
 const KEYFRAME_STALE_MS = 1500
 const AUDIO_COOLDOWN_MS = 40
-const EXTRAPOLATE_MAX_MS = 70
+const BIG_EXPLOSION_SOUND_DELAY_MS = 300
 const LOCAL_PREDICTION_MAX_OFFSET_PX = 9
 const LOCAL_PREDICTION_LERP = 0.38
 const LOCAL_PREDICTION_MAX_OFFSET_RTC_PX = 6
 const RTC_ENABLED = new URLSearchParams(window.location.search).get('rtc') !== '0'
 const RTC_RETRY_MS = 4000
 const RTC_CODEC: 'json' | 'msgpack' = new URLSearchParams(window.location.search).get('rtc_codec') === 'msgpack' ? 'msgpack' : 'json'
+const WS_CODEC_PREF: WsCodec = preferredWsCodec(window.location.search)
 const STRICT_INPUT_MODE = new URLSearchParams(window.location.search).get('strict') === '1'
 
 window.onerror = (msg, url, line, col, error) => {
@@ -107,6 +145,8 @@ let reconnectAttempts = 0
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let pingTimer: ReturnType<typeof setInterval> | null = null
 let ws: WebSocket | null = null
+let wsCodec: WsCodec = 'json'
+let latestHudMetrics: GameState['_net_metrics'] | undefined
 let rtcPeer: RTCPeerConnection | null = null
 let rtcInputChannel: RTCDataChannel | null = null
 let rtcStateChannel: RTCDataChannel | null = null
@@ -134,16 +174,21 @@ let localLastAuthPos: { x: number; y: number } | null = null
 let audioUnlocked = false
 let lastSoundAt: Record<string, number> = {}
 let knownExplosionKeys = new Set<string>()
+let recentExplosionEvents: { startTime: number; cells: [number, number][] }[] = []
+let bigExplosionOverThreshold = false
+let bigExplosionSoundTimers: number[] = []
+let lastKeyframeRequestAt = 0
 
 const SOUND_EXPLOSION = '/sounds/explosion_short.wav'
 const SOUND_EXPLOSION_QD = '/sounds/explosion_short_qd.wav'
 const SOUND_BONUS = '/sounds/pick-bonus.wav'
 const SOUND_DEATH = '/sounds/death.wav'
 const SOUND_QD = '/sounds/quad_damage.mp3'
+const SOUND_BIG_EXPLOSION = '/sounds/mocny_stral.mp3'
 
 const audioCache = new Map<string, HTMLAudioElement>()
 
-const keys = {
+const keys: InputKeys = {
   up: false,
   down: false,
   left: false,
@@ -158,15 +203,20 @@ let lastRenderDrawTs = 0
 let localInputTick = 0
 
 function getWsUrl(): string {
-  let host = window.location.hostname
-  if (host === 'localhost') host = '127.0.0.1'
-  return `ws://${host}:8765`
+  return buildWsUrl(window.location.hostname)
 }
 
-function sendMessage(message: Record<string, unknown>) {
+function sendMessage(message: object) {
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(message))
+    ws.send(encodeWsFrame(message as { type: string }, wsCodec))
   }
+}
+
+function requestKeyframe() {
+  const now = Date.now()
+  if (now - lastKeyframeRequestAt < 120) return
+  lastKeyframeRequestAt = now
+  sendMessage({ type: 'request_keyframe', protocol: PROTOCOL_VERSION, seq: latestSeq })
 }
 
 function isRtcInputReady(): boolean {
@@ -184,6 +234,8 @@ function scheduleRtcRetry() {
         ts: Date.now(),
         webrtc_supported: RTC_ENABLED && !!window.RTCPeerConnection,
         rtc_codec: RTC_CODEC,
+        encoding: WS_CODEC_PREF,
+        ws_codec: WS_CODEC_PREF,
         strict_input_mode: STRICT_INPUT_MODE
       })
     }
@@ -283,7 +335,7 @@ function ensureAudioUnlocked() {
   if (audioUnlocked) return
   audioUnlocked = true
   // Prime audio elements after first user gesture.
-  ;[SOUND_EXPLOSION, SOUND_EXPLOSION_QD, SOUND_BONUS, SOUND_DEATH, SOUND_QD].forEach((src) => {
+  ;[SOUND_EXPLOSION, SOUND_EXPLOSION_QD, SOUND_BONUS, SOUND_DEATH, SOUND_QD, SOUND_BIG_EXPLOSION].forEach((src) => {
     if (!audioCache.has(src)) {
       const a = new Audio(src)
       a.preload = 'auto'
@@ -309,94 +361,69 @@ function playSound(src: string, volume: number) {
   void shot.play().catch(() => {})
 }
 
+function resetBigExplosionTracking() {
+  recentExplosionEvents = []
+  bigExplosionOverThreshold = false
+  for (const id of bigExplosionSoundTimers) window.clearTimeout(id)
+  bigExplosionSoundTimers = []
+}
+
+function scheduleBigExplosionSound() {
+  const id = window.setTimeout(() => {
+    bigExplosionSoundTimers = bigExplosionSoundTimers.filter((timerId) => timerId !== id)
+    playSound(SOUND_BIG_EXPLOSION, 0.4)
+  }, BIG_EXPLOSION_SOUND_DELAY_MS)
+  bigExplosionSoundTimers.push(id)
+}
+
 function processAudioEvents(previous: GameState | null, current: GameState) {
-  const newExplosionKeys = new Set<string>()
+  if (shouldResetBigExplosionTracking(current.state)) {
+    resetBigExplosionTracking()
+  }
+
+  const { keys: newExplosionKeys, newlySeen } = collectNewExplosionKeys(current.explosions, knownExplosionKeys)
   let explosionPlays = 0
-  for (const e of current.explosions) {
-    const c = e.cells[0]
-    if (!c) continue
-    const key = `${e.start_time}:${c[0]}:${c[1]}:${e.quad_damage ? 1 : 0}`
-    newExplosionKeys.add(key)
-    if (!knownExplosionKeys.has(key)) {
-      playSound(e.quad_damage ? SOUND_EXPLOSION_QD : SOUND_EXPLOSION, 0.12)
+  for (const ev of newlySeen) {
+    if (explosionPlays < 4) {
+      playSound(ev.quadDamage ? SOUND_EXPLOSION_QD : SOUND_EXPLOSION, 0.12)
       explosionPlays += 1
-      if (explosionPlays >= 4) break
     }
   }
   knownExplosionKeys = newExplosionKeys
+
+  const cutoff = current.time - BIG_EXPLOSION_WINDOW_MS
+  recentExplosionEvents = recentExplosionEvents.filter((ev) => ev.startTime >= cutoff)
+  const agedCount = uniqueTilesInWindow(recentExplosionEvents, current.time)
+  bigExplosionOverThreshold = agedCount > BIG_EXPLOSION_TILE_THRESHOLD
+  if (newlySeen.length) {
+    recentExplosionEvents.push(...newlySeen)
+    const tileCount = uniqueTilesInWindow(recentExplosionEvents, current.time)
+    if (crossedBigExplosionThreshold(bigExplosionOverThreshold, tileCount)) {
+      scheduleBigExplosionSound()
+    }
+    bigExplosionOverThreshold = tileCount > BIG_EXPLOSION_TILE_THRESHOLD
+  }
 
   if (!previous) return
   const prevPlayers = new Map(previous.players.map((p) => [p.id, p]))
   for (const p of current.players) {
     const prev = prevPlayers.get(p.id)
     if (!prev) continue
-    if (prev.alive && !p.alive) {
-      playSound(SOUND_DEATH, 0.12)
-    }
-    if (!prev.quad_damage && p.quad_damage) {
-      playSound(SOUND_QD, 0.12)
-    }
-    const prevFire = prev.fire_power ?? 0
-    const prevBomb = prev.bomb_capacity ?? 0
-    const nextFire = p.fire_power ?? prevFire
-    const nextBomb = p.bomb_capacity ?? prevBomb
-    if (nextFire > prevFire || nextBomb > prevBomb) {
-      playSound(SOUND_BONUS, 0.1)
+    for (const cue of collectPlayerAudioCues(prev, p)) {
+      if (cue === 'death') playSound(SOUND_DEATH, 0.12)
+      else if (cue === 'qd') playSound(SOUND_QD, 0.12)
+      else if (cue === 'bonus') playSound(SOUND_BONUS, 0.1)
     }
   }
-}
-
-function pushLimited(target: number[], value: number, max = 300) {
-  target.push(value)
-  if (target.length > max) target.splice(0, target.length - max)
-}
-
-function percentile(values: number[], p: number): number {
-  if (values.length === 0) return 0
-  const sorted = [...values].sort((a, b) => a - b)
-  const idx = Math.max(0, Math.min(sorted.length - 1, Math.floor((p / 100) * (sorted.length - 1))))
-  return sorted[idx]
-}
-
-function cloneState(state: GameState): GameState {
-  return {
-    ...state,
-    board: state.board.map((row) => [...row]),
-    players: state.players.map((p) => ({ ...p })),
-    bombs: state.bombs.map((b) => ({ ...b })),
-    explosions: state.explosions.map((e) => ({ ...e, cells: e.cells.map(([x, y]) => [x, y]) })),
-    powerups: state.powerups.map((p) => ({ ...p })),
-    crushing_walls: { ...state.crushing_walls },
-    _net_metrics: state._net_metrics ? { ...state._net_metrics } : undefined
-  }
-}
-
-function mergeDelta(base: GameState, delta: Partial<GameState>): GameState {
-  const merged = cloneState(base)
-  if (delta.time !== undefined) merged.time = delta.time
-  if (delta.state !== undefined) merged.state = delta.state
-  if (delta.board !== undefined) merged.board = delta.board.map((row) => [...row])
-  if (delta.players !== undefined) merged.players = delta.players.map((p) => ({ ...p }))
-  if (delta.bombs !== undefined) merged.bombs = delta.bombs.map((b) => ({ ...b }))
-  if (delta.explosions !== undefined) merged.explosions = delta.explosions.map((e) => ({ ...e, cells: e.cells.map(([x, y]) => [x, y]) }))
-  if (delta.powerups !== undefined) merged.powerups = delta.powerups.map((p) => ({ ...p }))
-  if (delta.crushing_walls !== undefined) merged.crushing_walls = { ...delta.crushing_walls }
-  if (delta._net_metrics !== undefined) merged._net_metrics = { ...(merged._net_metrics ?? {}), ...delta._net_metrics }
-  if (delta._host_published_at_ms !== undefined) merged._host_published_at_ms = delta._host_published_at_ms
-  return merged
 }
 
 function ingestSnapshot(state: GameState, seq: number, serverTs?: number, recvTs = Date.now()) {
-  if (latestSeq >= 0 && seq <= latestSeq) return
+  if (shouldDropSnapshot(latestSeq, seq)) return
   const previous = latestState
   if (typeof serverTs === 'number') {
     const sampleOffset = Date.now() - serverTs
-    if (!hasServerClockOffset) {
-      serverClockOffsetMs = sampleOffset
-      hasServerClockOffset = true
-    } else {
-      serverClockOffsetMs = (serverClockOffsetMs * 0.9) + (sampleOffset * 0.1)
-    }
+    serverClockOffsetMs = updateServerClockOffset(hasServerClockOffset ? serverClockOffsetMs : null, sampleOffset)
+    hasServerClockOffset = true
   }
   if (snapshotBuffer.length > 0) {
     const interval = recvTs - snapshotBuffer[snapshotBuffer.length - 1].recvTs
@@ -406,50 +433,7 @@ function ingestSnapshot(state: GameState, seq: number, serverTs?: number, recvTs
   latestSeq = seq
   processAudioEvents(previous, state)
   snapshotBuffer.push({ seq, recvTs, serverTs, state })
-  if (snapshotBuffer.length > SNAPSHOT_BUFFER_LIMIT) {
-    snapshotBuffer = snapshotBuffer.slice(snapshotBuffer.length - SNAPSHOT_BUFFER_LIMIT)
-  }
-}
-
-function interpolateState(a: GameState, b: GameState, alpha: number): GameState {
-  const clamped = Math.max(0, Math.min(1, alpha))
-  const playersById = new Map<number, typeof a.players[number]>()
-  a.players.forEach((p) => playersById.set(p.id, p))
-  const players = b.players.map((next) => {
-    const prev = playersById.get(next.id)
-    if (!prev) return { ...next }
-    return {
-      ...next,
-      x: prev.x + (next.x - prev.x) * clamped,
-      y: prev.y + (next.y - prev.y) * clamped
-    }
-  })
-  return {
-    ...b,
-    time: a.time + (b.time - a.time) * clamped,
-    players
-  }
-}
-
-function extrapolateState(previous: GameState, latest: GameState, aheadMs: number): GameState {
-  const dt = latest.time - previous.time
-  if (dt <= 0 || aheadMs <= 0) return latest
-  const ahead = Math.min(EXTRAPOLATE_MAX_MS, Math.max(0, aheadMs))
-  const prevPlayers = new Map(previous.players.map((p) => [p.id, p]))
-  const boardRows = latest.board.length
-  const boardCols = latest.board[0]?.length ?? 0
-  const maxX = boardCols * 100
-  const maxY = boardRows * 100
-  const players = latest.players.map((curr) => {
-    const prev = prevPlayers.get(curr.id)
-    if (!prev || !curr.alive) return { ...curr }
-    const vx = (curr.x - prev.x) / dt
-    const vy = (curr.y - prev.y) / dt
-    const nextX = Math.max(0, Math.min(maxX, curr.x + vx * ahead))
-    const nextY = Math.max(0, Math.min(maxY, curr.y + vy * ahead))
-    return { ...curr, x: nextX, y: nextY }
-  })
-  return { ...latest, time: latest.time + ahead, players }
+  snapshotBuffer = trimSnapshotBuffer(snapshotBuffer, SNAPSHOT_BUFFER_LIMIT)
 }
 
 function snapshotTimelineMs(snapshot: BufferedSnapshot): number {
@@ -457,21 +441,6 @@ function snapshotTimelineMs(snapshot: BufferedSnapshot): number {
     return snapshot.serverTs + serverClockOffsetMs
   }
   return snapshot.recvTs
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value))
-}
-
-function resolveLocalPredictionTargetIndex(state: GameState): number {
-  if (clientId === null || playerIds.length === 0) return -1
-  const assignedPlayerIds = new Set(playerIds)
-  return state.players.findIndex((p) => (
-    typeof p.owner_client_id === 'number'
-    && p.owner_client_id === clientId
-    && typeof p.owner_client_player_id === 'number'
-    && assignedPlayerIds.has(p.owner_client_player_id)
-  ))
 }
 
 function applyLocalPrediction(state: GameState, newestState: GameState): GameState {
@@ -482,8 +451,8 @@ function applyLocalPrediction(state: GameState, newestState: GameState): GameSta
     localLastAuthPos = null
     return state
   }
-  const idxDisplay = resolveLocalPredictionTargetIndex(state)
-  const idxNewest = resolveLocalPredictionTargetIndex(newestState)
+  const idxDisplay = findLocalPredictionIndex(state, clientId, playerIds)
+  const idxNewest = findLocalPredictionIndex(newestState, clientId, playerIds)
   if (idxDisplay < 0 || idxNewest < 0) {
     localVisualOffset = { x: 0, y: 0 }
     localPredictionTargetKey = null
@@ -545,39 +514,42 @@ function applyLocalPrediction(state: GameState, newestState: GameState): GameSta
 }
 
 function getRenderDelayMs(): number {
-  const p50 = percentile(arrivalIntervalsMs, 50) || 16
-  const p95 = percentile(arrivalIntervalsMs, 95) || p50
-  const p99 = percentile(arrivalIntervalsMs, 99) || p95
-  const jitter = Math.max(0, p95 - p50)
-  const burstJitter = Math.max(0, p99 - p95)
-  const minDelay = transportActive === 'rtc' ? 3 : 6
-  const maxDelay = transportActive === 'rtc' ? 14 : (STRICT_INPUT_MODE ? 26 : 22)
-  const targetDelay = Math.max(minDelay, Math.min(maxDelay, p50 * 0.35 + jitter * 0.5 + burstJitter * 0.25 + 2))
-  smoothedRenderDelayMs = (smoothedRenderDelayMs * 0.85) + (targetDelay * 0.15)
-  return smoothedRenderDelayMs
+  const result = computeRenderDelayMs({
+    intervals: arrivalIntervalsMs,
+    transportActive,
+    strictInputMode: STRICT_INPUT_MODE,
+    smoothed: smoothedRenderDelayMs
+  })
+  smoothedRenderDelayMs = result.smoothed
+  return result.delay
 }
 
 function renderSlots(msg: SlotListMessage) {
   slotContainerEl.innerHTML = ''
-  for (let i = 1; i <= 6; i++) {
-    const key = i.toString()
+  const keys = Object.keys(msg.slots).sort((a, b) => Number(a) - Number(b))
+  for (const key of keys) {
+    const i = Number(key)
     const isTaken = msg.slots[key] === true
     const reason = msg.slot_reasons?.[key]
     const btn = document.createElement('button')
     btn.className = `slot-btn ${isTaken ? 'taken' : ''}`
     btn.dataset.slot = key
     btn.disabled = isTaken
-    let label = 'Join'
-    if (isTaken) {
-      label = reason === 'local' ? 'Local' : 'Remote'
-    }
-    btn.innerHTML = `P${i}<br><span style="font-size:24px">${label}</span>`
+    const label = slotButtonLabel(isTaken, reason)
+    btn.innerHTML = `<span class="slot-id">P${i}</span><span class="slot-label">${label}</span>`
     slotContainerEl.appendChild(btn)
+  }
+  const threshold = msg.trophy_win_threshold ?? 3
+  const kicker = document.getElementById('lobby-kicker')
+  const help = document.getElementById('lobby-help')
+  if (kicker) kicker.textContent = `First to ${threshold} trophies`
+  if (help) {
+    help.textContent = `Pick a display name, choose a color slot, then join. Match stats accumulate until someone claims ${threshold} trophies.`
   }
 }
 
 function getPlayerName(): string {
-  return playerNameInputEl.value.trim().slice(0, 20)
+  return clipDisplayName(playerNameInputEl.value)
 }
 
 function startHeartbeat() {
@@ -595,6 +567,10 @@ function handleServerMessage(msg: ServerMessage) {
 
   if (msg.type === 'hello_ack') {
     const ack = msg as HelloAckMessage
+    const negotiated = ack.ws_codec ?? ack.encoding
+    if (negotiated === 'msgpack' || negotiated === 'json') {
+      wsCodec = negotiated
+    }
     if (ack.webrtc_offered && RTC_ENABLED && !!window.RTCPeerConnection) {
       statusDivEl.textContent = 'Connected. Negotiating low-latency transport...'
     }
@@ -657,6 +633,7 @@ function handleServerMessage(msg: ServerMessage) {
   if (msg.type === 'registration_rejected') {
     const rejected = msg as RegistrationRejectedMessage
     lobbyStatusEl.textContent = `Error: ${rejected.message}`
+    lobbyOverlayEl.classList.remove('hidden')
     sendMessage({ type: 'request_slot_list', protocol: PROTOCOL_VERSION })
     return
   }
@@ -673,6 +650,7 @@ function handleServerMessage(msg: ServerMessage) {
     const deltaMsg = msg as GameStateDeltaMessage
     if (!isRegistered || !latestState) return
     if (deltaMsg.base_seq !== latestSeq) {
+      requestKeyframe()
       return
     }
     const merged = mergeDelta(latestState, deltaMsg.delta)
@@ -680,11 +658,42 @@ function handleServerMessage(msg: ServerMessage) {
     return
   }
 
+  if (msg.type === 'state_keepalive') {
+    const keep = msg as StateKeepaliveMessage
+    if (!isRegistered) return
+    if (!latestState) {
+      requestKeyframe()
+      return
+    }
+    if (shouldDropSnapshot(latestSeq, keep.seq)) return
+    if (latestState) {
+      latestState = applyKeepalive(latestState, keep)
+    }
+    latestSeq = keep.seq
+    if (snapshotBuffer.length > 0) {
+      const last = snapshotBuffer[snapshotBuffer.length - 1]
+      last.state = applyKeepalive(last.state, keep)
+      last.seq = keep.seq
+      last.recvTs = Date.now()
+      if (typeof keep.server_timestamp === 'number') last.serverTs = keep.server_timestamp
+    }
+    return
+  }
+
+  if (msg.type === 'net_metrics') {
+    const metricsMsg = msg as NetMetricsMessage
+    latestHudMetrics = metricsMsg.metrics
+    if (latestState) {
+      latestState = { ...latestState, _net_metrics: metricsMsg.metrics }
+    }
+    return
+  }
+
   if (msg.type === 'input_ack') {
     const now = Date.now()
     const original = msg.original_timestamp
     if (typeof original === 'number') {
-      const sample = Math.max(0, now - original)
+      const sample = sampleRttMs(original, now)
       latencySamples5s.push({ ts: now, value: sample })
       const cutoff = now - 5000
       latencySamples5s = latencySamples5s.filter((s) => s.ts >= cutoff)
@@ -703,27 +712,34 @@ function handleServerMessage(msg: ServerMessage) {
   }
 }
 
-function handleMessage(raw: string) {
-  try {
-    const decodeStart = performance.now()
-    const parsed = JSON.parse(raw) as unknown
-    if (!isServerMessage(parsed)) return
-    pushLimited(decodeSamplesMs, performance.now() - decodeStart)
-    handleServerMessage(parsed as ServerMessage)
-  } catch (e) {
-    console.error('Error parsing message:', e)
-  }
+function handleMessage(raw: unknown) {
+  void (async () => {
+    try {
+      const decodeStart = performance.now()
+      const parsed = await decodeIncomingWsData(raw)
+      if (!isServerMessage(parsed)) return
+      pushLimited(decodeSamplesMs, performance.now() - decodeStart)
+      handleServerMessage(parsed as ServerMessage)
+    } catch (e) {
+      console.error('Error parsing message:', e)
+    }
+  })()
 }
 
 function connectWebSocket() {
   const wsUrl = getWsUrl()
   ws = new WebSocket(wsUrl)
+  ws.binaryType = 'arraybuffer'
 
   ws.onopen = () => {
     reconnectAttempts = 0
+    wsCodec = 'json'
+    latestHudMetrics = undefined
     statusDivEl.textContent = 'Connected. Waiting for lobby...'
     lobbyStatusEl.textContent = 'Connected. Requesting slots...'
-    lobbyOverlayEl.classList.remove('hidden')
+    if (pendingSlotSelection === null) {
+      lobbyOverlayEl.classList.remove('hidden')
+    }
     snapshotBuffer = []
     latestState = null
     latestSeq = -1
@@ -734,12 +750,15 @@ function connectWebSocket() {
     localLastAuthPos = null
     transportActive = 'ws'
     knownExplosionKeys = new Set()
+    resetBigExplosionTracking()
     sendMessage({
       type: 'hello',
       protocol: PROTOCOL_VERSION,
       ts: Date.now(),
       webrtc_supported: RTC_ENABLED && !!window.RTCPeerConnection,
       rtc_codec: RTC_CODEC,
+      encoding: WS_CODEC_PREF,
+      ws_codec: WS_CODEC_PREF,
       strict_input_mode: STRICT_INPUT_MODE
     })
     if (currentPlayerName) {
@@ -752,7 +771,7 @@ function connectWebSocket() {
     startHeartbeat()
   }
 
-  ws.onmessage = (event) => handleMessage(event.data as string)
+  ws.onmessage = (event) => handleMessage(event.data)
 
   ws.onerror = (err) => {
     console.error('WebSocket error:', err)
@@ -778,7 +797,8 @@ function connectWebSocket() {
     localLastAuthPos = null
     transportActive = 'ws'
     knownExplosionKeys = new Set()
-    const waitMs = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * (2 ** (reconnectAttempts - 1)))
+    resetBigExplosionTracking()
+    const waitMs = reconnectWaitMs(reconnectAttempts, RECONNECT_BASE_MS, RECONNECT_MAX_MS)
     if (reconnectTimer) clearTimeout(reconnectTimer)
     reconnectTimer = setTimeout(connectWebSocket, waitMs)
   }
@@ -814,68 +834,17 @@ function applyRenderToggleState() {
 applyRenderToggleState()
 renderToggleEl.addEventListener('change', applyRenderToggleState)
 
-function humanStateName(rawState: string | undefined): string {
-  switch (rawState) {
-    case 'startup':
-      return 'Waiting for game to start...'
-    case 'game_prep':
-      return 'Game setup in progress...'
-    case 'get_ready':
-      return 'Get ready...'
-    case 'playing':
-      return 'Game in progress...'
-    case 'win':
-      return 'Round finished.'
-    case 'champion':
-      return 'Champion screen.'
-    case 'boss_fight':
-      return 'Boss fight!'
-    case 'boss_result':
-      return 'Boss fight result.'
-    default:
-      return 'Waiting for game state...'
-  }
-}
-
 function updateKey(code: string, pressed: boolean) {
-  let changed = false
-  switch (code) {
-    case 'ArrowUp':
-    case 'KeyW':
-      changed = keys.up !== pressed
-      keys.up = pressed
-      break
-    case 'ArrowDown':
-    case 'KeyS':
-      changed = keys.down !== pressed
-      keys.down = pressed
-      break
-    case 'ArrowLeft':
-    case 'KeyA':
-      changed = keys.left !== pressed
-      keys.left = pressed
-      break
-    case 'ArrowRight':
-    case 'KeyD':
-      changed = keys.right !== pressed
-      keys.right = pressed
-      break
-    case 'Space':
-    case 'Enter':
-      changed = keys.bomb !== pressed
-      keys.bomb = pressed
-      break
-    default:
-      break
-  }
-  if (changed) {
+  const result = applyKeyCode(keys, code, pressed)
+  keys.up = result.keys.up
+  keys.down = result.keys.down
+  keys.left = result.keys.left
+  keys.right = result.keys.right
+  keys.bomb = result.keys.bomb
+  if (result.changed) {
     keysDirty = true
     maybeSendInput(true)
   }
-}
-
-function inputHash(): string {
-  return `${keys.up ? 1 : 0}${keys.down ? 1 : 0}${keys.left ? 1 : 0}${keys.right ? 1 : 0}${keys.bomb ? 1 : 0}`
 }
 
 function maybeSendInput(force = false) {
@@ -883,38 +852,29 @@ function maybeSendInput(force = false) {
   if (clientId === null || !isRegistered || playerIds.length === 0) return
   const now = Date.now()
   const minDeltaMs = 1000 / MAX_SEND_FPS
-  if (!force && now - lastInputSentAt < minDeltaMs) return
-  const hash = inputHash()
-  const heartbeatDue = now - lastInputSentAt >= INPUT_HEARTBEAT_MS
-  if (!force && !keysDirty && !heartbeatDue) return
-  if (!force && hash === lastInputHash && !heartbeatDue) return
+  const hash = hashInput(keys)
+  if (!shouldSendInput({
+    force,
+    now,
+    lastSentAt: lastInputSentAt,
+    keysDirty,
+    hash,
+    lastHash: lastInputHash,
+    minDeltaMs,
+    heartbeatMs: INPUT_HEARTBEAT_MS
+  })) return
 
   const playerId = playerIds[0]
-  const inputData = [
+  const hostTick = latestState?._sim_tick ?? latestState?._net_metrics?.sim_tick
+  const tickId = resolveInputTickId(hostTick, localInputTick)
+  const payload = buildGameInputPayload({
+    protocol: PROTOCOL_VERSION,
     clientId,
     playerId,
-    keys.up ? 1 : 0,
-    keys.down ? 1 : 0,
-    keys.left ? 1 : 0,
-    keys.right ? 1 : 0,
-    keys.bomb ? 1 : 0
-  ]
-
-  const payload = {
-    type: 'game_input',
-    protocol: PROTOCOL_VERSION,
-    tick_id: localInputTick,
-    input: inputData,
-    input_frame: {
-      player_id: playerId,
-      up: keys.up ? 1 : 0,
-      down: keys.down ? 1 : 0,
-      left: keys.left ? 1 : 0,
-      right: keys.right ? 1 : 0,
-      bomb: keys.bomb ? 1 : 0
-    },
-    client_timestamp: now
-  }
+    keys,
+    tickId,
+    timestamp: now
+  })
   if (isRtcInputReady()) {
     try {
       if (RTC_CODEC === 'msgpack') {
@@ -992,12 +952,10 @@ function loop(ts: number) {
       }
     }
 
-    const hostFps = displayState._net_metrics?.host_fps_5s
-    const hostRenderFps = displayState._net_metrics?.host_render_fps_5s
-    const publishTs = displayState._host_published_at_ms
-    if (typeof publishTs === 'number') {
-      pushLimited(presentDelaySamplesMs, Math.max(0, Date.now() - publishTs))
-    }
+    const hostFps = latestHudMetrics?.host_fps_5s ?? displayState._net_metrics?.host_fps_5s
+    const hostRenderFps = latestHudMetrics?.host_render_fps_5s ?? displayState._net_metrics?.host_render_fps_5s
+    const queueDelayP95 = latestHudMetrics?.input_queue_delay_p95_ms ?? latestHudMetrics?.input_apply_p95_ms
+    pushLimited(presentDelaySamplesMs, samplePresentAgeMs(newest.recvTs, frameNow))
 
     if (renderEnabled) {
       const predictedState = applyLocalPrediction(displayState, newest.state)
@@ -1009,17 +967,18 @@ function loop(ts: number) {
         renderPipelineP95Ms: percentile(pipelineSamplesMs, 95),
         presentDelayP95Ms: percentile(presentDelaySamplesMs, 95),
         decodeP95Ms: percentile(decodeSamplesMs, 95),
-        localCorrectionP95Px: percentile(localPredictionErrorPx, 95)
+        localCorrectionP95Px: percentile(localPredictionErrorPx, 95),
+        queueDelayP95Ms: queueDelayP95
       })
       debugLineEl.textContent = debugText
       const jitterMs = Math.max(0, (percentile(arrivalIntervalsMs, 95) || 0) - (percentile(arrivalIntervalsMs, 50) || 0))
-      const simTick = predictedState._net_metrics?.sim_tick ?? 0
-      statusDivEl.textContent = `Transport: ${transportActive.toUpperCase()} | Avg latency(5s): ${avgLatency5sMs.toFixed(1)} ms | Jitter: ${jitterMs.toFixed(1)} ms | Tick: ${simTick} | Strict: ${STRICT_INPUT_MODE ? 'ON' : 'OFF'} | Fallbacks: ${rtcFallbackEvents}`
+      const simTick = predictedState._sim_tick ?? latestHudMetrics?.sim_tick ?? predictedState._net_metrics?.sim_tick ?? 0
+      statusDivEl.textContent = `Transport: ${transportActive.toUpperCase()} | RTT(5s): ${avgLatency5sMs.toFixed(1)} ms | Jitter: ${jitterMs.toFixed(1)} ms | Tick: ${simTick} | Strict: ${STRICT_INPUT_MODE ? 'ON' : 'OFF'} | Fallbacks: ${rtcFallbackEvents}`
     } else {
-      const latencyText = `Latency(5s): ${avgLatency5sMs.toFixed(1)} ms`
+      const latencyText = `RTT(5s): ${avgLatency5sMs.toFixed(1)} ms`
       const fpsText = `Client FPS(5s): ${avgClientFps5s.toFixed(1)}`
       const hostFpsText = `Host SIM FPS(5s): ${(hostFps ?? 0).toFixed(1)}`
-      const presentDelayText = `PresentDelay p95: ${percentile(presentDelaySamplesMs, 95).toFixed(1)} ms`
+      const presentDelayText = `PresentAge p95: ${percentile(presentDelaySamplesMs, 95).toFixed(1)} ms`
       const decodeText = `Decode p95: ${percentile(decodeSamplesMs, 95).toFixed(2)} ms`
       stateOnlyEl.textContent = `${humanStateName(displayState.state)} | ${latencyText} | ${fpsText} | ${hostFpsText} | ${presentDelayText} | ${decodeText}`
       debugLineEl.textContent = stateOnlyEl.textContent

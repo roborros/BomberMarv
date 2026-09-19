@@ -1,4 +1,9 @@
 import type { GameState, PlayerState, BombState, ExplosionState, PowerUpState } from './types';
+import { computeBoardSignature } from './boardHash';
+import { isPlayerNearBomb, isPlayerNearExplosion } from './explosionVisual';
+import { buildWinStatRows } from './winStats';
+import { computeCanvasBackingStore } from './canvasScale';
+import { BOSS_COLOR, BOSS_NAME, BOSS_QUOTE, bossWinsLabel, championAnnouncement } from './championChallenge';
 
 // Constants matching Python host rendering
 const CELL_SIZE = 100;
@@ -15,7 +20,9 @@ const PLAYER_COLORS = [
     '#96C864', // Light Green (150, 200, 100)
     '#C86496', // Light Pink  (200, 100, 150)
     '#64C896', // Light Teal  (100, 200, 150)
-    '#9664C8'  // Light Purple (150, 100, 200)
+    '#9664C8', // Light Purple (150, 100, 200)
+    '#DC5A46', // Coral (220, 90, 70)
+    '#50A0DC'  // Sky (80, 160, 220)
 ];
 
 const BOMB_COLOR = '#787878'; // (120, 120, 120)
@@ -36,8 +43,11 @@ export class Renderer {
     private blastCenter: HTMLImageElement | null = null;
     private blastCenterQd: HTMLImageElement | null = null;
     private lastCanvasScale = 1;
+    private worldToBackingX = 1;
+    private worldToBackingY = 1;
     private avatarCache: Map<string, HTMLImageElement | null> = new Map();
     private playerScaredUntil: Map<number, number> = new Map();
+    private playerNearBombSince: Map<number, number> = new Map();
 
     constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
@@ -54,9 +64,8 @@ export class Renderer {
         window.addEventListener('resize', () => this.fitCanvasToViewport());
     }
 
-    public render(state: GameState, metrics?: { latency5sMs?: number; fps5s?: number; hostFps5s?: number; hostRenderFps5s?: number; renderPipelineP95Ms?: number; presentDelayP95Ms?: number; decodeP95Ms?: number; localCorrectionP95Px?: number; }): string {
+    public render(state: GameState, metrics?: { latency5sMs?: number; fps5s?: number; hostFps5s?: number; hostRenderFps5s?: number; renderPipelineP95Ms?: number; presentDelayP95Ms?: number; decodeP95Ms?: number; localCorrectionP95Px?: number; queueDelayP95Ms?: number; }): string {
         const renderStart = performance.now();
-        // Update dimensions if needed based on board size
         if (state.board && state.board.length > 0) {
             const rows = state.board.length;
             const cols = state.board[0].length;
@@ -66,34 +75,33 @@ export class Renderer {
             if (this.width !== newWidth || this.height !== newHeight) {
                 this.width = newWidth;
                 this.height = newHeight;
-                this.canvas.width = this.width;
-                this.canvas.height = this.height;
-                this.boardLayer.width = this.width;
-                this.boardLayer.height = this.height;
                 this.boardSignature = '';
-                this.fitCanvasToViewport();
             }
+            this.applyCanvasBacking();
         }
 
-        const signature = this.computeBoardSignature(state.board);
+        const signature = computeBoardSignature(state.board);
         if (signature !== this.boardSignature) {
             this.boardSignature = signature;
             this.rebuildBoardLayer(state.board);
         }
 
+        this.ctx.setTransform(1, 0, 0, 1, 0, 0);
         this.ctx.fillStyle = COLOR_BG;
-        this.ctx.fillRect(0, 0, this.width, this.height);
+        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
         this.ctx.drawImage(this.boardLayer, 0, 0);
+        this.ctx.setTransform(this.worldToBackingX, 0, 0, this.worldToBackingY, 0, 0);
+        this.ctx.imageSmoothingEnabled = true;
 
         state.powerups.forEach(p => this.drawPowerUp(p));
         state.bombs.forEach(b => this.drawBomb(b, state.time));
         state.players.forEach(player => this.drawPlayer(player, state));
         state.explosions.forEach(e => this.drawExplosion(e, state.time));
-        if (state.state === 'win' || state.state === 'champion') {
+        if (state.state === 'champion') {
+            this.drawChampionChallenge(state);
             this.drawWinStats(state);
-        }
-        if (state.state === 'boss_result') {
-            this.drawBossResult(state);
+        } else if (state.state === 'win' || state.state === 'boss_result') {
+            this.drawWinStats(state);
         }
         const renderDurationMs = performance.now() - renderStart;
         this.renderSamplesMs.push(renderDurationMs);
@@ -103,18 +111,35 @@ export class Renderer {
         return this.buildDebugLine(state, metrics, this.getRenderP95Ms());
     }
 
-    private fitCanvasToViewport() {
+    private applyCanvasBacking() {
         if (this.width <= 0 || this.height <= 0) {
             return;
         }
-        const horizontalPad = 40;
-        const verticalPad = 240;
-        const maxW = Math.max(320, window.innerWidth - horizontalPad);
-        const maxH = Math.max(240, window.innerHeight - verticalPad);
-        const scale = Math.min(maxW / this.width, maxH / this.height, 1);
-        this.lastCanvasScale = scale;
-        this.canvas.style.width = `${Math.floor(this.width * scale)}px`;
-        this.canvas.style.height = `${Math.floor(this.height * scale)}px`;
+        const store = computeCanvasBackingStore({
+            worldWidth: this.width,
+            worldHeight: this.height,
+            viewportWidth: window.innerWidth,
+            viewportHeight: window.innerHeight,
+            devicePixelRatio: window.devicePixelRatio || 1,
+        });
+        this.lastCanvasScale = store.cssScale;
+        this.worldToBackingX = store.worldToBackingX;
+        this.worldToBackingY = store.worldToBackingY;
+        this.canvas.style.width = `${store.cssWidth}px`;
+        this.canvas.style.height = `${store.cssHeight}px`;
+        if (this.canvas.width !== store.backingWidth || this.canvas.height !== store.backingHeight) {
+            this.canvas.width = store.backingWidth;
+            this.canvas.height = store.backingHeight;
+            this.boardLayer.width = store.backingWidth;
+            this.boardLayer.height = store.backingHeight;
+            this.boardSignature = '';
+            this.ctx.imageSmoothingEnabled = true;
+            this.boardLayerCtx.imageSmoothingEnabled = true;
+        }
+    }
+
+    private fitCanvasToViewport() {
+        this.applyCanvasBacking();
     }
 
     private loadImage(src: string): HTMLImageElement {
@@ -133,18 +158,17 @@ export class Renderer {
         this.blastCenterQd = this.loadImage('/img/blast_centre_qd.png');
     }
 
-    private computeBoardSignature(board: number[][]): string {
-        if (!board || board.length === 0) return 'empty';
-        const flattened = board.flat();
-        let hash = 2166136261;
-        for (let i = 0; i < flattened.length; i++) {
-            hash ^= (flattened[i] & 0xff);
-            hash = Math.imul(hash, 16777619);
-        }
-        return `${board.length}x${board[0].length}:${hash >>> 0}`;
+    private isPlayerNearExplosion(player: PlayerState, explosions: ExplosionState[], currentTimeMs: number): boolean {
+        return isPlayerNearExplosion(player, explosions, currentTimeMs);
+    }
+
+    private isPlayerNearBomb(player: PlayerState, bombs: BombState[]): boolean {
+        return isPlayerNearBomb(player, bombs);
     }
 
     private rebuildBoardLayer(board: number[][]) {
+        this.boardLayerCtx.setTransform(this.worldToBackingX, 0, 0, this.worldToBackingY, 0, 0);
+        this.boardLayerCtx.imageSmoothingEnabled = true;
         this.boardLayerCtx.fillStyle = COLOR_BG;
         this.boardLayerCtx.fillRect(0, 0, this.width, this.height);
         for (let y = 0; y < board.length; y++) {
@@ -185,40 +209,6 @@ export class Renderer {
         }
     }
 
-    private getExplosionActiveCells(explosion: ExplosionState, currentTimeMs: number): [number, number][] {
-        const norm = Math.min(1, Math.max(0, (currentTimeMs - explosion.start_time) / EXPLOSION_DURATION_MS));
-        let armFactor = 0;
-        if (norm < 0.2) armFactor = norm / 0.2;
-        else if (norm <= 0.7) armFactor = 1;
-        else armFactor = Math.max(0, 1 - ((norm - 0.7) / 0.3));
-        if (armFactor <= 0 || !explosion.cells?.length) return [];
-        const [cx, cy] = explosion.cells[0];
-        const cells: [number, number][] = [[cx, cy]];
-        let upMax = 0, downMax = 0, leftMax = 0, rightMax = 0;
-        for (const [x, y] of explosion.cells) {
-            if (x === cx && y < cy) upMax = Math.max(upMax, cy - y);
-            else if (x === cx && y > cy) downMax = Math.max(downMax, y - cy);
-            else if (y === cy && x < cx) leftMax = Math.max(leftMax, cx - x);
-            else if (y === cy && x > cx) rightMax = Math.max(rightMax, x - cx);
-        }
-        for (let i = 1; i <= Math.floor(armFactor * upMax); i++) cells.push([cx, cy - i]);
-        for (let i = 1; i <= Math.floor(armFactor * downMax); i++) cells.push([cx, cy + i]);
-        for (let i = 1; i <= Math.floor(armFactor * leftMax); i++) cells.push([cx - i, cy]);
-        for (let i = 1; i <= Math.floor(armFactor * rightMax); i++) cells.push([cx + i, cy]);
-        return cells;
-    }
-
-    private isPlayerNearExplosion(player: PlayerState, explosions: ExplosionState[], currentTimeMs: number): boolean {
-        const px = Math.floor(player.x / CELL_SIZE);
-        const py = Math.floor(player.y / CELL_SIZE);
-        for (const explosion of explosions) {
-            for (const [ex, ey] of this.getExplosionActiveCells(explosion, currentTimeMs)) {
-                if (Math.abs(px - ex) <= 1 && Math.abs(py - ey) <= 1) return true;
-            }
-        }
-        return false;
-    }
-
     private drawPlayer(player: PlayerState, state: GameState) {
         if (!player.alive) return;
 
@@ -232,13 +222,24 @@ export class Renderer {
         const size = (PYTHON_CELL_SIZE * 0.85) * SCALE; // PLAYER_DRAW_SCALE = 0.85
         const [dx, dy] = player.direction;
 
-        // Scared state: explosion nearby (max 1 cell) triggers O-mouth + bigger eyes for 1s
+        // Scared state: explosion nearby (max 1 cell) triggers O-mouth + bigger eyes for 1s;
+        // or standing next to a bomb for >1s
         let scared = false;
         if (this.isPlayerNearExplosion(player, state.explosions || [], currentTimeMs)) {
             this.playerScaredUntil.set(player.id, currentTimeMs + 1000);
         }
         scared = currentTimeMs < (this.playerScaredUntil.get(player.id) ?? 0);
         if (!scared) this.playerScaredUntil.delete(player.id);
+        if (!scared && this.isPlayerNearBomb(player, state.bombs || [])) {
+            if (!this.playerNearBombSince.has(player.id)) {
+                this.playerNearBombSince.set(player.id, currentTimeMs);
+            }
+            if (currentTimeMs - (this.playerNearBombSince.get(player.id) ?? 0) >= 1000) {
+                scared = true;
+            }
+        } else {
+            this.playerNearBombSince.delete(player.id);
+        }
 
         // Draw Shadow
         this.ctx.fillStyle = 'rgba(0,0,0,0.3)';
@@ -309,6 +310,25 @@ export class Renderer {
         this.ctx.arc(px + eyeOffX + eyeGap + dx * 2, py + eyeOffY - eyeGap * 0.7 + dy * 2, pupilRadius, 0, Math.PI * 2);
         this.ctx.fill();
 
+        // Glasses when quad damage is active
+        if (player.quad_damage) {
+            const leftEyeX = px + eyeOffX - eyeGap;
+            const rightEyeX = px + eyeOffX + eyeGap;
+            const eyeY = py + eyeOffY - eyeGap * 0.7;
+            const lensR = Math.max(8, eyeRadius * 1.8);
+            const frameW = Math.max(2, lensR / 4);
+            this.ctx.strokeStyle = 'rgb(0, 255, 255)';
+            this.ctx.lineWidth = frameW;
+            this.ctx.beginPath();
+            this.ctx.arc(leftEyeX, eyeY, lensR, 0, Math.PI * 2);
+            this.ctx.arc(rightEyeX, eyeY, lensR, 0, Math.PI * 2);
+            this.ctx.stroke();
+            this.ctx.beginPath();
+            this.ctx.moveTo(leftEyeX + lensR, eyeY);
+            this.ctx.lineTo(rightEyeX - lensR, eyeY);
+            this.ctx.stroke();
+        }
+
         // Mouth: line by default, circle when scared
         const mouthY = py + eyeGap * 0.8;
         this.ctx.fillStyle = 'rgb(40, 40, 40)';
@@ -320,6 +340,29 @@ export class Renderer {
         } else {
             const mouthW = size * 0.25;
             this.ctx.fillRect(px - mouthW, mouthY - 1, mouthW * 2, 2);
+        }
+
+        if (player.quad_damage) {
+            const pulse = 1 + 0.1 * Math.sin(2 * Math.PI * (currentTimeMs / 500));
+            const rectSize = (size + 10) * pulse;
+            this.ctx.strokeStyle = 'rgb(0, 255, 255)';
+            this.ctx.lineWidth = 4;
+            this.ctx.strokeRect(px - rectSize / 2, py - rectSize / 2, rectSize, rectSize);
+        }
+        const shieldUntil = player.shield_until ?? 0;
+        if (shieldUntil > currentTimeMs) {
+            const pulse = 1 + 0.08 * Math.sin(2 * Math.PI * (currentTimeMs / 280));
+            const shieldR = (size / 2 + 10) * pulse;
+            this.ctx.strokeStyle = 'rgb(210, 230, 255)';
+            this.ctx.lineWidth = 4;
+            this.ctx.beginPath();
+            this.ctx.arc(px, py, shieldR, 0, Math.PI * 2);
+            this.ctx.stroke();
+            this.ctx.strokeStyle = 'rgb(130, 180, 255)';
+            this.ctx.lineWidth = 2;
+            this.ctx.beginPath();
+            this.ctx.arc(px, py, Math.max(1, shieldR - 6), 0, Math.PI * 2);
+            this.ctx.stroke();
         }
 
         // Determine name
@@ -543,89 +586,380 @@ export class Renderer {
         return sorted[idx];
     }
 
-    private drawBossResult(state: GameState) {
-        const winner = state.boss_fight_winner;
-        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-        this.ctx.fillRect(0, 0, this.width, this.height);
-        this.ctx.fillStyle = 'white';
-        this.ctx.font = 'bold 96px sans-serif';
-        this.ctx.textAlign = 'center';
-        this.ctx.textBaseline = 'middle';
-        let text: string;
-        if (winner) {
-            text = winner.is_ai ? 'Boss wins!' : `${winner.name} wins!`;
-            if (winner.color && winner.color.length >= 3) {
-                this.ctx.fillStyle = `rgb(${winner.color[0]}, ${winner.color[1]}, ${winner.color[2]})`;
+    private winHeaderLines(label: string): string[] {
+        if (label === 'Death Time (s)') return ['Death', 'Time (s)'];
+        if (label === 'Walls Exploded') return ['Walls', 'Exploded'];
+        if (label === 'Cells Walked') return ['Cells', 'Walked'];
+        return [label];
+    }
+
+    private setUiFont(size: number, bold = false) {
+        this.ctx.font = `${bold ? 'bold ' : ''}${size}px Arial, sans-serif`;
+    }
+
+    private fitCanvasText(text: string, maxWidth: number): string {
+        if (this.ctx.measureText(text).width <= maxWidth) return text;
+        const ellipsis = '…';
+        if (this.ctx.measureText(ellipsis).width > maxWidth) return '';
+        let lo = 0;
+        let hi = text.length;
+        let best = ellipsis;
+        while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+            const candidate = text.slice(0, mid) + ellipsis;
+            if (this.ctx.measureText(candidate).width <= maxWidth) {
+                best = candidate;
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
             }
-        } else {
-            text = 'Draw!';
         }
-        this.ctx.fillText(text, this.width / 2, this.height / 2 - 40);
-        this.ctx.fillStyle = 'rgba(200, 200, 200, 0.9)';
-        this.ctx.font = '48px sans-serif';
-        this.ctx.fillText('Press Enter to continue', this.width / 2, this.height / 2 + 40);
+        return best;
+    }
+
+    private fillClippedText(text: string, x: number, y: number, width: number, height: number) {
+        this.ctx.save();
+        this.ctx.beginPath();
+        this.ctx.rect(x, y, Math.max(0, width), Math.max(0, height));
+        this.ctx.clip();
+        this.ctx.fillText(text, x, y);
+        this.ctx.restore();
+    }
+
+    private drawTrophyIcon(x: number, y: number, size: number) {
+        this.ctx.fillStyle = 'rgb(212, 175, 55)';
+        this.ctx.beginPath();
+        this.ctx.ellipse(x + size / 2, y + size * 0.3, size * 0.5, size * 0.3, 0, 0, Math.PI * 2);
+        this.ctx.fill();
+        this.ctx.fillRect(x + size * 0.2, y + size * 0.5, size * 0.6, size * 0.3);
+        this.ctx.fillRect(x + size * 0.3, y + size * 0.85, size * 0.4, size * 0.15);
+    }
+
+    private drawChampionChallenge(state: GameState) {
+        const w = this.width;
+        const h = this.height;
+        const bannerH = Math.floor(h * 0.38);
+        this.ctx.fillStyle = 'rgba(8, 10, 16, 0.55)';
+        this.ctx.fillRect(0, 0, w, bannerH);
+
+        const champion = state.players.find((p) => p.alive) || state.players[0];
+        const champName = champion?.name || 'Champion';
+        const champColor = champion?.color || [240, 214, 130];
+
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'top';
+        this.setUiFont(Math.max(22, Math.floor(h * 0.032)), true);
+        this.ctx.fillStyle = 'rgb(240, 214, 130)';
+        this.ctx.fillText('A champion emerges', w / 2, h * 0.02);
+
+        this.setUiFont(Math.max(18, Math.floor(h * 0.024)), true);
+        this.ctx.fillStyle = `rgb(${champColor[0]}, ${champColor[1]}, ${champColor[2]})`;
+        this.ctx.fillText(championAnnouncement(champName), w / 2, h * 0.055);
+
+        const champX = w * 0.28;
+        const bossX = w * 0.72;
+        const cy = bannerH * 0.58;
+        const portraitState: GameState = { ...state, bombs: [], explosions: [] };
+        const portraitScale = Math.max(1.4, Math.min(2.4, h / 720));
+        this.ctx.save();
+        this.ctx.translate(champX, cy);
+        this.ctx.scale(portraitScale, portraitScale);
+        if (champion) {
+            this.drawPlayer({ ...champion, x: 0, y: 0, alive: true, direction: [1, 0], quad_damage: false }, portraitState);
+        }
+        this.ctx.restore();
+        this.ctx.save();
+        this.ctx.translate(bossX, cy);
+        this.ctx.scale(portraitScale * 1.2, portraitScale * 1.2);
+        this.drawPlayer({
+            id: 999,
+            name: BOSS_NAME,
+            x: 0,
+            y: 0,
+            color: BOSS_COLOR,
+            alive: true,
+            direction: [-1, 0],
+            quad_damage: false,
+            death_anim_time: null,
+        }, portraitState);
+        this.ctx.restore();
+
+        const quote = `"${BOSS_QUOTE}"`;
+        this.setUiFont(Math.max(14, Math.floor(h * 0.016)), true);
+        const quoteW = Math.min(w * 0.42, this.ctx.measureText(quote).width + 36);
+        const quoteH = Math.max(32, Math.floor(h * 0.045));
+        const bubbleX = bossX - quoteW / 2;
+        const bubbleY = Math.max(8, cy - quoteH - 36);
+        this.ctx.fillStyle = 'rgb(24, 26, 32)';
+        this.roundRect(bubbleX, bubbleY, quoteW, quoteH, 12);
+        this.ctx.fill();
+        this.ctx.strokeStyle = 'rgb(210, 214, 230)';
+        this.ctx.lineWidth = 2;
+        this.roundRect(bubbleX, bubbleY, quoteW, quoteH, 12);
+        this.ctx.stroke();
+        this.ctx.fillStyle = 'rgb(236, 240, 248)';
+        this.ctx.textBaseline = 'middle';
+        this.ctx.fillText(quote, bossX, bubbleY + quoteH / 2, quoteW - 20);
+
+        this.ctx.textBaseline = 'top';
+        this.setUiFont(Math.max(13, Math.floor(h * 0.014)));
+        this.ctx.fillStyle = 'rgb(186, 196, 210)';
+        this.ctx.fillText('Speed x1.4   ·   Fire 2   ·   Bombs 2   ·   +1 life', bossX, Math.min(bannerH - 18, cy + 42));
+        this.ctx.textAlign = 'left';
+        this.ctx.textBaseline = 'alphabetic';
+    }
+
+    private roundRect(x: number, y: number, width: number, height: number, radius: number) {
+        const r = Math.min(radius, width / 2, height / 2);
+        this.ctx.beginPath();
+        this.ctx.moveTo(x + r, y);
+        this.ctx.arcTo(x + width, y, x + width, y + height, r);
+        this.ctx.arcTo(x + width, y + height, x, y + height, r);
+        this.ctx.arcTo(x, y + height, x, y, r);
+        this.ctx.arcTo(x, y, x + width, y, r);
+        this.ctx.closePath();
     }
 
     private drawWinStats(state: GameState) {
-        const panelWidth = Math.min(this.width - 20, 980);
+        const columnsSpec: Array<{ key: string; label: string }> = [
+            { key: 'name', label: 'Player' },
+            { key: 'wins', label: 'WINS' },
+            { key: 'death', label: 'Death Time (s)' },
+            { key: 'flames', label: 'Flames' },
+            { key: 'bombs', label: 'Bombs' },
+            { key: 'kills', label: 'Kills' },
+            { key: 'walls', label: 'Walls Exploded' },
+            { key: 'pups', label: 'Pickups' },
+            { key: 'qds', label: 'QDs' },
+            { key: 'walked', label: 'Cells Walked' },
+        ];
+        const players = state.players.slice(0, 8);
+        const nPlayers = Math.max(1, players.length);
+        const rows = buildWinStatRows(state.players);
+        const cellColors: Record<string, string> = {
+            flames: 'rgb(255, 220, 160)',
+            bombs: 'rgb(160, 220, 255)',
+            kills: 'rgb(255, 180, 180)',
+            walls: 'rgb(220, 200, 170)',
+            pups: 'rgb(180, 255, 180)',
+            qds: 'rgb(100, 220, 255)',
+            walked: 'rgb(180, 220, 255)',
+        };
+
+        const pad = 16;
+        const panelWidth = Math.max(320, this.width - 20);
         const panelX = Math.max(10, (this.width - panelWidth) / 2);
-        const panelY = Math.max(10, this.height - 320);
-        this.ctx.fillStyle = 'rgba(12, 18, 28, 0.8)';
-        this.ctx.fillRect(panelX, panelY, panelWidth, 320);
+        const tableWidth = panelWidth - pad * 2;
+        const maxPanelH = Math.floor(this.height * 0.52);
+
+        type Col = { key: string; label: string; lines: string[]; x: number; width: number };
+        const measure = (fontSize: number, force = false): Col[] | null => {
+            this.setUiFont(fontSize);
+            const innerPad = Math.max(8, Math.floor(fontSize / 4));
+            const nameCap = Math.max(Math.floor(tableWidth * 0.22), this.ctx.measureText('Player').width + innerPad);
+            const minName = this.ctx.measureText('Mmmmmmmmmm').width + innerPad;
+            const trophySize = Math.max(12, Math.min(24, Math.floor(fontSize * 0.7)));
+            const minWidths: number[] = [];
+            for (const spec of columnsSpec) {
+                const lines = this.winHeaderLines(spec.label);
+                const headerW = Math.max(...lines.map(line => this.ctx.measureText(line).width));
+                let contentW = 0;
+                if (spec.key === 'name') {
+                    contentW = Math.min(nameCap, Math.max(0, ...rows.map(r => this.ctx.measureText(r.name).width)));
+                } else if (spec.key === 'wins') {
+                    const maxT = Math.max(0, ...rows.map(r => r.trophies));
+                    contentW = maxT > 0 ? maxT * (trophySize + 4) : trophySize;
+                } else {
+                    contentW = Math.max(0, ...rows.map(r => {
+                        const value = spec.key === 'death' ? r.death
+                            : spec.key === 'flames' ? r.flames
+                            : spec.key === 'bombs' ? r.bombs
+                            : spec.key === 'kills' ? r.kills
+                            : spec.key === 'walls' ? r.walls
+                            : spec.key === 'pups' ? r.pups
+                            : spec.key === 'qds' ? r.qds
+                            : spec.key === 'walked' ? r.walked
+                            : '';
+                        return this.ctx.measureText(value).width;
+                    }));
+                }
+                minWidths.push(Math.max(headerW, contentW) + innerPad);
+            }
+            const minGap = Math.max(16, Math.floor(fontSize / 3));
+            const reservedGaps = minGap * (columnsSpec.length - 1);
+            let overflow = minWidths.reduce((a, b) => a + b, 0) + reservedGaps - tableWidth;
+            if (overflow > 0) {
+                const shrink = Math.min(overflow, Math.max(0, minWidths[0] - minName));
+                minWidths[0] -= shrink;
+                overflow -= shrink;
+                if (overflow > 0) {
+                    if (!force) return null;
+                    const interior = Math.max(1, tableWidth - reservedGaps);
+                    const scale = interior / Math.max(1, minWidths.reduce((a, b) => a + b, 0));
+                    for (let i = 0; i < minWidths.length; i++) minWidths[i] = Math.max(16, minWidths[i] * scale);
+                }
+            }
+            let extra = tableWidth - minWidths.reduce((a, b) => a + b, 0) - reservedGaps;
+            if (extra > 0) {
+                const nameBonus = extra * 0.35;
+                minWidths[0] += nameBonus;
+                extra -= nameBonus;
+            }
+            const gapExtra = columnsSpec.length > 1 && extra > 0 ? extra / (columnsSpec.length - 1) : 0;
+            const cols: Col[] = [];
+            let x = 0;
+            columnsSpec.forEach((spec, i) => {
+                cols.push({
+                    key: spec.key,
+                    label: spec.label,
+                    lines: this.winHeaderLines(spec.label),
+                    x,
+                    width: minWidths[i],
+                });
+                x += minWidths[i];
+                if (i < columnsSpec.length - 1) x += minGap + gapExtra;
+            });
+            return cols;
+        };
+
+        const winnerPlayer = players.find(p => p.alive) || null
+        let winnerLabel = 'No one wins!'
+        if (state.state === 'boss_result') {
+            const bossWinner = state.boss_fight_winner
+            if (!bossWinner) winnerLabel = 'Draw!'
+            else winnerLabel = bossWinsLabel(!!bossWinner.is_ai, bossWinner.name)
+        } else if (state.state === 'champion' && winnerPlayer) {
+            winnerLabel = `Champion: ${winnerPlayer.name}`
+        } else if (winnerPlayer) {
+            winnerLabel = `${winnerPlayer.name} wins!`
+        }
+        const winnerSize = Math.min(56, Math.max(28, Math.floor(this.height * 0.04)));
+        const winnerH = winnerSize + 12;
+        const captionSize = Math.max(16, Math.min(22, Math.floor(this.height * 0.016)));
+        const captionH = captionSize + 10;
+
+        let fontSize = 16;
+        let columns: Col[] = [];
+        let headerH = 36;
+        let rowH = 24;
+        let trophySize = 12;
+        for (let size = 36; size >= 16; size -= 2) {
+            const cols = measure(size);
+            if (!cols) continue;
+            const maxLines = Math.max(...cols.map(c => c.lines.length));
+            const nextHeaderH = Math.floor(size * 1.12) * maxLines + 10;
+            const nextTrophy = Math.max(12, Math.min(24, Math.floor(size * 0.7)));
+            const nextRowH = Math.max(Math.floor(size * 1.55), nextTrophy + 10);
+            fontSize = size;
+            columns = cols;
+            headerH = nextHeaderH;
+            rowH = nextRowH;
+            trophySize = nextTrophy;
+            if (winnerH + captionH + nextHeaderH + nPlayers * nextRowH + pad * 2 <= maxPanelH) {
+                break;
+            }
+        }
+        if (columns.length === 0) {
+            columns = measure(16, true) || [];
+            fontSize = 16;
+            headerH = 36;
+            rowH = 24;
+            trophySize = 12;
+        }
+        const neededH = pad + winnerH + captionH + headerH + nPlayers * rowH + pad;
+        if (neededH > maxPanelH) {
+            rowH = Math.max(18, Math.floor((maxPanelH - winnerH - captionH - headerH - pad * 2) / nPlayers));
+        }
+
+        this.setUiFont(winnerSize, true);
+        const fittedWinner = this.fitCanvasText(winnerLabel, tableWidth);
+        const panelHeight = Math.min(maxPanelH, pad + winnerH + captionH + headerH + nPlayers * rowH + pad);
+        const panelY = Math.max(10, this.height - panelHeight - 10);
+
+        this.ctx.fillStyle = 'rgba(12, 18, 28, 0.88)';
+        this.ctx.fillRect(panelX, panelY, panelWidth, panelHeight);
         this.ctx.strokeStyle = 'rgba(170, 200, 240, 0.7)';
         this.ctx.lineWidth = 1;
-        this.ctx.strokeRect(panelX, panelY, panelWidth, 320);
-        this.ctx.fillStyle = 'white';
-        this.ctx.font = 'bold 32px monospace';
+        this.ctx.strokeRect(panelX, panelY, panelWidth, panelHeight);
         this.ctx.textAlign = 'left';
-        this.ctx.fillText('Name       Team  Kills  Walls Exploded  Pickups  QDs  Cells Walked', panelX + 12, panelY + 22);
-        const sorted = [...state.players].sort((a, b) => (b.total_players_killed ?? b.players_killed ?? 0) - (a.total_players_killed ?? a.players_killed ?? 0));
-        const maxKills = Math.max(0, ...sorted.map(p => p.total_players_killed ?? p.players_killed ?? 0));
-        const maxWalls = Math.max(0, ...sorted.map(p => p.total_walls_destroyed ?? p.walls_destroyed ?? 0));
-        const maxPups = Math.max(0, ...sorted.map(p => p.total_powerups_collected ?? p.powerups_collected ?? 0));
-        const maxQds = Math.max(0, ...sorted.map(p => p.total_quad_damage_collected ?? p.quad_damage_collected ?? 0));
-        const maxWalked = Math.max(0, ...sorted.map(p => p.total_cells_walked ?? p.cells_walked ?? 0));
-        const nameX = panelX + 12;
-        const teamX = panelX + 155;
-        const killsX = panelX + 210;
-        const wallsX = panelX + 300;
-        const pupsX = panelX + 420;
-        const qdsX = panelX + 510;
-        const walkedX = panelX + 570;
-        for (let i = 0; i < Math.min(sorted.length, 6); i++) {
-            const p = sorted[i];
-            const kills = p.total_players_killed ?? p.players_killed ?? 0;
-            const walls = p.total_walls_destroyed ?? p.walls_destroyed ?? 0;
-            const pups = p.total_powerups_collected ?? p.powerups_collected ?? 0;
-            const qds = p.total_quad_damage_collected ?? p.quad_damage_collected ?? 0;
-            const walked = p.total_cells_walked ?? p.cells_walked ?? 0;
-            const y = panelY + 46 + i * 44;
-            this.ctx.font = '28px monospace';
-            this.ctx.fillText((p.name || `P${p.id}`).padEnd(10).slice(0, 10), nameX, y);
-            this.ctx.fillText((p.team ?? 0).toString().padStart(4), teamX, y);
-            this.ctx.font = (kills === maxKills && maxKills > 0) ? 'bold 28px monospace' : '28px monospace';
-            this.ctx.fillText(kills.toString().padStart(6), killsX, y);
-            this.ctx.font = (walls === maxWalls && maxWalls > 0) ? 'bold 28px monospace' : '28px monospace';
-            this.ctx.fillText(walls.toString().padStart(10), wallsX, y);
-            this.ctx.font = (pups === maxPups && maxPups > 0) ? 'bold 28px monospace' : '28px monospace';
-            this.ctx.fillText(pups.toString().padStart(7), pupsX, y);
-            this.ctx.font = (qds === maxQds && maxQds > 0) ? 'bold 28px monospace' : '28px monospace';
-            this.ctx.fillText(qds.toString().padStart(5), qdsX, y);
-            this.ctx.font = (walked === maxWalked && maxWalked > 0) ? 'bold 28px monospace' : '28px monospace';
-            this.ctx.fillText(walked.toString().padStart(12), walkedX, y);
+        this.ctx.textBaseline = 'top';
+
+        this.setUiFont(winnerSize, true);
+        this.ctx.fillStyle = winnerPlayer && winnerPlayer.color.length >= 3
+            ? `rgb(${winnerPlayer.color[0]}, ${winnerPlayer.color[1]}, ${winnerPlayer.color[2]})`
+            : 'white';
+        this.fillClippedText(fittedWinner, panelX + pad, panelY + pad, tableWidth, winnerH);
+        this.setUiFont(captionSize);
+        this.ctx.fillStyle = 'rgb(186, 196, 210)';
+        const threshold = state.trophy_win_threshold ?? 3
+        const prompt = state.result_prompt ? `   ·   ${state.result_prompt}` : ''
+        this.fillClippedText(`Match totals until ${threshold} trophies${prompt}`, panelX + pad, panelY + pad + winnerH, tableWidth, captionH)
+
+        const tableTop = panelY + pad + winnerH + captionH;
+        const lineH = Math.floor(fontSize * 1.12);
+        this.setUiFont(fontSize);
+        this.ctx.fillStyle = 'rgb(200, 200, 200)';
+        for (const col of columns) {
+            let lineY = tableTop;
+            for (const line of col.lines) {
+                this.fillClippedText(line, panelX + pad + col.x, lineY, col.width, lineH);
+                lineY += lineH;
+            }
+        }
+        this.ctx.strokeStyle = 'rgba(170, 200, 240, 0.45)';
+        this.ctx.beginPath();
+        this.ctx.moveTo(panelX + pad, tableTop + headerH - 4);
+        this.ctx.lineTo(panelX + pad + tableWidth, tableTop + headerH - 4);
+        this.ctx.stroke();
+
+        for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
+            const rowY = tableTop + headerH + i * rowH;
+            const textY = rowY + Math.max(0, (rowH - fontSize) / 2);
+            for (const col of columns) {
+                const x = panelX + pad + col.x;
+                if (col.key === 'wins') {
+                    const iconY = rowY + Math.max(0, (rowH - trophySize) / 2);
+                    for (let j = 0; j < row.trophies; j++) {
+                        const iconX = x + j * (trophySize + 4);
+                        if (iconX + trophySize > x + col.width) break;
+                        this.drawTrophyIcon(iconX, iconY, trophySize);
+                    }
+                    continue;
+                }
+                const bold = col.key === 'name' || !!row.bold[col.key];
+                this.setUiFont(fontSize, bold);
+                if (col.key === 'name') {
+                    this.ctx.fillStyle = `rgb(${row.color[0]}, ${row.color[1]}, ${row.color[2]})`;
+                    this.fillClippedText(this.fitCanvasText(row.name, Math.max(12, col.width - 4)), x, textY, col.width, rowH);
+                    continue;
+                }
+                this.ctx.fillStyle = col.key === 'death' ? row.deathColor : (cellColors[col.key] || 'white');
+                const value = col.key === 'death' ? row.death
+                    : col.key === 'flames' ? row.flames
+                    : col.key === 'bombs' ? row.bombs
+                    : col.key === 'kills' ? row.kills
+                    : col.key === 'walls' ? row.walls
+                    : col.key === 'pups' ? row.pups
+                    : col.key === 'qds' ? row.qds
+                    : col.key === 'walked' ? row.walked
+                    : '';
+                this.fillClippedText(value, x, textY, col.width, rowH);
+            }
         }
     }
 
-    private buildDebugLine(state: GameState, metrics?: { latency5sMs?: number; fps5s?: number; hostFps5s?: number; hostRenderFps5s?: number; renderPipelineP95Ms?: number; presentDelayP95Ms?: number; decodeP95Ms?: number; localCorrectionP95Px?: number; }, renderP95Ms?: number): string {
+    private buildDebugLine(state: GameState, metrics?: { latency5sMs?: number; fps5s?: number; hostFps5s?: number; hostRenderFps5s?: number; renderPipelineP95Ms?: number; presentDelayP95Ms?: number; decodeP95Ms?: number; localCorrectionP95Px?: number; queueDelayP95Ms?: number; }, renderP95Ms?: number): string {
         const parts: string[] = [];
         parts.push(`State: ${state.state}`);
         parts.push(`Time: ${(state.time / 1000).toFixed(1)}`);
-        if (metrics?.latency5sMs !== undefined) parts.push(`Latency(5s): ${metrics.latency5sMs.toFixed(1)} ms`);
+        if (metrics?.latency5sMs !== undefined) parts.push(`RTT(5s): ${metrics.latency5sMs.toFixed(1)} ms`);
+        if (metrics?.queueDelayP95Ms !== undefined) parts.push(`QueueDelay p95: ${metrics.queueDelayP95Ms.toFixed(1)} ms`);
         if (metrics?.fps5s !== undefined) parts.push(`Client FPS(5s): ${metrics.fps5s.toFixed(1)}`);
         if (metrics?.hostFps5s !== undefined) parts.push(`Host Sim FPS(5s): ${metrics.hostFps5s.toFixed(1)}`);
         if (metrics?.hostRenderFps5s !== undefined) parts.push(`Host Render FPS(5s): ${metrics.hostRenderFps5s.toFixed(1)}`);
         if (metrics?.renderPipelineP95Ms !== undefined) parts.push(`RenderPipeline p95: ${metrics.renderPipelineP95Ms.toFixed(2)} ms`);
-        if (metrics?.presentDelayP95Ms !== undefined) parts.push(`PresentDelay p95: ${metrics.presentDelayP95Ms.toFixed(1)} ms`);
+        if (metrics?.presentDelayP95Ms !== undefined) parts.push(`PresentAge p95: ${metrics.presentDelayP95Ms.toFixed(1)} ms`);
         if (metrics?.decodeP95Ms !== undefined) parts.push(`Decode p95: ${metrics.decodeP95Ms.toFixed(2)} ms`);
         if (metrics?.localCorrectionP95Px !== undefined) parts.push(`LocalCorr p95: ${metrics.localCorrectionP95Px.toFixed(1)} px`);
         if (renderP95Ms !== undefined) parts.push(`CanvasDraw p95: ${renderP95Ms.toFixed(2)} ms`);

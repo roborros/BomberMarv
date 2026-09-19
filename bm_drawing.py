@@ -3,20 +3,44 @@ import numpy as np
 import time
 import math
 import os
+import types
 import bm_params as bmp
 from bm_params import *
 from input_abstraction import get_key_name
 from timing_abstraction import get_ticks
 from lib_collisions import circle_rect_collision
 from explosions import compute_explosion_active_cells
+from replay import frame_at_time, hydrate_replay_snapshot, letterbox_dest, pick_kill_cam
 
 _AVATAR_CACHE = {}
 _PLAYER_SCARED_UNTIL = {}  # player_id -> ticks when scared expression ends
+_PLAYER_NEAR_BOMB_SINCE = {}  # player_id -> when they first got near a bomb (for 1s+ scared)
 _ASSETS_READY = False
 _SCALED_IMAGE_CACHE = {}
 _BOARD_LAYER_CACHE = {"signature": None, "surface": None}
 _BLAST_ARM_CACHE = {}
 _TEXT_CACHE = {}
+_UI_FONT_CACHE = {}
+_LOBBY_BG_CACHE = {"key": None, "surf": None}
+
+_WIN_STAT_COLUMNS = (
+    ("name", "Player"),
+    ("wins", "WINS"),
+    ("death", "Death Time (s)"),
+    ("flames", "Flames"),
+    ("bombs", "Bombs"),
+    ("kills", "Kills"),
+    ("walls", "Walls Exploded"),
+    ("pups", "Pickups"),
+    ("qds", "QDs"),
+    ("walked", "Cells Walked"),
+)
+
+_WIN_HEADER_LINES = {
+    "Death Time (s)": ("Death", "Time (s)"),
+    "Walls Exploded": ("Walls", "Exploded"),
+    "Cells Walked": ("Cells", "Walked"),
+}
 
 
 def _get_image_asset(name):
@@ -110,6 +134,174 @@ def _get_cached_text(font_obj, text, color):
     return rendered
 
 
+def _ui_font(size, bold=False):
+    size = max(12, int(size))
+    key = (size, bool(bold))
+    font = _UI_FONT_CACHE.get(key)
+    if font is None:
+        font = pygame.font.SysFont("arial", size, bold=bold)
+        _UI_FONT_CACHE[key] = font
+    return font
+
+
+def _fit_text_to_width(font, text, max_width):
+    text = "" if text is None else str(text)
+    if max_width <= 0:
+        return ""
+    if font.size(text)[0] <= max_width:
+        return text
+    ellipsis = "…"
+    if font.size(ellipsis)[0] > max_width:
+        return ""
+    lo, hi = 0, len(text)
+    best = ellipsis
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        candidate = text[:mid] + ellipsis
+        if font.size(candidate)[0] <= max_width:
+            best = candidate
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
+def _blit_clipped(surface, src, x, y, width, height):
+    if src is None or width <= 0 or height <= 0:
+        return
+    old_clip = surface.get_clip()
+    clip_rect = pygame.Rect(int(x), int(y), int(width), int(height))
+    if old_clip:
+        clip_rect = clip_rect.clip(old_clip)
+    surface.set_clip(clip_rect)
+    surface.blit(src, (int(x), int(y)))
+    surface.set_clip(old_clip)
+
+
+def _blit_label(surface, font, text, color, x, y, width, height, vcenter=True):
+    fitted = _fit_text_to_width(font, text, max(0, int(width) - 2))
+    src = font.render(fitted, True, color)
+    text_y = y + max(0, (int(height) - src.get_height()) // 2) if vcenter else y
+    _blit_clipped(surface, src, x, text_y, width, height)
+
+
+def _series_count(player, total_attr, round_attr):
+    return int(getattr(player, total_attr, 0) or 0) + int(getattr(player, round_attr, 0) or 0)
+
+
+def _win_header_lines(label):
+    return _WIN_HEADER_LINES.get(label, (label,))
+
+
+def _measure_win_stat_columns(font, rows, available_w, trophy_size, force=False):
+    """Return column x/width list that fits in available_w, or None."""
+    n_cols = len(_WIN_STAT_COLUMNS)
+    if available_w <= 0 or n_cols <= 0:
+        return None
+    inner_pad = max(8, font.get_height() // 4)
+    name_cap = max(int(available_w * 0.22), font.size("Player")[0] + inner_pad)
+    min_name_w = font.size("Mmmmmmmmmm")[0] + inner_pad
+    min_widths = []
+    for key, label in _WIN_STAT_COLUMNS:
+        header_w = max(font.size(line)[0] for line in _win_header_lines(label))
+        if key == "name":
+            content_w = 0
+            for row in rows:
+                content_w = max(content_w, font.size(row["name"])[0])
+            content_w = min(content_w, name_cap)
+        elif key == "wins":
+            max_trophies = max((row["trophies"] for row in rows), default=0)
+            content_w = max_trophies * (trophy_size + 4) if max_trophies else trophy_size
+        else:
+            content_w = 0
+            for row in rows:
+                content_w = max(content_w, font.size(row[key])[0])
+        min_widths.append(max(header_w, content_w) + inner_pad)
+
+    min_gap = max(16, font.get_height() // 3)
+    reserved_gaps = min_gap * (n_cols - 1)
+    overflow = sum(min_widths) + reserved_gaps - available_w
+    if overflow > 0:
+        reducible = max(0, min_widths[0] - min_name_w)
+        shrink = min(overflow, reducible)
+        min_widths[0] -= shrink
+        overflow -= shrink
+        if overflow > 0:
+            if not force:
+                return None
+            interior = max(1, available_w - reserved_gaps)
+            scale = interior / max(1, sum(min_widths))
+            min_widths = [max(16, w * scale) for w in min_widths]
+
+    extra = available_w - sum(min_widths) - reserved_gaps
+    if extra > 0:
+        name_bonus = extra * 0.35
+        min_widths[0] += name_bonus
+        extra -= name_bonus
+    gap_extra = extra / (n_cols - 1) if n_cols > 1 and extra > 0 else 0
+    columns = []
+    x = 0
+    for i, (key, label) in enumerate(_WIN_STAT_COLUMNS):
+        width = min_widths[i]
+        columns.append({
+            "key": key,
+            "label": label,
+            "lines": _win_header_lines(label),
+            "x": int(round(x)),
+            "width": int(width),
+        })
+        x += width
+        if i < n_cols - 1:
+            x += min_gap + gap_extra
+    return columns
+
+
+def _fit_win_stats_layout(rows, available_w, available_h, n_players):
+    n_players = max(1, int(n_players))
+    fallback = None
+    for font_size in range(48, 17, -2):
+        font = _ui_font(font_size)
+        font_bold = _ui_font(font_size, bold=True)
+        trophy_size = max(14, min(28, int(font_size * 0.7)))
+        columns = _measure_win_stat_columns(font, rows, available_w, trophy_size)
+        if columns is None:
+            continue
+        max_lines = max(len(col["lines"]) for col in columns)
+        header_h = int(font_size * 1.12) * max_lines + 10
+        row_h = max(int(font_size * 1.55), trophy_size + 12)
+        candidate = {
+            "font_size": font_size,
+            "font": font,
+            "font_bold": font_bold,
+            "header_h": header_h,
+            "row_h": row_h,
+            "trophy_size": trophy_size,
+            "columns": columns,
+        }
+        fallback = candidate
+        if header_h + n_players * row_h <= available_h:
+            return candidate
+    if fallback is None:
+        font = _ui_font(18)
+        font_bold = _ui_font(18, bold=True)
+        trophy_size = 14
+        columns = _measure_win_stat_columns(font, rows, available_w, trophy_size, force=True)
+        max_lines = max((len(col["lines"]) for col in columns), default=1)
+        fallback = {
+            "font_size": 18,
+            "font": font,
+            "font_bold": font_bold,
+            "header_h": int(18 * 1.12) * max_lines + 8,
+            "row_h": max(22, trophy_size + 8),
+            "trophy_size": trophy_size,
+            "columns": columns or [],
+        }
+    needed = fallback["header_h"] + n_players * fallback["row_h"]
+    if needed > available_h and available_h > 0:
+        fallback["row_h"] = max(20, (available_h - fallback["header_h"]) // n_players)
+    return fallback
+
+
 def _load_avatar_by_name(name, size):
     if not name:
         return None
@@ -184,7 +376,7 @@ def draw_brick_pattern(rect, surface):
             x += brick_width  # <-- increment x to avoid infinite loop
             
             
-def draw_title_page(surface, alpha=255):
+def draw_title_page(surface, alpha=255, show_game_name=True):
     # Ensure fonts are initialized
     _ensure_fonts_initialized()
     
@@ -194,6 +386,10 @@ def draw_title_page(surface, alpha=255):
     
     logo_image = _get_image_asset("logo_image")
     if logo_image is None:
+        if show_game_name:
+            game_name_text = arcade_font.render("BomberMarv", True, (255, 255, 255))
+            game_name_rect = game_name_text.get_rect(center=(sw // 2, sh // 2))
+            surface.blit(game_name_text, game_name_rect)
         return
     # Get the original dimensions of the logo
     logo_width, logo_height = logo_image.get_size()
@@ -218,9 +414,10 @@ def draw_title_page(surface, alpha=255):
     surface.blit(logo_scaled, rect)
     
     # Render the game name in big arcade font
-    game_name_text = arcade_font.render("BomberMarv", True, (255, 255, 255))
-    game_name_rect = game_name_text.get_rect(center=(sw // 2, sh // 2))
-    surface.blit(game_name_text, game_name_rect)
+    if show_game_name:
+        game_name_text = arcade_font.render("BomberMarv", True, (255, 255, 255))
+        game_name_rect = game_name_text.get_rect(center=(sw // 2, sh // 2))
+        surface.blit(game_name_text, game_name_rect)
     
     # Render the version tag
     version_font = pygame.font.SysFont("arial", 48)
@@ -352,9 +549,18 @@ def _is_player_near_explosion(player, explosions, current_time):
     return False
 
 
-def draw_players(surface, players, explosions=None, current_time=None):
+def _is_player_near_bomb(player, bombs):
+    """Return True if any bomb is within 1 cell (Chebyshev) of the player."""
+    px, py = player.get_grid_pos()
+    for bomb in bombs:
+        if abs(px - bomb.x) <= 1 and abs(py - bomb.y) <= 1:
+            return True
+    return False
+
+
+def draw_players(surface, players, explosions=None, current_time=None, bombs=None):
     _ensure_fonts_initialized()
-    global _PLAYER_SCARED_UNTIL
+    global _PLAYER_SCARED_UNTIL, _PLAYER_NEAR_BOMB_SINCE
     for player in players:
         if not player.alive and player.death_animation_time <= 0:
             continue
@@ -372,7 +578,8 @@ def draw_players(surface, players, explosions=None, current_time=None):
             helmet_color = (min(player.color[0]+30,255), min(player.color[1]+30,255), min(player.color[2]+30,255))
             rect_head = np.array([pos[0]-r, pos[1]-r, 2*r, 2*r], dtype=np.float64)
             pygame.draw.arc(surface, helmet_color, rect_head, math.pi, 2*math.pi, 3)
-            # Scared state: explosion nearby (max 1 cell) triggers O-mouth + bigger eyes for 1s
+            # Scared state: explosion nearby (max 1 cell) triggers O-mouth + bigger eyes for 1s;
+            # or standing next to a bomb for >1s
             scared = False
             player_key = getattr(player, 'global_id', id(player))
             if explosions is not None and current_time is not None:
@@ -381,6 +588,14 @@ def draw_players(surface, players, explosions=None, current_time=None):
                 scared = current_time < _PLAYER_SCARED_UNTIL.get(player_key, 0)
                 if not scared and player_key in _PLAYER_SCARED_UNTIL:
                     _PLAYER_SCARED_UNTIL.pop(player_key, None)
+            if bombs is not None and current_time is not None and not scared:
+                if _is_player_near_bomb(player, bombs):
+                    if player_key not in _PLAYER_NEAR_BOMB_SINCE:
+                        _PLAYER_NEAR_BOMB_SINCE[player_key] = current_time
+                    if current_time - _PLAYER_NEAR_BOMB_SINCE[player_key] >= 1000:
+                        scared = True
+                else:
+                    _PLAYER_NEAR_BOMB_SINCE.pop(player_key, None)
             # Eyes: static white circles with black pupils that turn in direction of movement
             dx = float(getattr(player, 'direction', [0, 0])[0])
             dy = float(getattr(player, 'direction', [0, 0])[1])
@@ -410,6 +625,14 @@ def draw_players(surface, players, explosions=None, current_time=None):
             pygame.gfxdraw.filled_circle(surface, int(right_px), int(right_py), pupil_radius, (0, 0, 0))
             pygame.gfxdraw.aacircle(surface, int(left_px), int(left_py), pupil_radius, (0, 0, 0))
             pygame.gfxdraw.aacircle(surface, int(right_px), int(right_py), pupil_radius, (0, 0, 0))
+            # Glasses when quad damage is active
+            if player.quad_damage:
+                glasses_color = (0, 255, 255)
+                lens_r = max(8, int(eye_radius * 1.8))
+                frame_w = max(2, lens_r // 4)
+                pygame.draw.circle(surface, glasses_color, (int(left_cx), int(eye_cy)), lens_r, frame_w)
+                pygame.draw.circle(surface, glasses_color, (int(right_cx), int(eye_cy)), lens_r, frame_w)
+                pygame.draw.line(surface, glasses_color, (int(left_cx + lens_r), int(eye_cy)), (int(right_cx - lens_r), int(eye_cy)), frame_w)
             # Mouth: line by default, circle when scared
             mouth_y = pos[1] + eye_gap * 0.8
             mouth_color = (40, 40, 40)
@@ -430,18 +653,27 @@ def draw_players(surface, players, explosions=None, current_time=None):
             pygame.draw.rect(surface, leg_color, right_leg)
         
             if player.quad_damage:
-                elapsed = get_ticks() - player.quad_damage_start_time
+                clock = current_time if current_time is not None else get_ticks()
+                elapsed = clock - player.quad_damage_start_time
                 pulse = 1 + 0.1 * math.sin(2 * math.pi * (elapsed / 500.0))
                 rect_size = int((2 * r + 10) * pulse)
                 rect = np.array([pos[0] - rect_size // 2, pos[1] - rect_size // 2, rect_size, rect_size], dtype=np.float64)
                 pygame.draw.rect(surface, (0, 255, 255), rect, 4)
+
+            shield_until = getattr(player, 'boss_shield_until', 0)
+            if current_time is not None and shield_until > current_time:
+                pulse = 1 + 0.08 * math.sin(2 * math.pi * (current_time / 280.0))
+                shield_r = int((r + 10) * pulse)
+                pygame.draw.circle(surface, (210, 230, 255), pos, shield_r, 4)
+                pygame.draw.circle(surface, (130, 180, 255), pos, max(1, shield_r - 6), 2)
             
             # Draw player name
             name_text = _get_cached_text(font_small, player.name, (255, 255, 255))
             name_rect = name_text.get_rect(center=(pos[0], pos[1] - r - 20))
             surface.blit(name_text, name_rect)
             # Draw pickup message if active
-            if getattr(player, 'pickup_message_end_time', 0) and get_ticks() < player.pickup_message_end_time:
+            clock = current_time if current_time is not None else get_ticks()
+            if getattr(player, 'pickup_message_end_time', 0) and clock < player.pickup_message_end_time:
                 msg_text = font_small.render(player.pickup_message, True, (255, 255, 0))
                 msg_rect = msg_text.get_rect(center=(pos[0], pos[1] - r - 80))
                 # Draw a semi-transparent dark background for readability
@@ -644,27 +876,13 @@ def draw_controls(surface, players):
         surface.blit(text, rect)
         y_offset += 50
 
-def draw_stat_screen(surface, winner, players, game=None):
+def draw_stat_screen(surface, winner, players, game=None, heading=None):
     _ensure_fonts_initialized()
     sw, sh = surface.get_size()
-    font = pygame.font.SysFont("arial", 96, bold=True)
-    big_winner_font = pygame.font.SysFont("arial", 192, bold=True)
-    draw_title_page(surface, alpha=255)
-    if winner:
-        x_start = sw // 2 + 150
-        icon_size = 24
-        for i in range(winner.trophies):
-            trophy_pos = (x_start + i * (icon_size + 5), sh // 2 + 70)
-            draw_trophy_icon(surface, trophy_pos, icon_size)
-        text = big_winner_font.render(f"{winner.name} wins!", True, winner.color)
-    else:
-        text = font.render("No one wins!", True, (255,255,255))
-    rect = text.get_rect(center=(sw // 2, sh // 2 + 80))
-    surface.blit(text, rect)
-    font_small = pygame.font.SysFont("arial", 64)
-    font_small_bold = pygame.font.SysFont("arial", 64, bold=True)
-    y_offset = sh // 2 + 155
-    # Precompute max values per column for bold highlighting
+    draw_title_page(surface, alpha=255, show_game_name=False)
+    players = list(players or [])
+    n_players = max(1, len(players))
+
     death_vals = []
     flames_vals = []
     bombs_vals = []
@@ -672,7 +890,7 @@ def draw_stat_screen(surface, winner, players, game=None):
         if hasattr(p, 'death_time_rel_ms') and p.death_time_rel_ms is not None:
             death_vals.append(int(round(p.death_time_rel_ms / 1000.0)))
         else:
-            death_vals.append(999999)  # Alive = best
+            death_vals.append(999999)
         fp = p.fire_power_at_death if hasattr(p, 'fire_power_at_death') and p.fire_power_at_death is not None else getattr(p, 'fire_power', 0)
         bp = p.bomb_capacity_at_death if hasattr(p, 'bomb_capacity_at_death') and p.bomb_capacity_at_death is not None else getattr(p, 'bomb_capacity', 0)
         flames_vals.append(fp)
@@ -680,97 +898,201 @@ def draw_stat_screen(surface, winner, players, game=None):
     max_death = max(death_vals) if death_vals else 0
     max_flames = max(flames_vals) if flames_vals else 0
     max_bombs = max(bombs_vals) if bombs_vals else 0
-    max_kills = max((getattr(p, 'total_players_killed', 0) for p in players), default=0)
-    max_walls = max((getattr(p, 'total_walls_destroyed', 0) for p in players), default=0)
-    max_pups = max((getattr(p, 'total_powerups_collected', 0) for p in players), default=0)
-    max_qd = max((getattr(p, 'total_quad_damage_collected', 0) for p in players), default=0)
-    max_walked = max((getattr(p, 'total_cells_walked', 0) for p in players), default=0)
-    # Columns: Player | WINS | Death Time (s) | Flames | Bombs | Kills | Walls Exploded | Pickups | QDs | Cells Walked (50% more spacing)
-    name_x = 25
-    trophies_x = 198
-    death_x = 378
-    flames_x = 588
-    bombs_x = 738
-    kills_x = 873
-    walls_x = 1008
-    pups_x = 1218
-    qd_x = 1383
-    walked_x = 1548
-    header_color = (200, 200, 200)
-    surface.blit(font_small.render("Player", True, header_color), (name_x, y_offset))
-    surface.blit(font_small.render("WINS", True, header_color), (trophies_x, y_offset))
-    surface.blit(font_small.render("Death Time (s)", True, header_color), (death_x, y_offset))
-    surface.blit(font_small.render("Flames", True, header_color), (flames_x, y_offset))
-    surface.blit(font_small.render("Bombs", True, header_color), (bombs_x, y_offset))
-    surface.blit(font_small.render("Kills", True, header_color), (kills_x, y_offset))
-    surface.blit(font_small.render("Walls Exploded", True, header_color), (walls_x, y_offset))
-    surface.blit(font_small.render("Pickups", True, header_color), (pups_x, y_offset))
-    surface.blit(font_small.render("QDs", True, header_color), (qd_x, y_offset))
-    surface.blit(font_small.render("Cells Walked", True, header_color), (walked_x, y_offset))
-    y_offset += 34
+    max_kills = max((_series_count(p, 'total_players_killed', 'players_killed') for p in players), default=0)
+    max_walls = max((_series_count(p, 'total_walls_destroyed', 'walls_destroyed') for p in players), default=0)
+    max_pups = max((_series_count(p, 'total_powerups_collected', 'powerups_collected') for p in players), default=0)
+    max_qd = max((_series_count(p, 'total_quad_damage_collected', 'quad_damage_collected') for p in players), default=0)
+    max_walked = max((_series_count(p, 'total_cells_walked', 'cells_walked') for p in players), default=0)
+
+    rows = []
     for i, player in enumerate(players):
-        # Name
-        name_text = font_small.render(f"{player.name}", True, player.color)
-        surface.blit(name_text, (name_x, y_offset))
-
-        # Trophies icons (bold if max)
-        trophy_surface = pygame.Surface((160, 36), pygame.SRCALPHA)
-        for j in range(player.trophies):
-            draw_trophy_icon(trophy_surface, (j * 28, 6), 24)
-        surface.blit(trophy_surface, (trophies_x, y_offset - 6))
-
-        # Death time relative to round start; alive players show "—"
         if hasattr(player, 'death_time_rel_ms') and player.death_time_rel_ms is not None:
-            secs = player.death_time_rel_ms / 1000.0
-            secs_rounded = int(round(secs))
-            death_text_str = f"{secs_rounded}"
+            death_text_str = str(int(round(player.death_time_rel_ms / 1000.0)))
             death_color = (255, 160, 160)
-            death_val = secs_rounded
         else:
             death_text_str = "—"
             death_color = (160, 255, 160)
-            death_val = 999999
-        death_font = font_small_bold if death_vals[i] == max_death and max_death > 0 else font_small
-        death_text = death_font.render(death_text_str, True, death_color)
-        surface.blit(death_text, (death_x, y_offset))
+        kills_val = _series_count(player, 'total_players_killed', 'players_killed')
+        walls_val = _series_count(player, 'total_walls_destroyed', 'walls_destroyed')
+        pups_val = _series_count(player, 'total_powerups_collected', 'powerups_collected')
+        qd_val = _series_count(player, 'total_quad_damage_collected', 'quad_damage_collected')
+        walked_val = _series_count(player, 'total_cells_walked', 'cells_walked')
+        rows.append({
+            "name": str(getattr(player, "name", "") or f"P{i + 1}"),
+            "color": getattr(player, "color", (255, 255, 255)),
+            "trophies": int(getattr(player, "trophies", 0) or 0),
+            "death": death_text_str,
+            "death_color": death_color,
+            "flames": str(flames_vals[i]),
+            "bombs": str(bombs_vals[i]),
+            "kills": str(kills_val),
+            "walls": str(walls_val),
+            "pups": str(pups_val),
+            "qds": str(qd_val),
+            "walked": str(walked_val),
+            "bold": {
+                "death": death_vals[i] == max_death and max_death > 0,
+                "flames": flames_vals[i] == max_flames and max_flames > 0,
+                "bombs": bombs_vals[i] == max_bombs and max_bombs > 0,
+                "kills": kills_val == max_kills and max_kills > 0,
+                "walls": walls_val == max_walls and max_walls > 0,
+                "pups": pups_val == max_pups and max_pups > 0,
+                "qds": qd_val == max_qd and max_qd > 0,
+                "walked": walked_val == max_walked and max_walked > 0,
+            },
+        })
 
-        # Flames and Bombs snapshot (alive players show current values)
-        flames_val = flames_vals[i]
-        bombs_val = bombs_vals[i]
-        flames_font = font_small_bold if flames_val == max_flames and max_flames > 0 else font_small
-        bombs_font = font_small_bold if bombs_val == max_bombs and max_bombs > 0 else font_small
-        flames_text = flames_font.render(str(flames_val), True, (255, 220, 160))
-        bombs_text = bombs_font.render(str(bombs_val), True, (160, 220, 255))
-        surface.blit(flames_text, (flames_x, y_offset))
-        surface.blit(bombs_text, (bombs_x, y_offset))
+    cell_colors = {
+        "flames": (255, 220, 160),
+        "bombs": (160, 220, 255),
+        "kills": (255, 180, 180),
+        "walls": (220, 200, 170),
+        "pups": (180, 255, 180),
+        "qds": (100, 220, 255),
+        "walked": (180, 220, 255),
+    }
 
-        kills_val = getattr(player, 'total_players_killed', 0)
-        walls_val = getattr(player, 'total_walls_destroyed', 0)
-        pups_val = getattr(player, 'total_powerups_collected', 0)
-        qd_val = getattr(player, 'total_quad_damage_collected', 0)
-        walked_val = getattr(player, 'total_cells_walked', 0)
-        kills_font = font_small_bold if kills_val == max_kills and max_kills > 0 else font_small
-        walls_font = font_small_bold if walls_val == max_walls and max_walls > 0 else font_small
-        pups_font = font_small_bold if pups_val == max_pups and max_pups > 0 else font_small
-        qd_font = font_small_bold if qd_val == max_qd and max_qd > 0 else font_small
-        walked_font = font_small_bold if walked_val == max_walked and max_walked > 0 else font_small
-        kills_text = kills_font.render(str(kills_val), True, (255, 180, 180))
-        walls_text = walls_font.render(str(walls_val), True, (220, 200, 170))
-        pups_text = pups_font.render(str(pups_val), True, (180, 255, 180))
-        qd_text = qd_font.render(str(qd_val), True, (100, 220, 255))
-        walked_text = walked_font.render(str(walked_val), True, (180, 220, 255))
-        surface.blit(kills_text, (kills_x, y_offset))
-        surface.blit(walls_text, (walls_x, y_offset))
-        surface.blit(pups_text, (pups_x, y_offset))
-        surface.blit(qd_text, (qd_x, y_offset))
-        surface.blit(walked_text, (walked_x, y_offset))
-        y_offset += 72
-
-    # Draw replay panel on the right side (if replay data is available)
+    has_kill_cams = game is not None and bool(getattr(game, "kill_cam_clips", None))
     has_replay_segment = game is not None and hasattr(game, 'replay_segment') and bool(game.replay_segment)
     has_replay_buffer = game is not None and hasattr(game, 'replay_buffer') and bool(game.replay_buffer)
-    if game is not None and (has_replay_segment or has_replay_buffer):
-        panel_w = int(sw * REPLAY_PANEL_WIDTH_RATIO)
+    has_replay = game is not None and (has_kill_cams or has_replay_segment or has_replay_buffer)
+    padding = max(16, int(sw * 0.012))
+    gap = 16
+    preferred_replay_w = int(sw * min(REPLAY_PANEL_WIDTH_RATIO, 0.34)) if has_replay else 0
+    min_replay_w = min(preferred_replay_w, max(260, int(sw * 0.22))) if has_replay else 0
+    table_top_min = int(sh * 0.40)
+    available_h = max(120, sh - table_top_min - padding)
+
+    layout = None
+    replay_w = 0
+    table_w = sw - 2 * padding
+    replay_candidates = []
+    if has_replay:
+        replay_candidates = [preferred_replay_w]
+        if min_replay_w and min_replay_w != preferred_replay_w:
+            replay_candidates.append(min_replay_w)
+    replay_candidates.append(0)
+    best = None
+    for replay_try in replay_candidates:
+        candidate_table_w = sw - padding - ((replay_try + REPLAY_PANEL_PADDING + gap) if replay_try else padding)
+        candidate = _fit_win_stats_layout(rows, candidate_table_w, available_h, n_players)
+        if not candidate or not candidate.get("columns"):
+            continue
+        choice = (candidate, replay_try, candidate_table_w)
+        if best is None or candidate["font_size"] > best[0]["font_size"]:
+            best = choice
+        if candidate["font_size"] >= 28:
+            layout, replay_w, table_w = choice
+            break
+    if layout is None and best is not None:
+        layout, replay_w, table_w = best
+    if layout is None:
+        layout = _fit_win_stats_layout(rows, table_w, available_h, n_players)
+
+    table_left = padding
+    font = layout["font"]
+    font_bold = layout["font_bold"]
+    header_h = layout["header_h"]
+    row_h = layout["row_h"]
+    trophy_size = layout["trophy_size"]
+    columns = layout["columns"]
+
+    if heading:
+        winner_label = heading
+        winner_color = winner.color if winner else (255, 255, 255)
+    elif winner:
+        winner_label = f"{winner.name} wins!"
+        winner_color = winner.color
+    else:
+        winner_label = "No one wins!"
+        winner_color = (255, 255, 255)
+    winner_max_size = min(120, int(sh * 0.08))
+    winner_font = _ui_font(36, bold=True)
+    for size in range(winner_max_size, 27, -4):
+        trial = _ui_font(size, bold=True)
+        if trial.size(winner_label)[0] <= table_w:
+            winner_font = trial
+            break
+    winner_label = _fit_text_to_width(winner_font, winner_label, table_w)
+    winner_surf = winner_font.render(winner_label, True, winner_color)
+    winner_h = winner_surf.get_height()
+    trophy_icon = max(16, min(28, winner_h // 3))
+    winner_trophies = int(getattr(winner, "trophies", 0) or 0) if winner else 0
+    trophy_strip_w = winner_trophies * (trophy_icon + 4) if winner_trophies else 0
+
+    table_h = header_h + n_players * row_h
+    table_bottom = sh - padding
+    caption_font = _ui_font(max(18, min(28, layout["font_size"])))
+    trophy_goal = TROPHY_WIN_THRESHOLD
+    if game is not None and hasattr(game, "trophy_threshold"):
+        trophy_goal = int(game.trophy_threshold())
+    caption_text = f"Match totals until {trophy_goal} trophies"
+    if game is not None:
+        extra = game.result_prompt() if hasattr(game, "result_prompt") else ""
+        if extra:
+            caption_text = f"{caption_text}   ·   {extra}"
+    caption_h = caption_font.get_height() + 10
+    winner_top = table_top_min
+    table_top = winner_top + winner_h + caption_h + 16
+    if table_top + table_h > table_bottom:
+        table_top = max(padding + winner_h + caption_h + 12, table_bottom - table_h)
+        winner_top = max(padding, table_top - winner_h - caption_h - 8)
+
+    winner_x = table_left + max(0, (table_w - winner_surf.get_width() - trophy_strip_w - 12) // 2)
+    surface.blit(winner_surf, (winner_x, winner_top))
+    if winner_trophies:
+        trophy_x = winner_x + winner_surf.get_width() + 12
+        trophy_y = winner_top + max(0, (winner_h - trophy_icon) // 2)
+        for i in range(winner_trophies):
+            draw_trophy_icon(surface, (trophy_x + i * (trophy_icon + 4), trophy_y), trophy_icon)
+    caption_surf = caption_font.render(caption_text, True, (186, 196, 210))
+    caption_rect = caption_surf.get_rect(midtop=(table_left + table_w // 2, winner_top + winner_h + 4))
+    surface.blit(caption_surf, caption_rect)
+
+    header_color = (200, 200, 200)
+    line_h = int(layout["font_size"] * 1.12)
+    for col in columns:
+        line_y = table_top
+        for line in col["lines"]:
+            text_surf = font.render(line, True, header_color)
+            _blit_clipped(surface, text_surf, table_left + col["x"], line_y, col["width"], line_h)
+            line_y += line_h
+    pygame.draw.line(
+        surface,
+        (140, 150, 165),
+        (table_left, table_top + header_h - 4),
+        (table_left + table_w, table_top + header_h - 4),
+        1,
+    )
+
+    for i, row in enumerate(rows):
+        row_y = table_top + header_h + i * row_h
+        text_y = row_y + max(0, (row_h - font.get_height()) // 2)
+        for col in columns:
+            key = col["key"]
+            x = table_left + col["x"]
+            if key == "wins":
+                icon_y = row_y + max(0, (row_h - trophy_size) // 2)
+                for j in range(row["trophies"]):
+                    icon_x = x + j * (trophy_size + 4)
+                    if icon_x + trophy_size > x + col["width"]:
+                        break
+                    draw_trophy_icon(surface, (icon_x, icon_y), trophy_size)
+                continue
+            if key == "name":
+                value = _fit_text_to_width(font, row["name"], max(12, col["width"] - 4))
+                color = row["color"]
+                use_font = font_bold
+            else:
+                value = row[key]
+                color = row["death_color"] if key == "death" else cell_colors.get(key, (255, 255, 255))
+                use_font = font_bold if row["bold"].get(key) else font
+            text_surf = use_font.render(value, True, color)
+            _blit_clipped(surface, text_surf, x, text_y, col["width"], row_h)
+
+    # Draw replay panel on the right side (if replay data is available)
+    if has_replay and replay_w > 0:
+        panel_w = replay_w
         panel_h = sh - 2 * REPLAY_PANEL_PADDING
         panel_x = sw - panel_w - REPLAY_PANEL_PADDING
         panel_y = REPLAY_PANEL_PADDING
@@ -778,13 +1100,28 @@ def draw_stat_screen(surface, winner, players, game=None):
         pygame.draw.rect(surface, (120, 120, 120), (panel_x, panel_y, panel_w, panel_h), 2)
 
         # Title
-        title = font_small.render("Replay", True, (255, 255, 255))
-        surface.blit(title, (panel_x + 10, panel_y + 8))
+        replay_font = _ui_font(min(36, max(18, panel_w // 10)))
+        title = replay_font.render("Replay", True, (255, 255, 255))
+        _blit_clipped(surface, title, panel_x + 10, panel_y + 8, panel_w - 20, title.get_height())
 
-        # Choose a frame to render: if a frozen replay segment exists, animate it in a loop
         focus_name = getattr(game, 'replay_focus_player', None)
         chosen_frame = None
-        if hasattr(game, 'replay_segment') and game.replay_segment:
+        clips = list(getattr(game, "kill_cam_clips", None) or [])
+        if clips:
+            if not getattr(game, "replay_loop_anchor_time", None):
+                game.replay_loop_anchor_time = game.current_time
+            loop_elapsed = max(0, int(game.current_time - game.replay_loop_anchor_time))
+            clip, target_t = pick_kill_cam(clips, loop_elapsed)
+            if clip is not None:
+                focus_name = clip.get("name") or focus_name
+                chosen_frame = frame_at_time(clip.get("frames") or [], target_t)
+                cam_label = _ui_font(min(22, max(14, panel_w // 16)))
+                label = cam_label.render(f"Kill cam: {focus_name}", True, (220, 220, 220))
+                _blit_clipped(
+                    surface, label, panel_x + 10, panel_y + 8 + title.get_height(),
+                    panel_w - 20, label.get_height(),
+                )
+        elif hasattr(game, 'replay_segment') and game.replay_segment:
             seg = game.replay_segment
             # Derive target time within segment loop
             seg_start = getattr(game, 'replay_segment_start_time', 0) or 0
@@ -796,21 +1133,14 @@ def draw_stat_screen(surface, winner, players, game=None):
             loop_elapsed = max(0, int(game.current_time - game.replay_loop_anchor_time))
             loop_offset = loop_elapsed % duration
             target_t = seg_start + loop_offset
-            # Find the most recent snapshot at or before target_t
-            last_idx = 0
-            for idx, (t, snap) in enumerate(seg):
-                if t <= target_t:
-                    last_idx = idx
-                else:
-                    break
-            chosen_frame = seg[last_idx][1]
+            chosen_frame = frame_at_time(seg, target_t)
         else:
             # Fallback: still preview from the captured window (may disappear as buffer trims)
             end_t = getattr(game, 'replay_end_time', game.current_time)
             start_t = getattr(game, 'replay_start_time', max(0, end_t - REPLAY_BUFFER_MS))
-            frames = [snap for (t, snap) in game.replay_buffer if start_t <= t <= end_t]
+            frames = [(t, snap) for (t, snap) in game.replay_buffer if start_t <= t <= end_t]
             if frames:
-                chosen_frame = frames[-1]
+                chosen_frame = frames[-1][1] if isinstance(frames[-1], tuple) else frames[-1]
         if chosen_frame:
             players_state = chosen_frame['players']
             # Determine camera center
@@ -826,91 +1156,138 @@ def draw_stat_screen(surface, winner, players, game=None):
             view_h = (2 * cells_radius + 1) * CELL_SIZE
             view_rect = pygame.Rect(cam_x_px - view_w // 2, cam_y_px - view_h // 2, view_w, view_h)
 
-            # Create a surface for the world snapshot
-            gw = getattr(game, 'grid_width', len(game.board[0]))
-            gh = getattr(game, 'grid_height', len(game.board))
+            frame = hydrate_replay_snapshot(chosen_frame)
+            board = frame["board"] if frame["board"] is not None else game.board
+            gw = int(frame["grid_width"] or getattr(game, "grid_width", len(board[0])))
+            gh = int(frame["grid_height"] or getattr(game, "grid_height", len(board)))
             world_surface = pygame.Surface((gw * CELL_SIZE, gh * CELL_SIZE))
-            # Draw board cells
-            for y in range(gh):
-                for x in range(gw):
-                    r = np.array([x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE], dtype=np.float64)
-                    if game.board[y][x] == EMPTY:
-                        pygame.gfxdraw.box(world_surface, r, COLOR_BG)
-                    elif game.board[y][x] == INDESTRUCTIBLE:
-                        pygame.gfxdraw.box(world_surface, r, COLOR_INDESTRUCTIBLE)
-                        pygame.draw.rect(world_surface, (80,80,80), r, 1)
-                    elif game.board[y][x] == DESTRUCTIBLE:
-                        pygame.gfxdraw.box(world_surface, r, COLOR_DESTRUCTIBLE)
-                        draw_brick_pattern(r, world_surface)
-                        pygame.draw.rect(world_surface, (80,80,80), r, 1)
+            world_game = types.SimpleNamespace(
+                board=board,
+                grid_width=gw,
+                grid_height=gh,
+                powerups=frame["powerups"],
+            )
+            draw_board(world_surface, world_game)
+            draw_powerups(world_surface, world_game)
+            draw_bombs(world_surface, frame["t"], frame["bombs"])
+            if frame["explosions"]:
+                draw_explosions(world_surface, frame["t"], frame["explosions"])
+            draw_players(world_surface, frame["players"], frame["explosions"], frame["t"], frame["bombs"])
 
-            # Draw bombs
-            for b in chosen_frame['bombs']:
-                cx = b['x'] * CELL_SIZE + CELL_SIZE//2
-                cy = b['y'] * CELL_SIZE + CELL_SIZE//2
-                pygame.gfxdraw.filled_circle(world_surface, cx, cy, BOMB_BASE_RADIUS, COLOR_BOMB_FILL)
-                pygame.gfxdraw.aacircle(world_surface, cx, cy, BOMB_BASE_RADIUS, COLOR_BOMB_OUTLINE)
-
-            # Draw powerups
-            for pu in chosen_frame['powerups']:
-                center = (pu['x'] * CELL_SIZE + CELL_SIZE//2, pu['y'] * CELL_SIZE + CELL_SIZE//2)
-                size = CELL_SIZE - 20
-                draw_powerup_icon(world_surface, center, size, pu['type'])
-
-            # Draw players
-            for ps in players_state:
-                if not ps['alive']:
-                    continue
-                pos = (int(ps['pos'][0]), int(ps['pos'][1]))
-                r = ps['draw_radius']
-                col = ps['color']
-                pygame.gfxdraw.filled_circle(world_surface, pos[0], pos[1], r, col)
-                pygame.gfxdraw.aacircle(world_surface, pos[0], pos[1], r, col)
-
-            # Crop and scale to panel; guard against empty clip rects.
-            clip_rect = view_rect.clip(world_surface.get_rect())
-            if clip_rect.width > 0 and clip_rect.height > 0:
-                sub_surface = world_surface.subsurface(clip_rect)
-                scaled = pygame.transform.smoothscale(sub_surface, (panel_w - 2 * REPLAY_PANEL_PADDING, panel_h - 40))
-                surface.blit(scaled, (panel_x + REPLAY_PANEL_PADDING, panel_y + 30))
+            # Keep a square crop even at map edges, then letterbox into the tall panel.
+            crop = pygame.Surface((view_w, view_h))
+            crop.fill(COLOR_BG)
+            crop.blit(world_surface, (-view_rect.x, -view_rect.y))
+            title_h = 52 if clips else 30
+            avail_w = max(1, panel_w - 2 * REPLAY_PANEL_PADDING)
+            avail_h = max(1, panel_h - title_h - REPLAY_PANEL_PADDING)
+            dest_w, dest_h, ox, oy = letterbox_dest(view_w, view_h, avail_w, avail_h)
+            if dest_w > 0 and dest_h > 0:
+                scaled = pygame.transform.scale(crop, (dest_w, dest_h))
+                surface.blit(
+                    scaled,
+                    (panel_x + REPLAY_PANEL_PADDING + ox, panel_y + title_h + oy),
+                )
         
     #draw_controls(surface)
 
-def draw_champion_screen(surface, champion):
-    sw, sh = surface.get_size()
-    surface.fill(COLOR_BG) # move inside drawing fcns
-    font = pygame.font.SysFont("arial", 120, bold=True)
-    draw_title_page(surface, alpha=255)
-    trophy_surface = pygame.Surface((200, 40), pygame.SRCALPHA)
-    for j in range(champion.trophies):
-        draw_trophy_icon(trophy_surface, (j * 30, 0), 24)
-    text = font.render(f"Champion: {champion.name}", True, champion.color)
-    rect = text.get_rect(center=(sw // 2, sh // 2 - 100))
-    surface.blit(text, rect)
-    surface.blit(trophy_surface, (sw // 2 - 100, sh // 2 + 100))
+def draw_champion_screen(surface, champion, players=None, game=None):
+    """Stats, kill-cams, and a compact BomberMarv challenge banner until Enter."""
+    champ_name = champion.name if champion is not None else "Champion"
+    roster = players if players is not None else ([champion] if champion else [])
+    draw_stat_screen(surface, champion, roster, game, heading=f"Champion: {champ_name}")
+    _draw_champion_challenge_banner(surface, champion, game)
 
 
-def draw_boss_result_screen(surface, winner):
-    """Draw boss fight result: Champion wins! or Boss wins!"""
+def _draw_champion_challenge_banner(surface, champion, game=None):
+    """Compact boss challenge art in the leftover space above the stats table."""
+    _ensure_fonts_initialized()
     sw, sh = surface.get_size()
-    surface.fill(COLOR_BG)
-    font = pygame.font.SysFont("arial", 144, bold=True)
-    font_small = pygame.font.SysFont("arial", 56)
-    draw_title_page(surface, alpha=255)
-    if winner:
-        is_boss = getattr(winner, 'is_ai', False)
-        if is_boss:
-            text = font.render("Boss wins!", True, winner.color)
-        else:
-            text = font.render(f"{winner.name} wins!", True, winner.color)
+    banner_h = int(sh * 0.34)
+    banner_w = int(sw * 0.56)
+    if banner_h < 90 or banner_w < 220:
+        return
+
+    champ_name = champion.name if champion is not None else "Champion"
+    champ_color = getattr(champion, "color", (240, 214, 130)) if champion is not None else (240, 214, 130)
+    quote_font = _ui_font(min(26, max(16, sh // 40)), bold=True)
+    stat_font = _ui_font(min(18, max(13, sh // 52)))
+    pulse = 0.5 + 0.5 * math.sin(time.time() * 3.0)
+    champ_r = max(22, int(min(banner_w, banner_h) * 0.16))
+    boss_r = max(28, int(min(banner_w, banner_h) * 0.22))
+    cy = int(banner_h * 0.58)
+    champ_pos = (int(banner_w * 0.22), cy)
+    boss_pos = (int(banner_w * 0.72), cy)
+    now = getattr(game, "current_time", 0) if game is not None else int(time.time() * 1000)
+
+    champ_portrait = types.SimpleNamespace(
+        name=champ_name,
+        color=champ_color,
+        pos=champ_pos,
+        alive=True,
+        draw_radius=champ_r,
+        direction=(1.0, 0.0),
+        animation_time=float(now),
+        quad_damage=False,
+        quad_damage_start_time=0,
+        death_animation_time=0,
+        pickup_message="",
+        pickup_message_end_time=0,
+        global_id="champion-portrait",
+        get_grid_pos=lambda: (0, 0),
+    )
+    boss_portrait = types.SimpleNamespace(
+        name=BOSS_NAME,
+        color=BOSS_COLOR,
+        pos=boss_pos,
+        alive=True,
+        draw_radius=boss_r,
+        direction=(-1.0, 0.0),
+        animation_time=float(now),
+        quad_damage=False,
+        quad_damage_start_time=0,
+        death_animation_time=0,
+        pickup_message="",
+        pickup_message_end_time=0,
+        global_id="boss-portrait",
+        get_grid_pos=lambda: (0, 0),
+    )
+    glow_r = int(boss_r * (1.28 + 0.08 * pulse))
+    pygame.draw.circle(surface, (28, 28, 34), boss_pos, glow_r)
+    pygame.draw.circle(surface, (90, 90, 104), boss_pos, glow_r, 3)
+    draw_players(surface, [champ_portrait, boss_portrait])
+
+    stats = [
+        f"Speed x{BOSS_SPEED_MULTIPLIER:g}",
+        f"Fire {BOSS_START_FIRE_POWER}",
+        f"Bombs {BOSS_START_BOMB_CAPACITY}",
+        f"+{BOSS_EXTRA_LIVES} life",
+    ]
+    stats_surf = stat_font.render("   ·   ".join(stats), True, (186, 196, 210))
+    surface.blit(stats_surf, stats_surf.get_rect(midtop=(boss_pos[0], min(banner_h - 8, boss_pos[1] + boss_r + 10))))
+
+    quote = f'"{BOSS_QUOTE}"'
+    bubble_w = min(banner_w - 24, max(240, quote_font.size(quote)[0] + 28))
+    bubble_h = quote_font.get_height() + 16
+    bubble = pygame.Rect(0, 0, bubble_w, bubble_h)
+    bubble.centerx = boss_pos[0]
+    bubble.bottom = max(bubble_h + 8, boss_pos[1] - boss_r - 12)
+    pygame.draw.rect(surface, (24, 26, 32), bubble, border_radius=12)
+    pygame.draw.rect(surface, (210, 214, 230), bubble, 2, border_radius=12)
+    quote_surf = quote_font.render(_fit_text_to_width(quote_font, quote, bubble_w - 16), True, (236, 240, 248))
+    surface.blit(quote_surf, quote_surf.get_rect(center=bubble.center))
+
+
+def draw_boss_result_screen(surface, winner, players=None, game=None):
+    """Draw boss fight result with full match stats and a reset prompt."""
+    if winner is not None and getattr(winner, "is_ai", False):
+        heading = f"{BOSS_NAME} wins!"
+    elif winner is not None:
+        heading = f"{winner.name} wins!"
     else:
-        text = font.render("Draw!", True, (255, 255, 255))
-    rect = text.get_rect(center=(sw // 2, sh // 2 - 80))
-    surface.blit(text, rect)
-    prompt = font_small.render("Press Enter to continue", True, (200, 200, 200))
-    prompt_rect = prompt.get_rect(center=(sw // 2, sh // 2 + 60))
-    surface.blit(prompt, prompt_rect)
-    
+        heading = "Draw!"
+    roster = players if players is not None else ([winner] if winner else [])
+    draw_stat_screen(surface, winner, roster, game, heading=heading) 
 
 def draw_game_screen(surface, theGame):
     surface.fill(COLOR_BG)
@@ -920,7 +1297,7 @@ def draw_game_screen(surface, theGame):
     draw_explosions(surface, theGame.current_time, theGame.explosions)
     if SHOW_EXPLOSION_COLLISION_DEBUG:
         draw_explosion_collision_debug(surface, theGame.current_time, theGame.explosions, theGame.players)
-    draw_players(surface, theGame.players, theGame.explosions, theGame.current_time)
+    draw_players(surface, theGame.players, theGame.explosions, theGame.current_time, theGame.bombs)
     if SHOW_PLAYER_DIRECTIONS:
         draw_player_directions(surface, theGame.players, theGame)
         
@@ -975,19 +1352,68 @@ def draw_get_ready(surface):
     start_rect = start_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT- 500))
     surface.blit(start_text, start_rect)
 
+
+def _get_lobby_backdrop(sw, sh):
+    key = (int(sw), int(sh))
+    if _LOBBY_BG_CACHE["key"] == key and _LOBBY_BG_CACHE["surf"] is not None:
+        return _LOBBY_BG_CACHE["surf"]
+    surf = pygame.Surface((sw, sh))
+    surf.fill((16, 20, 28))
+    cell = 56
+    dark = (20, 25, 34)
+    for y in range(0, sh, cell):
+        for x in range(0, sw, cell):
+            if ((x // cell) + (y // cell)) % 2 == 0:
+                pygame.draw.rect(surf, dark, (x, y, cell, cell))
+    pygame.draw.rect(surf, (212, 175, 55), pygame.Rect(0, 0, sw, 7))
+    pygame.draw.rect(surf, (42, 32, 12), pygame.Rect(0, 7, sw, 3))
+    _LOBBY_BG_CACHE["key"] = key
+    _LOBBY_BG_CACHE["surf"] = surf
+    return surf
+
+
+def _draw_panel(surface, rect, fill, border, radius=16):
+    pygame.draw.rect(surface, fill, rect, border_radius=radius)
+    pygame.draw.rect(surface, border, rect, 2, border_radius=radius)
+
+
+def _draw_pill(surface, font, text, fill, text_color, x, y, width, height, border=None):
+    rect = pygame.Rect(int(x), int(y), int(width), int(height))
+    pygame.draw.rect(surface, fill, rect, border_radius=8)
+    if border is not None:
+        pygame.draw.rect(surface, border, rect, 1, border_radius=8)
+    _blit_label(surface, font, text, text_color, rect.x + 4, rect.y, rect.width - 8, rect.height)
+
+
+def _draw_option_pills(surface, font, values, x, y, button_w, button_h, gap, selected_idx, current_idx, pulse):
+    """Draw a row of numeric lobby option buttons. Returns the used height."""
+    for idx, label in enumerate(values):
+        rect = pygame.Rect(int(x + idx * (button_w + gap)), int(y), int(button_w), int(button_h))
+        selected = idx == selected_idx
+        current = idx == current_idx
+        if selected:
+            glow = int(180 + 60 * pulse)
+            fill = (glow, 180, 62)
+            text_col = (20, 24, 28)
+        elif current:
+            fill = (86, 122, 196)
+            text_col = (236, 241, 248)
+        else:
+            fill = (62, 76, 96)
+            text_col = (220, 228, 240)
+        pygame.draw.rect(surface, fill, rect, border_radius=10)
+        pygame.draw.rect(surface, (196, 209, 228) if selected or current else (90, 108, 132), rect, 1, border_radius=10)
+        _blit_label(surface, font, str(label), text_col, rect.x, rect.y, rect.width, rect.height)
+    return button_h
+
+
 def draw_game_prep(surface, Game):
     """Draw the host lobby screen with a clean split layout."""
     _ensure_fonts_initialized()
-    surface.fill((24, 28, 34))
+    sw, sh = surface.get_size()
+    surface.blit(_get_lobby_backdrop(sw, sh), (0, 0))
     pulse = 0.5 + 0.5 * math.sin(time.time() * 8.0)
 
-    # Header (scaled for 2x text)
-    title_font = pygame.font.SysFont("arial", 108, bold=True)
-    subtitle_font = pygame.font.SysFont("arial", 56)
-    title = title_font.render("BomberMarv Lobby", True, (238, 244, 255))
-    subtitle = subtitle_font.render("Host setup and connected clients", True, (160, 176, 200))
-    surface.blit(title, (50, 28))
-    surface.blit(subtitle, (52, 92))
     # Game._cached_status is refreshed by the main loop; do not block drawing here.
     if not hasattr(Game, '_cached_status'):
         Game._cached_status = None
@@ -995,7 +1421,7 @@ def draw_game_prep(surface, Game):
     # Build player list used by the left panel.
     all_players = []
     global_player_id = 1
-    for i in range(Game.prep_num_players):
+    for i in range(min(int(Game.prep_num_players), MAX_PLAYERS)):
         all_players.append({
             'id': global_player_id,
             'name': Game.prep_player_names[i % len(Game.prep_player_names)],
@@ -1014,11 +1440,15 @@ def draw_game_prep(surface, Game):
         cached_players = Game._cached_status.get('players', {})
 
     for client_id, client_info in cached_clients.items():
+        if len(all_players) >= MAX_PLAYERS:
+            break
         if not client_info.get('registered', False):
             continue
         display_name = str(client_info.get('display_name', '') or '').strip()
         client_latency_5s = float(client_info.get('avg_latency_5s', client_info.get('avg_latency', 0)) or 0)
         for player_id in client_info.get('players', []):
+            if len(all_players) >= MAX_PLAYERS:
+                break
             pinfo = cached_players.get(str(player_id), {})
             keys = pinfo.get('keys', {})
             pressed = []
@@ -1041,93 +1471,185 @@ def draw_game_prep(surface, Game):
             })
             global_player_id += 1
 
-    # Panels (scaled for 2x text)
-    top_y = 160
-    panel_h = BASE_HEIGHT - 320
-    left_panel = pygame.Rect(44, top_y, int(BASE_WIDTH * 0.62), panel_h)
-    right_panel = pygame.Rect(left_panel.right + 20, top_y, BASE_WIDTH - left_panel.right - 64, panel_h)
+    used_names = {p['name'] for p in all_players}
+    human_count = len(all_players)
+    ai_count = min(int(getattr(Game, "prep_ai_count", 0) or 0), MAX_PLAYERS - human_count)
+    name_pool = [name for name in player_names if name not in used_names]
+    for slot in range(max(0, ai_count)):
+        ai_name = f"{name_pool[slot]} AI" if slot < len(name_pool) else f"CPU {slot + 1}"
+        all_players.append({
+            'id': global_player_id,
+            'name': ai_name,
+            'color': (human_count + slot) % len(colors),
+            'team': (human_count + slot) % 2,
+            'type': 'ai',
+            'source': slot,
+            'status': 'CPU',
+        })
+        global_player_id += 1
 
-    pygame.draw.rect(surface, (34, 41, 52), left_panel, border_radius=14)
-    pygame.draw.rect(surface, (69, 87, 112), left_panel, 2, border_radius=14)
-    pygame.draw.rect(surface, (30, 37, 48), right_panel, border_radius=14)
-    pygame.draw.rect(surface, (64, 80, 104), right_panel, 2, border_radius=14)
+    margin = max(28, int(sw * 0.02))
+    title_font = _ui_font(min(58, max(36, sh // 32)), bold=True)
+    subtitle_font = _ui_font(min(24, max(16, sh // 56)))
+    badge_font = _ui_font(min(22, max(16, sh // 58)), bold=True)
+    header_top = 22
+    trophy_goal = int(Game.trophy_threshold()) if hasattr(Game, "trophy_threshold") else TROPHY_WIN_THRESHOLD
+    badge_text = f"First to {trophy_goal} trophies"
+    badge_w = badge_font.size(badge_text)[0] + 64
+    badge_h = 40
+    badge_rect = pygame.Rect(sw - margin - badge_w, header_top + 10, badge_w, badge_h)
+    pygame.draw.rect(surface, (46, 38, 18), badge_rect, border_radius=12)
+    pygame.draw.rect(surface, (212, 175, 55), badge_rect, 1, border_radius=12)
+    trophy_size = 22
+    draw_trophy_icon(surface, (badge_rect.x + 12, badge_rect.y + (badge_h - trophy_size) // 2), trophy_size)
+    _blit_label(
+        surface, badge_font, badge_text, (240, 214, 130),
+        badge_rect.x + 40, badge_rect.y, badge_rect.width - 50, badge_h,
+    )
 
-    section_font = pygame.font.SysFont("arial", 64, bold=True)
-    surface.blit(section_font.render("Players", True, (235, 242, 255)), (left_panel.x + 24, left_panel.y + 16))
-    surface.blit(section_font.render("Remote Clients", True, (235, 242, 255)), (right_panel.x + 24, right_panel.y + 16))
+    title_w = max(120, badge_rect.x - margin - 24)
+    _blit_label(surface, title_font, "BomberMarv Lobby", (238, 244, 255), margin, header_top, title_w, title_font.get_height() + 4, vcenter=False)
+    _blit_label(
+        surface, subtitle_font, "Host setup  ·  local players, AI opponents, names, colors, teams",
+        (186, 198, 214), margin, header_top + title_font.get_height() + 6, title_w, subtitle_font.get_height() + 4, vcenter=False,
+    )
 
-    # Local player count controls
-    label_font = pygame.font.SysFont("arial", 52, bold=True)
-    surface.blit(label_font.render("Local player count", True, (185, 214, 180)), (left_panel.x + 24, left_panel.y + 72))
+    footer_h = max(116, int(sh * 0.12))
+    header_bottom = header_top + title_font.get_height() + subtitle_font.get_height() + 28
+    gap = 20
+    panel_h = max(240, sh - footer_h - header_bottom - 18)
+    left_w = int((sw - margin * 2 - gap) * 0.64)
+    left_panel = pygame.Rect(margin, header_bottom, left_w, panel_h)
+    right_panel = pygame.Rect(left_panel.right + gap, header_bottom, sw - margin - left_panel.right - gap, panel_h)
+    footer = pygame.Rect(margin, sh - footer_h - 10, sw - margin * 2, footer_h)
 
-    button_y = left_panel.y + 120
-    button_w = 68
-    button_h = 56
-    for idx in range(6):
-        rect = pygame.Rect(left_panel.x + 24 + idx * (button_w + 12), button_y, button_w, button_h)
-        selected = (Game.prep_section == 'local_players' and Game.prep_cursor_row == 0 and Game.prep_cursor_col == idx)
-        if selected:
-            glow = int(180 + 60 * pulse)
-            fill = (glow, 180, 62)
-            text_col = (20, 24, 28)
-        else:
-            fill = (74, 90, 112) if idx + 1 != Game.prep_num_players else (106, 144, 216)
-            text_col = (236, 241, 248)
-        pygame.draw.rect(surface, fill, rect, border_radius=8)
-        pygame.draw.rect(surface, (196, 209, 228), rect, 1, border_radius=10)
-        txt = label_font.render(str(idx + 1), True, text_col)
-        surface.blit(txt, txt.get_rect(center=rect.center))
+    _draw_panel(surface, left_panel, (32, 39, 51), (86, 104, 132))
+    _draw_panel(surface, right_panel, (28, 35, 46), (74, 92, 118))
+    _draw_panel(surface, footer, (26, 34, 44), (80, 97, 121), radius=14)
 
-    # Player rows (scaled for 68px name font)
-    row_y = button_y + button_h + 28
-    row_h = 88
-    max_rows = max(1, (left_panel.bottom - row_y - 16) // row_h)
+    inset = 20
+    section_font = _ui_font(min(32, max(22, sh // 48)), bold=True)
+    label_font = _ui_font(min(20, max(16, sh // 60)), bold=True)
+    _blit_label(surface, section_font, "Players", (235, 242, 255), left_panel.x + inset, left_panel.y + 14, left_panel.width - 40, section_font.get_height() + 2, vcenter=False)
+    _blit_label(surface, section_font, "Remote clients", (235, 242, 255), right_panel.x + inset, right_panel.y + 14, right_panel.width - 40, section_font.get_height() + 2, vcenter=False)
+
+    count_label_y = left_panel.y + 14 + section_font.get_height() + 8
+    _blit_label(surface, label_font, "Local player count", (185, 214, 180), left_panel.x + inset, count_label_y, 420, label_font.get_height() + 2, vcenter=False)
+
+    button_y = count_label_y + label_font.get_height() + 8
+    button_h = min(44, max(32, sh // 44))
+    button_gap = 8
+    button_w = min(52, max(32, (left_panel.width - inset * 2 - button_gap * (MAX_PLAYERS - 1)) // MAX_PLAYERS))
+    button_font = _ui_font(min(26, button_h - 8), bold=True)
+    local_selected = Game.prep_section == 'local_players' and Game.prep_cursor_row == 0
+    _draw_option_pills(
+        surface, button_font, list(range(1, MAX_PLAYERS + 1)),
+        left_panel.x + inset, button_y, button_w, button_h, button_gap,
+        Game.prep_cursor_col if local_selected else -1,
+        Game.prep_num_players - 1,
+        pulse,
+    )
+
+    ai_label_y = button_y + button_h + 10
+    _blit_label(surface, label_font, "AI opponents", (180, 200, 220), left_panel.x + inset, ai_label_y, 420, label_font.get_height() + 2, vcenter=False)
+    ai_button_y = ai_label_y + label_font.get_height() + 6
+    ai_selected = Game.prep_section == 'local_players' and Game.prep_cursor_row == 1
+    _draw_option_pills(
+        surface, button_font, list(range(MAX_PLAYERS)),
+        left_panel.x + inset, ai_button_y, button_w, button_h, button_gap,
+        Game.prep_cursor_col if ai_selected else -1,
+        int(getattr(Game, "prep_ai_count", 0) or 0),
+        pulse,
+    )
+
+    trophy_label_y = ai_button_y + button_h + 10
+    _blit_label(surface, label_font, "Trophies to win (boss fight)", (212, 190, 140), left_panel.x + inset, trophy_label_y, 520, label_font.get_height() + 2, vcenter=False)
+    trophy_button_y = trophy_label_y + label_font.get_height() + 6
+    trophy_selected = Game.prep_section == 'local_players' and Game.prep_cursor_row == 2
+    _draw_option_pills(
+        surface, button_font, list(range(MIN_TROPHY_WIN, MAX_TROPHY_WIN + 1)),
+        left_panel.x + inset, trophy_button_y, button_w, button_h, button_gap,
+        Game.prep_cursor_col if trophy_selected else -1,
+        trophy_goal - 1,
+        pulse,
+    )
+
+    row_y = trophy_button_y + button_h + 14
+    available_rows = max(1, left_panel.bottom - row_y - 16)
+    n_show = max(1, len(all_players))
+    row_h = min(88, max(64, available_rows // min(n_show, 8)))
+    max_rows = max(1, available_rows // row_h)
+    if len(all_players) > max_rows:
+        max_rows = max(1, (available_rows - 26) // row_h)
     shown_players = all_players[:max_rows]
+    name_font = _ui_font(min(30, max(18, row_h - 40)), bold=True)
+    meta_font = _ui_font(min(18, max(14, row_h - 52)))
+    chip = min(36, row_h - 22)
+    team_w = 52
+    role_w = 78
+
     for i, p in enumerate(shown_players):
-        rect = pygame.Rect(left_panel.x + 18, row_y + i * row_h, left_panel.width - 36, row_h - 8)
-        selected = (Game.prep_section == 'local_players' and Game.prep_cursor_row == i + 1)
+        rect = pygame.Rect(left_panel.x + 14, row_y + i * row_h, left_panel.width - 28, row_h - 8)
+        selected = (Game.prep_section == 'local_players' and Game.prep_cursor_row == i + 3)
         editing = (Game.prep_editing_name and Game.prep_name_edit_index == i)
         if selected:
-            glow = int(76 + 36 * pulse)
-            row_bg = (glow, glow + 10, 110)
+            glow = int(70 + 36 * pulse)
+            row_bg = (glow, glow + 12, 112)
         else:
-            row_bg = (43, 52, 66)
-        pygame.draw.rect(surface, row_bg, rect, border_radius=8)
-        pygame.draw.rect(surface, (102, 122, 148), rect, 1, border_radius=10)
+            row_bg = (41, 50, 64)
+        pygame.draw.rect(surface, row_bg, rect, border_radius=10)
+        pygame.draw.rect(surface, (212, 175, 55) if selected else (102, 122, 148), rect, 2 if selected else 1, border_radius=10)
+        player_color = colors[p['color'] % len(colors)]
+        pygame.draw.rect(surface, player_color, pygame.Rect(rect.x, rect.y, 8, rect.height), border_top_left_radius=10, border_bottom_left_radius=10)
 
-        # color chip (scaled for 2x text)
-        chip_rect = pygame.Rect(rect.x + 12, rect.y + (row_h - 36) // 2, 36, 36)
-        pygame.draw.rect(surface, colors[p['color'] % len(colors)], chip_rect, border_radius=8)
+        chip_rect = pygame.Rect(rect.x + 18, rect.y + (rect.height - chip) // 2, chip, chip)
+        pygame.draw.rect(surface, player_color, chip_rect, border_radius=8)
         pygame.draw.rect(surface, (220, 232, 248), chip_rect, 1, border_radius=8)
 
-        name = p['name'] + "_" if editing else p['name']
-        if p['type'] == 'local':
-            name = f"L{p['id']}: {name}"
-        else:
-            name = f"R{p['id']}: {name}"
-        name_color = (250, 234, 130) if (selected or editing) else (234, 242, 255)
-        status_color = (142, 246, 160) if p['type'] == 'client' and p['status'] != 'IDLE' else (164, 181, 203)
-        status_text = p['status']
-        team_text = f"T{int(p.get('team', 0)) + 1}"
-        if p['type'] == 'client':
-            status_text = f"{p['status']} | {int(round(float(p.get('latency_5s', 0))))} ms"
-        status_text = f"{team_text} | {status_text}"
+        name_h = name_font.get_height()
+        meta_h = meta_font.get_height()
+        block_h = name_h + 4 + meta_h
+        block_y = rect.y + max(4, (rect.height - block_h) // 2)
+        team_rect = pygame.Rect(chip_rect.right + 10, block_y + max(0, (name_h - 24) // 2), team_w, 24)
+        _draw_pill(surface, meta_font, f"T{int(p.get('team', 0)) + 1}", (58, 72, 96), (210, 220, 235), team_rect.x, team_rect.y, team_rect.width, team_rect.height)
 
-        line_font = pygame.font.SysFont("arial", 68, bold=True)
-        status_font = pygame.font.SysFont("arial", 56, bold=True)
-        surface.blit(line_font.render(name, True, name_color), (chip_rect.right + 16, rect.y + (row_h - 68) // 2))
-        surface.blit(status_font.render(status_text, True, status_color), (rect.x + int(rect.width * 0.58), rect.y + (row_h - 56) // 2))
+        if p['type'] == 'local':
+            role = "LOCAL"
+            role_fill = (52, 92, 74)
+        elif p['type'] == 'ai':
+            role = "AI"
+            role_fill = (108, 72, 52)
+        else:
+            role = "REMOTE"
+            role_fill = (52, 78, 108)
+        role_rect = pygame.Rect(rect.right - 12 - role_w, block_y + max(0, (name_h - 24) // 2), role_w, 24)
+        _draw_pill(surface, meta_font, role, role_fill, (220, 236, 230), role_rect.x, role_rect.y, role_rect.width, role_rect.height)
+
+        name = p['name'] + "_" if editing else p['name']
+        prefix = f"L{p['id']}" if p['type'] == 'local' else (f"AI{p['id']}" if p['type'] == 'ai' else f"R{p['id']}")
+        name = f"{prefix}  {name}"
+        name_color = (250, 234, 130) if (selected or editing) else (234, 242, 255)
+        name_x = team_rect.right + 10
+        name_w = max(40, role_rect.x - 10 - name_x)
+        _blit_label(surface, name_font, name, name_color, name_x, block_y, name_w, name_h, vcenter=False)
+
+        status_text = p['status']
+        if p['type'] == 'client':
+            status_text = f"{p['status']}  ·  {int(round(float(p.get('latency_5s', 0))))} ms"
+        status_color = (142, 246, 160) if p['type'] == 'client' and p['status'] != 'IDLE' else (164, 181, 203)
+        _blit_label(surface, meta_font, status_text, status_color, name_x, block_y + name_h + 4, name_w, meta_h, vcenter=False)
 
     if len(all_players) > max_rows:
         more = len(all_players) - max_rows
-        surface.blit(font_small.render(f"... and {more} more", True, (180, 188, 200)), (left_panel.x + 24, left_panel.bottom - 44))
+        _blit_label(surface, meta_font, f"... and {more} more", (180, 188, 200), left_panel.x + inset, left_panel.bottom - 26, 280, 22)
 
-    # Right panel client cards (scaled for 64px font)
-    client_card_y = right_panel.y + 72
-    card_h = 120
+    card_font = _ui_font(min(24, max(16, sh // 58)), bold=True)
+    card_sub = _ui_font(min(18, max(14, sh // 64)))
+    client_card_y = right_panel.y + 14 + section_font.get_height() + 14
+    card_h = min(92, max(70, (right_panel.bottom - client_card_y - 20) // 4))
     if cached_clients:
         for client_id, info in cached_clients.items():
-            if client_card_y > right_panel.bottom - card_h - 20:
+            if client_card_y + card_h > right_panel.bottom - 12:
                 break
             last_seen = info.get('last_seen', 0)
             age = time.time() - last_seen
@@ -1136,40 +1658,46 @@ def draw_game_prep(surface, Game):
             display_name = str(info.get('display_name', '') or '').strip()
             latency = info.get('avg_latency_5s', info.get('avg_latency', 0))
             samples = info.get('latency_samples_5s', info.get('latency_samples', 0))
-            card = pygame.Rect(right_panel.x + 16, client_card_y, right_panel.width - 32, card_h)
-            pygame.draw.rect(surface, (43, 52, 66), card, border_radius=10)
-            pygame.draw.rect(surface, (95, 116, 140), card, 1, border_radius=10)
-            line1 = f"Client {client_id} - {reg}"
+            card = pygame.Rect(right_panel.x + 16, client_card_y, right_panel.width - 32, card_h - 10)
+            pygame.draw.rect(surface, (40, 50, 64), card, border_radius=12)
+            pygame.draw.rect(surface, (95, 116, 140), card, 1, border_radius=12)
+            pygame.draw.circle(surface, online_col, (card.x + 22, card.y + card.height // 2), 7)
+            line1 = f"Client {client_id}  ·  {reg}"
             if display_name:
-                line1 += f" ({display_name})"
-            line2 = f"Players: {len(info.get('players', []))}   Latency(5s): {latency}ms ({samples})"
-            surface.blit(font_small.render(line1, True, online_col), (card.x + 16, card.y + 12))
-            surface.blit(font_small.render(line2, True, (188, 204, 224)), (card.x + 16, card.y + 52))
-            client_card_y += card_h + 16
+                line1 += f"  ·  {display_name}"
+            line2 = f"{len(info.get('players', []))} player(s)  ·  {latency} ms ({samples})"
+            text_x = card.x + 40
+            text_w = card.width - 52
+            _blit_label(surface, card_font, line1, online_col, text_x, card.y + 8, text_w, card_font.get_height() + 2, vcenter=False)
+            _blit_label(surface, card_sub, line2, (188, 204, 224), text_x, card.y + 10 + card_font.get_height(), text_w, card_sub.get_height() + 2, vcenter=False)
+            client_card_y += card_h
     else:
-        surface.blit(font_small.render("No remote clients connected.", True, (172, 184, 204)), (right_panel.x + 20, right_panel.y + 72))
+        empty = pygame.Rect(right_panel.x + 16, right_panel.y + 64, right_panel.width - 32, 72)
+        pygame.draw.rect(surface, (36, 44, 56), empty, border_radius=12)
+        pygame.draw.rect(surface, (70, 88, 112), empty, 1, border_radius=12)
+        _blit_label(surface, card_sub, "No remote clients connected.", (172, 184, 204), empty.x + 16, empty.y, empty.width - 32, empty.height)
 
-    # Footer panel and start action (scaled for 2x text)
-    footer = pygame.Rect(44, BASE_HEIGHT - 160, BASE_WIDTH - 88, 120)
-    pygame.draw.rect(surface, (28, 34, 43), footer, border_radius=12)
-    pygame.draw.rect(surface, (80, 97, 121), footer, 2, border_radius=12)
-
+    footer_font = _ui_font(min(26, max(18, footer_h // 5)), bold=True)
+    help_font = _ui_font(min(20, max(15, footer_h // 6)))
     total_players = len(all_players)
-    totals = label_font.render(f"Total players: {total_players} (Local {Game.prep_num_players})", True, (232, 239, 250))
-    surface.blit(totals, (footer.x + 24, footer.y + 20))
+    totals_text = f"{total_players} players   ·   {Game.prep_num_players} local   ·   {int(getattr(Game, 'prep_ai_count', 0) or 0)} AI   ·   first to {trophy_goal}"
+    start_w = min(280, max(188, int(footer.width * 0.20)))
+    start_h = min(58, footer.height - 24)
+    start_rect = pygame.Rect(footer.right - 16 - start_w, footer.y + (footer.height - start_h) // 2, start_w, start_h)
+    text_w = max(80, start_rect.x - footer.x - 36)
+    _blit_label(surface, footer_font, totals_text, (232, 239, 250), footer.x + 22, footer.y + 16, text_w, footer_font.get_height() + 4, vcenter=False)
 
-    start_rect = pygame.Rect(footer.right - 320, footer.y + 20, 280, 72)
     start_selected = (Game.prep_section == 'start_game')
     if start_selected:
         glow = int(132 + 50 * pulse)
         start_fill = (86, glow, 128)
+        start_text_col = (22, 36, 24)
     else:
-        start_fill = (68, 98, 76)
-    start_text_col = (22, 36, 24) if start_selected else (233, 246, 236)
-    pygame.draw.rect(surface, start_fill, start_rect, border_radius=10)
-    pygame.draw.rect(surface, (210, 235, 214), start_rect, 1, border_radius=10)
-    start_text = label_font.render("START GAME", True, start_text_col)
-    surface.blit(start_text, start_text.get_rect(center=start_rect.center))
+        start_fill = (62, 108, 78)
+        start_text_col = (233, 246, 236)
+    pygame.draw.rect(surface, start_fill, start_rect, border_radius=12)
+    pygame.draw.rect(surface, (210, 235, 214), start_rect, 1, border_radius=12)
+    _blit_label(surface, footer_font, "START GAME", start_text_col, start_rect.x + 8, start_rect.y, start_rect.width - 16, start_rect.height)
 
-    help_text = "ARROWS navigate | ENTER select/edit | LEFT/RIGHT color | T team | TAB switch | ESC back | F11 fullscreen"
-    surface.blit(font_small.render(help_text, True, (160, 176, 198)), (footer.x + 24, footer.y + 68))
+    help_text = "Arrows navigate  ·  Enter select/edit  ·  Local 1-8  ·  AI 0-7  ·  Trophies 1-5  ·  Left/Right color  ·  T team  ·  Tab start  ·  Esc back"
+    _blit_label(surface, help_font, help_text, (160, 176, 198), footer.x + 22, footer.y + 20 + footer_font.get_height(), text_w, help_font.get_height() + 6, vcenter=False)

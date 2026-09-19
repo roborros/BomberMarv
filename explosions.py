@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import Iterable, List, Sequence, Tuple
+
+Cell = Tuple[int, int]
+ExplosionTileEvent = Tuple[int, Sequence[Cell]]
 
 
 def compute_explosion_active_cells(explosion, current_time: int, explosion_duration: int) -> List[Tuple[int, int]]:
@@ -40,3 +43,34 @@ def compute_explosion_active_cells(explosion, current_time: int, explosion_durat
     for i in range(1, right_length + 1):
         active_cells.append((cx + i, cy))
     return active_cells
+
+
+def prune_explosion_events(
+    events: Iterable[ExplosionTileEvent],
+    current_time: int,
+    window_ms: int,
+) -> List[ExplosionTileEvent]:
+    """Keep explosion tile events whose start_time is inside the rolling window."""
+    cutoff = current_time - window_ms
+    return [event for event in events if event[0] >= cutoff]
+
+
+def count_unique_explosion_tiles(
+    events: Iterable[ExplosionTileEvent],
+    current_time: int,
+    window_ms: int,
+) -> int:
+    """Count unique tiles covered by explosions that started within the window."""
+    cutoff = current_time - window_ms
+    tiles = set()
+    for start_time, cells in events:
+        if start_time < cutoff:
+            continue
+        for cell in cells:
+            tiles.add((int(cell[0]), int(cell[1])))
+    return len(tiles)
+
+
+def crossed_big_explosion_threshold(was_over: bool, tile_count: int, threshold: int) -> bool:
+    """True once unique tiles go from <= threshold to > threshold."""
+    return (not was_over) and tile_count > threshold

@@ -28,7 +28,9 @@ flowchart LR
 ## Key design points
 
 - Authoritative simulation stays on host.
-- Web clients only send input and render received state.
+- The host loop owns timing (`pyBomberMarv.simulate_step`). `Game.simulate(dt, now)` advances one step and never sleeps; `Game.tick()` is a compatibility wrapper around it.
+- Web clients only send input and render received state. The canvas interpolates player `x`/`y`/`direction` and snaps teleports; the board cache hashes cells in place.
+- Gameplay deltas are entity-grain (`player_patches`, `player_removed`, `board_patches`) with a full-list fallback.
 - Input queue and state queue use bounded non-blocking semantics to avoid stalls.
 - State broadcast uses latest-state semantics to prioritize low latency over full history.
 - Protocol is versioned (`2`) and validated server-side.

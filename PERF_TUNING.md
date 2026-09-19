@@ -10,8 +10,18 @@
 - Bounded non-blocking input/state queues.
 - Send-on-change input with heartbeat fallback (`web_client/src/main.ts`).
 - Adaptive interpolation delay in renderer (`20-35ms` clamp).
-- WS keepalive (ping/pong + timeout).
-- Latest-state broadcast semantics.
+- WS keepalive (ping/pong + timeout) plus idle `state_keepalive` instead of full-board ticks.
+- Latest-state broadcast with wakeup (no extra 8 ms sleep after a new snapshot).
+- MessagePack gameplay frames on WebSocket when negotiated (`encoding=msgpack`); JSON control plane.
+- HUD metrics on a ~2 Hz `net_metrics` channel, not inside 60 Hz snapshots.
+- Entity-grain `player_patches` / `board_patches` instead of full arrays on every move or cell change.
+- Canvas backing store matches CSS pixels × capped DPR (not the 2100×2100 world buffer).
+
+## Metrics honesty
+
+- Client HUD `RTT(5s)` is client-clock round trip from `input_ack.original_timestamp`.
+- Host `input_apply_*` / `input_queue_delay_*` is queue wait on unix ms, not RTT and not pygame ticks.
+- `PresentAge` is time since the snapshot arrived in the browser, not host unix time minus `Date.now()`.
 
 ## Host recommendations
 

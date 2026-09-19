@@ -29,6 +29,7 @@ class GameCommand(Enum):
     ENTER_PREP_SCREEN = "enter_prep_screen"
     EXIT_PREP_SCREEN = "exit_prep_screen"
     RESTART_GAME = "restart_game"
+    RESET_SERIES = "reset_series"
     
     # Prep screen commands
     NAVIGATE_UP = "navigate_up"
@@ -112,6 +113,12 @@ class EventProcessor:
             return GameEvent(
                 event_type=EventType.KEY_PRESS,
                 command=GameCommand.QUICK_START_GAME
+            )
+
+        elif event.key == Keys.R:
+            return GameEvent(
+                event_type=EventType.KEY_PRESS,
+                command=GameCommand.RESET_SERIES
             )
         
         # Navigation controls
@@ -197,6 +204,9 @@ class GameCommandHandler:
         
         elif command == GameCommand.QUICK_START_GAME:
             return self._handle_quick_start_game()
+
+        elif command == GameCommand.RESET_SERIES:
+            return self._handle_reset_series()
         
         # Prep screen commands
         elif command in [GameCommand.NAVIGATE_UP, GameCommand.NAVIGATE_DOWN, 
@@ -254,13 +264,19 @@ class GameCommandHandler:
             return True
         
         elif self.game.game_state in ["win", "champion", "boss_result"]:
-            # When leaving champion or boss result, reset trophies and start fresh
-            if self.game.game_state in ("champion", "boss_result") and hasattr(self.game, 'reset_trophies'):
-                self.game.reset_trophies()
+            if hasattr(self.game, "continue_from_intermission"):
+                return bool(self.game.continue_from_intermission())
             self.game.init_game()
             self.game.game_state = "get_ready"
             return True
         
+        return False
+
+    def _handle_reset_series(self):
+        if self.game.game_state in ("champion", "boss_result") and hasattr(self.game, "reset_series_and_start"):
+            return bool(self.game.reset_series_and_start())
+        if self.game.game_state == "game_prep":
+            return self._handle_text_input(GameCommand.ADD_CHARACTER, {"character": "r"})
         return False
     
     def _handle_quick_start_game(self):

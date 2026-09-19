@@ -20,7 +20,6 @@ def build_status_signature(status: Optional[Dict[str, Any]]) -> Optional[Tuple[t
                 bool(info.get("registered", False)),
                 info.get("slot"),
                 str(info.get("display_name") or ""),
-                round(float(info.get("avg_latency_5s", 0.0)), 1),
             )
         )
     slots_sig = [(str(slot_id), bool(is_taken)) for slot_id, is_taken in slots.items()]

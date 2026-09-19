@@ -9,8 +9,8 @@ import math
 VERSION = "v1.2.0"
 
 # --- Configurable Constants ---
-NUM_PLAYERS = 1  # Default players (min 1, max 6)
-#NUM_PLAYERS = max(2, min(NUM_PLAYERS, 6))
+NUM_PLAYERS = 1  # Default players (min 1, max 8)
+#NUM_PLAYERS = max(2, min(NUM_PLAYERS, 8))
 
 CELL_SIZE = 100  # Cell size (overall resolution)
 
@@ -28,16 +28,22 @@ FLAME_ARM_THICKNESS_RATIO = 0.9
 
 POWERUP_PROBABILITY = 0.25  # Chance to spawn a powerup when a block is destroyed
 
-TROPHY_WIN_THRESHOLD = 5   # Number of trophies needed to become Champion
+TROPHY_WIN_THRESHOLD = 3   # Default trophies needed to become Champion
+MIN_TROPHY_WIN = 1
+MAX_TROPHY_WIN = 5
+MAX_PLAYERS = 8
+DEFAULT_AI_COUNT = 1
 
 # Boss fight (AI) parameters
 BOSS_SPEED_MULTIPLIER = 1.4
 BOSS_EXTRA_LIVES = 1
 BOSS_START_FIRE_POWER = 2
 BOSS_START_BOMB_CAPACITY = 2
-BOSS_NAME = "Boss"
+BOSS_NAME = "BomberMarv"
+BOSS_COLOR = (56, 56, 62)
+BOSS_QUOTE = "Finally a worthy challenger, come and fight me!"
 BOSS_CRUSHING_WALLS_DELAY = 60       # Delay before crushing walls in boss fight (seconds)
-BOSS_CRUSHING_WALLS_GROWTH_INTERVAL_MS = 600  # 50% slower than normal (400 * 1.5)
+BOSS_CRUSHING_WALLS_GROWTH_INTERVAL_MS = 900  # 50% slower than the FFA growth interval
 
 QUAD_DAMAGE_PROBABILITY = 0.0005 # Chance to spawn a Quad Damage powerup
 QUAD_DAMAGE_TIME = 20 # Duration of Quad Damage effect (s)
@@ -47,30 +53,44 @@ QUAD_DAMAGE_SPEEDUP = 1.5  # Speedup
 
 # Crushing walls feature (endgame walls)
 CRUSHING_WALLS_DELAY = 3                # Delay before crushing walls activate (seconds)
+CRUSHING_WALLS_2P_DELAY = 180           # Soonest start when the round began with 2 players
 CRUSHING_WALLS_MIN_DESTROYABLE = 500      # Minimum destroyable cells before activation
 CRUSHING_WALLS_MAX_ALIVE = 2              # Max alive players to allow activation (<= triggers)
-CRUSHING_WALLS_GROWTH_INTERVAL_MS = 400  # Interval between new walls once active (ms)
+CRUSHING_WALLS_GROWTH_INTERVAL_MS = 600  # Interval between new walls once active (ms)
 
 # Grid size (odd) - unified constants
-GRID_SIZE_DEFAULT = 21      # 3-4 players
+GRID_SIZE_DEFAULT = 19      # 3-4 players
 GRID_SIZE_2_PLAYERS = 17    # 2 players starting
-GRID_SIZE_5_PLUS = 21       # 5+ players
-GRID_SIZE_BOSS = 17         # Boss fight (1v1, same as 2-player)
+GRID_SIZE_5_6 = 21          # 5-6 players
+GRID_SIZE_7_8 = 23          # 7-8 players
+GRID_SIZE_BOSS = 17         # Boss fight (1v1, smaller area)
 
 
 def get_grid_size(player_count=None, is_boss_fight=False):
-    """Return grid size (odd) for the given context."""
+    """Return grid size (odd) for the given context.
+
+    Boss fights are always 1v1 on the 17-tile arena, regardless of how
+    many players were in the preceding free-for-all.
+    """
     if is_boss_fight:
         return GRID_SIZE_BOSS
     if player_count == 2:
         return GRID_SIZE_2_PLAYERS
+    if player_count is not None and player_count >= 7:
+        return GRID_SIZE_7_8
     if player_count is not None and player_count >= 5:
-        return GRID_SIZE_5_PLUS
+        return GRID_SIZE_5_6
     return GRID_SIZE_DEFAULT
 
 
 BOMB_TIMER = 3000
 EXPLOSION_DURATION = 400
+BOSS_SHIELD_DURATION_MS = EXPLOSION_DURATION + 200  # i-frames after spending an extra life
+
+# Play mocny_stral.mp3 when unique explosion tiles in this window exceed the threshold
+BIG_EXPLOSION_TILE_THRESHOLD = 40
+BIG_EXPLOSION_WINDOW_MS = 500
+BIG_EXPLOSION_SOUND_DELAY_MS = 300
 
 # Explosion collision area scale (portion of cell covered by hitbox)
 # 0.85 => 85% of cell size with equal margins on all sides
@@ -80,15 +100,18 @@ EXPLOSION_COLLISION_SCALE = 0.6
 ENDGAME_POST_DELAY_MS = 2500
 
 # --- Replay settings ---
-# How often to log snapshots for replay (ms)
-REPLAY_LOG_INTERVAL_MS = 100
-# How much history to keep/play back on win (ms)
-REPLAY_BUFFER_MS = 5000
+# How often to log snapshots for replay (ms). 16ms matches the 60 Hz sim.
+REPLAY_LOG_INTERVAL_MS = 16
+# How much history to keep so a kill-cam can reach back before a death
+REPLAY_BUFFER_MS = 6500
 # Camera radius in cells (viewport will be (2*r+1) cells in width/height)
 REPLAY_CAMERA_RADIUS_CELLS = 5
 # Replay panel width as a fraction of base width on the win screen
 REPLAY_PANEL_WIDTH_RATIO = 0.42
 REPLAY_PANEL_PADDING = 12
+# Kill-cam window around each death, played in death order then looped
+REPLAY_KILLCAM_PRE_MS = 3500
+REPLAY_KILLCAM_POST_MS = 1500
 
 DEBUG_MODE = False
 # Backward-compatible alias used in existing modules.
@@ -108,7 +131,7 @@ KEY_SEND_FREQUENCY_LIMIT = 20  # Minimum milliseconds between key events (20ms =
 # Higher values = less responsive but lower server load
 # Recommended range: 10-50ms (100Hz-20Hz)
 
-player_names = ["Marv", "Sobi", "Tom", "Zelda", "Ondra", "Sasa"]
+player_names = ["Marv", "Sobi", "Tom", "Zelda", "Ondra", "Sasa", "Luna", "Kai"]
 #players = []
 colors = [
     (100, 150, 200),  # Light Blue
@@ -116,7 +139,9 @@ colors = [
     (150, 200, 100),  # Light Green
     (200, 100, 150),  # Light Pink
     (100, 200, 150),  # Light Teal
-    (150, 100, 200)   # Light Purple
+    (150, 100, 200),  # Light Purple
+    (220, 90, 70),    # Coral
+    (80, 160, 220),   # Sky
 ]
 
 FPS = 60

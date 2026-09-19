@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 import websockets
 from aiohttp import web
 
+from latency_metrics import split_hud_metrics, wall_clock_ms
 from net_protocol import (
     MSG_CLIENT_ID,
     MSG_ERROR,
@@ -21,6 +22,7 @@ from net_protocol import (
     MSG_HELLO,
     MSG_HELLO_ACK,
     MSG_INPUT_ACK,
+    MSG_NET_METRICS,
     MSG_PING,
     MSG_PONG,
     MSG_RTC_ANSWER,
@@ -31,10 +33,16 @@ from net_protocol import (
     MSG_REGISTRATION_CONFIRMED,
     MSG_REGISTRATION_REJECTED,
     MSG_REQUEST_SLOT_LIST,
+    MSG_REQUEST_KEYFRAME,
     MSG_SELECT_SLOT,
     MSG_SET_NAME,
     MSG_SLOT_LIST,
+    MSG_STATE_KEEPALIVE,
+    build_state_delta,
+    classify_state_diff,
     envelope,
+    resolve_input_tick,
+    resolve_ws_codec,
     validate_client_message,
 )
 from queue_utils import put_latest_nonblocking
@@ -53,10 +61,73 @@ except Exception:  # pragma: no cover
     RTCPeerConnection = None  # type: ignore
     RTCSessionDescription = None  # type: ignore
 
-PORT = 8765
-HTTP_PORT = 8080
-WS_SERVER_VERSION = "2.0.0"
-HTTP_SERVER_VERSION = "2.0.0"
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+PORT = _env_int("BM_WS_PORT", 8765)
+HTTP_PORT = _env_int("BM_HTTP_PORT", 8080)
+WS_SERVER_VERSION = "2.1.0"
+HTTP_SERVER_VERSION = "2.1.0"
+
+
+def encode_gameplay_payload(payload: Dict[str, Any], codec: str) -> Any:
+    """Encode a gameplay envelope as JSON text or MessagePack bytes."""
+    if codec == "msgpack" and msgpack is not None:
+        return msgpack.packb(payload, use_bin_type=True)
+    return json.dumps(payload, separators=(",", ":"))
+
+
+def decode_client_payload(raw: Any) -> Dict[str, Any]:
+    """Decode a WS text JSON frame or binary MessagePack/JSON payload."""
+    if isinstance(raw, (bytes, bytearray, memoryview)):
+        blob = bytes(raw)
+        if msgpack is not None:
+            try:
+                decoded = msgpack.unpackb(blob, raw=False)
+                if isinstance(decoded, dict):
+                    return decoded
+            except Exception:
+                pass
+        try:
+            decoded = json.loads(blob.decode("utf-8"))
+        except Exception as exc:
+            raise ValueError("invalid binary payload") from exc
+        if not isinstance(decoded, dict):
+            raise ValueError("message must be an object")
+        return decoded
+    if isinstance(raw, str):
+        decoded = json.loads(raw)
+        if not isinstance(decoded, dict):
+            raise ValueError("message must be an object")
+        return decoded
+    raise ValueError("unsupported payload")
+
+
+def decode_server_payload(raw: Any) -> Dict[str, Any]:
+    """Decode a server->client frame for tests and mixed JSON/msgpack sockets."""
+    if isinstance(raw, (bytes, bytearray, memoryview)):
+        blob = bytes(raw)
+        if msgpack is not None:
+            try:
+                decoded = msgpack.unpackb(blob, raw=False)
+                if isinstance(decoded, dict):
+                    return decoded
+            except Exception:
+                pass
+        decoded = json.loads(blob.decode("utf-8"))
+        if not isinstance(decoded, dict):
+            raise ValueError("message must be an object")
+        return decoded
+    if isinstance(raw, str):
+        decoded = json.loads(raw)
+        if not isinstance(decoded, dict):
+            raise ValueError("message must be an object")
+        return decoded
+    raise ValueError("unsupported payload")
 
 
 def _percentile(values: List[float], percentile: float) -> float:
@@ -67,24 +138,72 @@ def _percentile(values: List[float], percentile: float) -> float:
     return float(sorted_values[rank])
 
 
-def build_state_delta(previous_state: Dict[str, Any], current_state: Dict[str, Any]) -> Dict[str, Any]:
-    delta: Dict[str, Any] = {}
-    keys = (
-        "time",
-        "state",
-        "players",
-        "bombs",
-        "explosions",
-        "powerups",
-        "crushing_walls",
-        "local_player_count",
-        "_net_metrics",
-        "board",
+def classify_broadcast_for_client(
+    *,
+    current_state: Dict[str, Any],
+    last_full_state: Optional[Dict[str, Any]],
+    current_seq: int,
+    last_broadcast_seq: int,
+    client_last_seq: int,
+    delta_chain_count: int,
+    max_delta_chain: int,
+    force_keyframe_global: bool,
+    force_keyframe_client: bool,
+    keyframe_interval_seq: int,
+    server_timestamp: int,
+) -> tuple:
+    """Choose keyframe, delta, or idle keepalive for one registered client."""
+    needs_keyframe = (
+        force_keyframe_global
+        or force_keyframe_client
+        or last_full_state is None
+        or last_broadcast_seq < 0
+        or (current_seq - last_broadcast_seq) >= keyframe_interval_seq
+        or client_last_seq != last_broadcast_seq
+        or int(delta_chain_count) >= int(max_delta_chain)
     )
-    for key in keys:
-        if previous_state.get(key) != current_state.get(key):
-            delta[key] = current_state.get(key)
-    return delta
+    tick_id = 0
+    try:
+        tick_id = int((current_state or {}).get("_sim_tick", 0) or 0)
+    except (TypeError, ValueError):
+        tick_id = 0
+    if needs_keyframe:
+        return (
+            envelope(
+                MSG_GAMESTATE,
+                data=current_state,
+                server_timestamp=server_timestamp,
+                seq=current_seq,
+                tick_id=tick_id,
+            ),
+            "keyframe",
+        )
+    delta = build_state_delta(last_full_state or {}, current_state)
+    kind = classify_state_diff(delta)
+    if kind in ("keepalive", "unchanged"):
+        return (
+            envelope(
+                MSG_STATE_KEEPALIVE,
+                seq=current_seq,
+                time=current_state.get("time"),
+                _sim_tick=current_state.get("_sim_tick"),
+                _host_published_at_ms=current_state.get("_host_published_at_ms"),
+                server_timestamp=server_timestamp,
+                tick_id=tick_id,
+            ),
+            "keepalive",
+        )
+    return (
+        envelope(
+            MSG_GAMESTATE_DELTA,
+            base_seq=last_broadcast_seq,
+            seq=current_seq,
+            server_timestamp=server_timestamp,
+            tick_id=tick_id,
+            delta=delta,
+        ),
+        "delta",
+    )
 
 
 def setup_logging(logfile: str) -> logging.Logger:
@@ -121,7 +240,7 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
 
     clients: Dict[int, Dict[str, Any]] = {}
     players: Dict[int, Dict[str, Any]] = {}
-    slots: Dict[int, Optional[int]] = {i: None for i in range(1, 7)}
+    slots: Dict[int, Optional[int]] = {i: None for i in range(1, 9)}
 
     latest_game_state: Optional[Dict[str, Any]] = None
     latest_state_seq = 0
@@ -148,6 +267,9 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
         "broadcast_payload_bytes_samples": [],
         "broadcast_delta_frames": 0,
         "broadcast_key_frames": 0,
+        "broadcast_keepalive_frames": 0,
+        "broadcast_metrics_frames": 0,
+        "broadcast_wakeup_signals": 0,
         "status_queue_sent": 0,
         "status_queue_dropped": 0,
         "rtc_offer_sent": 0,
@@ -167,10 +289,26 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
         "input_tick_late": 0,
         "input_tick_strict_rejected": 0,
         "input_tick_applied": 0,
+        "input_player_id_rejected": 0,
+        "input_keyframe_requests": 0,
         "input_tick_apply_age_samples": [],
         "broadcast_payload_budget_exceeded": 0,
         "client_bps_samples": [],
     }
+
+    aio_loop_holder: List[Any] = []
+    state_wakeup_holder: List[Any] = []
+
+    def notify_broadcast() -> None:
+        if not aio_loop_holder or not state_wakeup_holder:
+            return
+        loop = aio_loop_holder[0]
+        wakeup = state_wakeup_holder[0]
+        try:
+            loop.call_soon_threadsafe(wakeup.set)
+            metrics["broadcast_wakeup_signals"] += 1
+        except RuntimeError:
+            pass
 
     def enqueue_input_event(event: Dict[str, Any]) -> None:
         put_latest_nonblocking(
@@ -267,10 +405,11 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                             latest_sim_tick = int(state.get("_sim_tick", latest_sim_tick))
                         except Exception:
                             pass
+                notify_broadcast()
                 if isinstance(state, dict):
                     published_at_ms = state.get("_host_published_at_ms")
                     if isinstance(published_at_ms, (int, float)):
-                        age_ms = max(0.0, (time.time() * 1000.0) - float(published_at_ms))
+                        age_ms = max(0.0, float(wall_clock_ms()) - float(published_at_ms))
                         add_sample("state_queue_age_samples_ms", age_ms)
             except Exception as exc:
                 logger.error("State reader loop failed: %s", exc)
@@ -281,12 +420,17 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
 
     def build_slot_list() -> Dict[str, Any]:
         local_taken = 0
+        trophy_win_threshold = 3
         with state_lock:
             if latest_game_state:
                 try:
                     local_taken = int(latest_game_state.get("local_player_count", 0))
                 except Exception:
                     local_taken = 0
+                try:
+                    trophy_win_threshold = int(latest_game_state.get("trophy_win_threshold", 3) or 3)
+                except Exception:
+                    trophy_win_threshold = 3
         slots_dict: Dict[str, bool] = {}
         slot_reasons: Dict[str, str] = {}
         with slots_lock:
@@ -299,16 +443,29 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                         slot_reasons[key] = "local"
                     else:
                         slot_reasons[key] = "remote"
-        return {"slots": slots_dict, "slot_reasons": slot_reasons}
+        return {"slots": slots_dict, "slot_reasons": slot_reasons, "trophy_win_threshold": trophy_win_threshold}
 
     async def send_json(ws, payload: Dict[str, Any]) -> None:
         raw = json.dumps(payload, separators=(",", ":"))
         await ws.send(raw)
 
+    async def broadcast_slot_list() -> None:
+        slot_info = build_slot_list()
+        payload = envelope(MSG_SLOT_LIST, **slot_info)
+        recipients = []
+        with tracking_lock:
+            for cdata in clients.values():
+                ws = cdata.get("websocket")
+                if ws is not None:
+                    recipients.append(ws)
+        for ws in recipients:
+            try:
+                await send_json(ws, payload)
+            except Exception:
+                pass
+
     def encode_payload(payload: Dict[str, Any], codec: str) -> Any:
-        if codec == "msgpack" and msgpack is not None:
-            return msgpack.packb(payload, use_bin_type=True)
-        return json.dumps(payload, separators=(",", ":"))
+        return encode_gameplay_payload(payload, codec)
 
     async def process_game_input(client_id: int, data: Dict[str, Any], source: str = "ws", websocket=None) -> None:
         with tracking_lock:
@@ -352,7 +509,7 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                 )
                 i += 6
 
-        recv_timestamp = int(time.time() * 1000)
+        recv_timestamp = wall_clock_ms()
         applied_tick_id: Optional[int] = None
 
         def enqueue_frame(player_id: int, keys_state: Dict[str, int], frame_tick_id: Optional[int]) -> None:
@@ -386,12 +543,18 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                     "bomb": int(frame["keys"]["bomb"]),
                 }
                 if player_id not in players:
+                    if cdata.get("players") and player_id not in cdata.get("players", []):
+                        metrics["input_player_id_rejected"] += 1
+                        continue
                     players[player_id] = {
                         "client_id": client_id,
                         "keys": {"up": 0, "down": 0, "left": 0, "right": 0, "bomb": 0},
                     }
                     if player_id not in cdata.get("players", []):
                         cdata["players"].append(player_id)
+                elif cdata.get("players") and player_id not in cdata.get("players", []):
+                    metrics["input_player_id_rejected"] += 1
+                    continue
                 players[player_id]["keys"] = dict(keys_state)
 
                 if tick_id is None:
@@ -402,44 +565,31 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                     continue
 
                 expected_tick = int(cdata.get("expected_input_tick", -1))
-                if expected_tick < 0:
-                    expected_tick = tick_id
-                if tick_id < expected_tick:
+                action, next_expected, skipped = resolve_input_tick(expected_tick, tick_id)
+                if action == "drop":
                     metrics["input_tick_out_of_order"] += 1
                     continue
-                if tick_id > expected_tick:
-                    metrics["input_tick_missing"] += max(0, tick_id - expected_tick)
-                frame_buffer = cdata.setdefault("input_frame_buffer", {})
-                tick_bucket = frame_buffer.get(tick_id)
-                if not isinstance(tick_bucket, list):
-                    tick_bucket = []
-                tick_bucket.append({"player_id": player_id, "keys": keys_state})
-                frame_buffer[tick_id] = tick_bucket
-
-                while expected_tick in frame_buffer:
-                    buffered_entries = frame_buffer.pop(expected_tick)
-                    if not isinstance(buffered_entries, list):
-                        buffered_entries = [buffered_entries]
-                    for buffered in buffered_entries:
-                        buffered_player_id = int(buffered["player_id"])
-                        buffered_keys = dict(buffered["keys"])
-                        enqueue_frame(buffered_player_id, buffered_keys, expected_tick)
-                        metrics["input_tick_applied"] += 1
-                        input_age_ticks = max(0, latest_sim_tick - expected_tick)
-                        add_sample("input_tick_apply_age_samples", float(input_age_ticks))
-                        if input_age_ticks > late_tick_window:
-                            metrics["input_tick_late"] += 1
-                        applied_tick_id = expected_tick
-                    expected_tick += 1
-
-                cdata["expected_input_tick"] = expected_tick
+                if skipped:
+                    metrics["input_tick_missing"] += skipped
+                    stale_buffer = cdata.setdefault("input_frame_buffer", {})
+                    if isinstance(stale_buffer, dict):
+                        for stale_tick in [t for t in stale_buffer.keys() if t < tick_id]:
+                            stale_buffer.pop(stale_tick, None)
+                enqueue_frame(player_id, keys_state, tick_id)
+                metrics["input_tick_applied"] += 1
+                input_age_ticks = max(0, latest_sim_tick - tick_id)
+                add_sample("input_tick_apply_age_samples", float(input_age_ticks))
+                if input_age_ticks > late_tick_window:
+                    metrics["input_tick_late"] += 1
+                applied_tick_id = tick_id
+                cdata["expected_input_tick"] = next_expected
 
         if source == "rtc":
             metrics["input_events_rtc"] += 1
         else:
             metrics["input_events_ws"] += 1
 
-        server_timestamp = int(time.time() * 1000)
+        server_timestamp = wall_clock_ms()
         if client_timestamp:
             with tracking_lock:
                 latency_ms = server_timestamp - int(client_timestamp)
@@ -450,9 +600,13 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                 if len(samples) > 300:
                     samples = samples[-300:]
                 clients[client_id]["latency_samples"] = samples
-        if websocket is not None:
+        ack_ws = websocket
+        if ack_ws is None:
+            with tracking_lock:
+                ack_ws = clients.get(client_id, {}).get("websocket")
+        if ack_ws is not None:
             await send_json(
-                websocket,
+                ack_ws,
                 envelope(
                     MSG_INPUT_ACK,
                     client_id=client_id,
@@ -460,6 +614,8 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                     server_timestamp=server_timestamp,
                     tick_id=tick_id,
                     apply_tick_id=applied_tick_id,
+                    clock="unix_ms",
+                    rtt_clock="client",
                 ),
             )
 
@@ -470,10 +626,23 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
             cdata = clients.get(client_id)
             if not cdata:
                 return
-            if cdata.get("rtc_peer") is not None:
-                return
+            existing_peer = cdata.get("rtc_peer")
             ws = cdata.get("websocket")
             codec = str(cdata.get("codec", "json"))
+            existing_state = getattr(existing_peer, "connectionState", "") if existing_peer is not None else ""
+        if existing_peer is not None:
+            if existing_state in ("connected", "completed"):
+                return
+            try:
+                await existing_peer.close()
+            except Exception:
+                pass
+            with tracking_lock:
+                c = clients.get(client_id)
+                if c:
+                    c["rtc_peer"] = None
+                    c["rtc_input_channel"] = None
+                    c["rtc_state_channel"] = None
 
         pc = RTCPeerConnection(RTCConfiguration(iceServers=[]))
         dc_input = pc.createDataChannel("input_unreliable", ordered=False, maxRetransmits=0)
@@ -545,23 +714,46 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
             ),
         )
 
+    async def send_gameplay_frame(websocket, rtc_channel, transport_active, ws_codec, rtc_codec, payload_dict) -> tuple:
+        ws_payload = encode_payload(payload_dict, ws_codec)
+        sent_bytes = len(ws_payload) if isinstance(ws_payload, (bytes, bytearray)) else len(str(ws_payload))
+        used_rtc = False
+        if transport_active == "rtc" and rtc_channel is not None and getattr(rtc_channel, "readyState", "") == "open":
+            rtc_payload = encode_payload(payload_dict, rtc_codec) if rtc_codec == "msgpack" else encode_payload(payload_dict, "json")
+            if isinstance(rtc_payload, (bytes, bytearray)):
+                rtc_channel.send(bytes(rtc_payload))
+            else:
+                rtc_channel.send(str(rtc_payload))
+            used_rtc = True
+            sent_bytes = len(rtc_payload) if isinstance(rtc_payload, (bytes, bytearray)) else len(str(rtc_payload))
+        else:
+            await websocket.send(ws_payload)
+        return sent_bytes, used_rtc
+
     async def broadcast_loop():
         nonlocal last_state_json, last_state_seq_sent
         logger.info("Broadcast loop started")
         last_broadcast_seq = -1
-        last_broadcast_time = 0.0
         last_full_state: Optional[Dict[str, Any]] = None
-        # Lower interval reduces visible stalls on WiFi if a delta continuity gap occurs.
         keyframe_interval_seq = 10
-        keepalive_interval_s = 0.2
+        wakeup = None
+        while wakeup is None:
+            if state_wakeup_holder:
+                wakeup = state_wakeup_holder[0]
+            else:
+                await asyncio.sleep(0)
         while True:
             loop_started = time.perf_counter()
-            await asyncio.sleep(0.008)
+            try:
+                await asyncio.wait_for(wakeup.wait(), timeout=0.008)
+            except asyncio.TimeoutError:
+                pass
+            wakeup.clear()
             with state_lock:
                 if latest_game_state is None:
                     add_sample("broadcast_loop_duration_samples_ms", (time.perf_counter() - loop_started) * 1000.0)
                     continue
-                current_state = latest_game_state
+                queued_state = latest_game_state
                 current_seq = latest_state_seq
             recipients: List[Dict[str, Any]] = []
             with tracking_lock:
@@ -577,63 +769,44 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                                 "rtc_codec": str(cdata.get("rtc_codec", "json")),
                                 "rtc_state_channel": cdata.get("rtc_state_channel"),
                                 "delta_chain_count": int(cdata.get("delta_chain_count", 0)),
+                                "force_keyframe": bool(cdata.get("force_keyframe", False)),
                             }
                         )
             if not recipients:
                 add_sample("broadcast_loop_duration_samples_ms", (time.perf_counter() - loop_started) * 1000.0)
                 continue
-            now = time.time()
             state_changed = current_seq != last_broadcast_seq
-            keepalive_due = (now - last_broadcast_time) >= keepalive_interval_s
-            if not state_changed and not keepalive_due:
+            if not state_changed:
                 add_sample("broadcast_loop_duration_samples_ms", (time.perf_counter() - loop_started) * 1000.0)
                 continue
 
-            # Build keyframe or delta payload based on sequence continuity.
+            gameplay_state, hud_metrics = split_hud_metrics(queued_state)
+            if not isinstance(gameplay_state, dict):
+                add_sample("broadcast_loop_duration_samples_ms", (time.perf_counter() - loop_started) * 1000.0)
+                continue
             force_keyframe = (
                 last_full_state is None
                 or last_broadcast_seq < 0
                 or (current_seq - last_broadcast_seq) >= keyframe_interval_seq
             )
-            keyframe_payload = envelope(
-                MSG_GAMESTATE,
-                data=current_state,
-                server_timestamp=int(time.time() * 1000),
-                seq=current_seq,
-                tick_id=int(current_state.get("_sim_tick", 0)) if isinstance(current_state, dict) else 0,
-            )
-            keyframe_json = json.dumps(keyframe_payload, separators=(",", ":"))
-            delta_json: Optional[str] = None
-            delta_payload: Optional[Dict[str, Any]] = None
-            delta_available = False
-            if not force_keyframe and isinstance(last_full_state, dict):
-                delta = build_state_delta(last_full_state, current_state)
-                if delta:
-                    delta_payload = envelope(
-                        MSG_GAMESTATE_DELTA,
-                        base_seq=last_broadcast_seq,
-                        seq=current_seq,
-                        server_timestamp=int(time.time() * 1000),
-                        tick_id=int(current_state.get("_sim_tick", 0)) if isinstance(current_state, dict) else 0,
-                        delta=delta,
-                    )
-                    delta_json = json.dumps(delta_payload, separators=(",", ":"))
-                    delta_available = True
-
+            server_timestamp = wall_clock_ms()
             send_plan: List[Dict[str, Any]] = []
             total_payload_bytes = 0
             for recipient in recipients:
-                client_last_seq = recipient["last_state_seq"]
-                needs_keyframe = (
-                    force_keyframe
-                    or not delta_available
-                    or client_last_seq != last_broadcast_seq
-                    or int(recipient.get("delta_chain_count", 0)) >= max_delta_chain
+                payload_dict, kind = classify_broadcast_for_client(
+                    current_state=gameplay_state,
+                    last_full_state=last_full_state,
+                    current_seq=current_seq,
+                    last_broadcast_seq=last_broadcast_seq,
+                    client_last_seq=int(recipient["last_state_seq"]),
+                    delta_chain_count=int(recipient.get("delta_chain_count", 0)),
+                    max_delta_chain=max_delta_chain,
+                    force_keyframe_global=force_keyframe,
+                    force_keyframe_client=bool(recipient.get("force_keyframe")),
+                    keyframe_interval_seq=keyframe_interval_seq,
+                    server_timestamp=server_timestamp,
                 )
-                payload_dict = keyframe_payload if needs_keyframe else (delta_payload if delta_available else keyframe_payload)
-                payload = keyframe_json if needs_keyframe else (delta_json or keyframe_json)
-                if recipient.get("codec") == "msgpack":
-                    payload = encode_payload(payload_dict, "msgpack")
+                payload = encode_payload(payload_dict, str(recipient.get("codec", "json")))
                 send_plan.append(
                     {
                         "client_id": recipient["client_id"],
@@ -641,9 +814,10 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                         "transport_active": recipient.get("transport_active", "ws"),
                         "rtc_codec": recipient.get("rtc_codec", "json"),
                         "rtc_state_channel": recipient.get("rtc_state_channel"),
+                        "codec": recipient.get("codec", "json"),
                         "payload": payload,
                         "payload_dict": payload_dict,
-                        "is_keyframe": needs_keyframe,
+                        "kind": kind,
                     }
                 )
                 total_payload_bytes += len(payload) if isinstance(payload, (bytes, bytearray)) else len(str(payload))
@@ -654,21 +828,21 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
             results: List[Optional[Exception]] = []
             for item in send_plan:
                 try:
-                    active_transport = str(item.get("transport_active", "ws"))
-                    rtc_channel = item.get("rtc_state_channel")
-                    if active_transport == "rtc" and rtc_channel is not None and getattr(rtc_channel, "readyState", "") == "open":
-                        rtc_codec = str(item.get("rtc_codec", "json"))
-                        rtc_payload = encode_payload(item["payload_dict"], rtc_codec) if rtc_codec == "msgpack" else item["payload"]
-                        if isinstance(rtc_payload, (bytes, bytearray)):
-                            rtc_channel.send(bytes(rtc_payload))
-                        else:
-                            rtc_channel.send(str(rtc_payload))
+                    sent_bytes, used_rtc = await send_gameplay_frame(
+                        item["websocket"],
+                        item.get("rtc_state_channel"),
+                        str(item.get("transport_active", "ws")),
+                        str(item.get("codec", "json")),
+                        str(item.get("rtc_codec", "json")),
+                        item["payload_dict"],
+                    )
+                    if used_rtc:
                         metrics["broadcast_frames_rtc"] += 1
-                        metrics["broadcast_bytes_rtc"] += len(rtc_payload) if isinstance(rtc_payload, (bytes, bytearray)) else len(str(rtc_payload))
+                        metrics["broadcast_bytes_rtc"] += sent_bytes
                     else:
-                        await item["websocket"].send(item["payload"])
                         metrics["broadcast_frames_ws"] += 1
-                        metrics["broadcast_bytes_ws"] += len(item["payload"]) if isinstance(item["payload"], (bytes, bytearray)) else len(str(item["payload"]))
+                        metrics["broadcast_bytes_ws"] += sent_bytes
+                    item["sent_bytes"] = sent_bytes
                     results.append(None)
                 except Exception as exc:
                     results.append(exc)
@@ -677,30 +851,33 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
             metrics["broadcast_frames"] += 1
             metrics["broadcast_bytes"] += total_payload_bytes
             last_broadcast_seq = current_seq
-            last_broadcast_time = now
-            if isinstance(current_state, dict):
-                last_full_state = current_state
+            last_full_state = gameplay_state
             keyframe_sends = 0
             delta_sends = 0
+            keepalive_sends = 0
             for idx, result in enumerate(results):
                 if isinstance(result, Exception):
                     logger.debug("Broadcast send exception: %s", result)
                     continue
-                if send_plan[idx]["is_keyframe"]:
+                kind = send_plan[idx]["kind"]
+                if kind == "keyframe":
                     keyframe_sends += 1
-                else:
+                elif kind == "delta":
                     delta_sends += 1
+                else:
+                    keepalive_sends += 1
                 cid = send_plan[idx]["client_id"]
                 with tracking_lock:
                     cdata = clients.get(cid)
                     if cdata:
                         cdata["last_state_seq"] = current_seq
-                        if send_plan[idx]["is_keyframe"]:
+                        cdata["force_keyframe"] = False
+                        if kind == "keyframe":
                             cdata["delta_chain_count"] = 0
-                        else:
+                        elif kind == "delta":
                             cdata["delta_chain_count"] = int(cdata.get("delta_chain_count", 0)) + 1
-                        bytes_sent = len(send_plan[idx]["payload"]) if isinstance(send_plan[idx]["payload"], (bytes, bytearray)) else len(str(send_plan[idx]["payload"]))
-                        now_ms = int(time.time() * 1000)
+                        bytes_sent = int(send_plan[idx].get("sent_bytes") or 0)
+                        now_ms = wall_clock_ms()
                         bytes_window = cdata.get("bytes_window", [])
                         if not isinstance(bytes_window, list):
                             bytes_window = []
@@ -714,6 +891,29 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                             metrics["broadcast_payload_budget_exceeded"] += 1
             metrics["broadcast_key_frames"] += keyframe_sends
             metrics["broadcast_delta_frames"] += delta_sends
+            metrics["broadcast_keepalive_frames"] += keepalive_sends
+
+            if hud_metrics:
+                metrics_payload = envelope(
+                    MSG_NET_METRICS,
+                    metrics=hud_metrics,
+                    clock="unix_ms",
+                    seq=current_seq,
+                    server_timestamp=server_timestamp,
+                )
+                for item in send_plan:
+                    try:
+                        await send_gameplay_frame(
+                            item["websocket"],
+                            item.get("rtc_state_channel"),
+                            str(item.get("transport_active", "ws")),
+                            str(item.get("codec", "json")),
+                            str(item.get("rtc_codec", "json")),
+                            metrics_payload,
+                        )
+                        metrics["broadcast_metrics_frames"] += 1
+                    except Exception:
+                        pass
             add_sample("broadcast_loop_duration_samples_ms", (time.perf_counter() - loop_started) * 1000.0)
 
     async def cleanup_stale_clients_loop():
@@ -770,6 +970,7 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                 "input_frame_buffer": {},
                 "delta_chain_count": 0,
                 "bytes_window": [],
+                "force_keyframe": False,
                 "rtc_peer": None,
                 "rtc_input_channel": None,
                 "rtc_state_channel": None,
@@ -785,10 +986,10 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                     if client_id in clients:
                         clients[client_id]["last_seen"] = time.time()
                 try:
-                    data = json.loads(raw)
-                except json.JSONDecodeError:
+                    data = decode_client_payload(raw)
+                except (json.JSONDecodeError, ValueError, TypeError, UnicodeDecodeError):
                     metrics["messages_invalid"] += 1
-                    await send_json(websocket, envelope(MSG_ERROR, message="invalid JSON"))
+                    await send_json(websocket, envelope(MSG_ERROR, message="invalid payload"))
                     continue
                 err = validate_client_message(data)
                 if err:
@@ -799,19 +1000,20 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                 msg_type = data["type"]
 
                 if msg_type == MSG_HELLO:
-                    requested_codec = str(data.get("encoding", "json")).lower()
+                    requested_codec = data.get("encoding", data.get("ws_codec", "json"))
                     requested_rtc_codec = str(data.get("rtc_codec", "json")).lower()
-                    if requested_codec == "msgpack" and msgpack is not None:
-                        with tracking_lock:
-                            if client_id in clients:
-                                clients[client_id]["codec"] = "msgpack"
+                    ws_codec = resolve_ws_codec(requested_codec, msgpack is not None)
+                    rtc_codec = resolve_ws_codec(requested_rtc_codec, msgpack is not None)
+                    with tracking_lock:
+                        if client_id in clients:
+                            clients[client_id]["codec"] = ws_codec
                     client_webrtc_supported = bool(data.get("webrtc_supported", False))
                     client_strict_requested = bool(data.get("strict_input_mode", False))
                     with tracking_lock:
                         if client_id in clients:
                             clients[client_id]["webrtc_supported"] = client_webrtc_supported
                             clients[client_id]["webrtc_offered"] = bool(rtc_available and client_webrtc_supported)
-                            clients[client_id]["rtc_codec"] = "msgpack" if (requested_rtc_codec == "msgpack" and msgpack is not None) else "json"
+                            clients[client_id]["rtc_codec"] = rtc_codec
                             clients[client_id]["strict_input_mode"] = bool(strict_input_mode and client_strict_requested)
                     await send_json(
                         websocket,
@@ -821,10 +1023,13 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                             ws_version=WS_SERVER_VERSION,
                             webrtc_offered=bool(rtc_available and client_webrtc_supported),
                             webrtc_enabled=bool(rtc_available),
-                            rtc_codec=("msgpack" if (requested_rtc_codec == "msgpack" and msgpack is not None) else "json"),
+                            encoding=ws_codec,
+                            ws_codec=ws_codec,
+                            rtc_codec=rtc_codec,
                             strict_input_mode=bool(strict_input_mode and client_strict_requested),
                             input_lead_ticks=input_lead_ticks,
                             transport_active="ws",
+                            metrics_clock="unix_ms",
                         ),
                     )
                     if rtc_available and client_webrtc_supported:
@@ -841,6 +1046,14 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                     enqueue_status_snapshot()
                     continue
 
+                if msg_type == MSG_REQUEST_KEYFRAME:
+                    metrics["input_keyframe_requests"] += 1
+                    with tracking_lock:
+                        if client_id in clients:
+                            clients[client_id]["last_state_seq"] = -1
+                            clients[client_id]["force_keyframe"] = True
+                    continue
+
                 if msg_type == MSG_SET_NAME:
                     name_value = str(data.get("name", "")).strip()
                     with tracking_lock:
@@ -849,6 +1062,7 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                     slot_info = build_slot_list()
                     await send_json(websocket, envelope(MSG_SLOT_LIST, **slot_info))
                     enqueue_status_snapshot()
+                    await broadcast_slot_list()
                     continue
 
                 if msg_type == MSG_SELECT_SLOT:
@@ -883,6 +1097,7 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                         slot_info = build_slot_list()
                         await send_json(websocket, envelope(MSG_SLOT_LIST, **slot_info))
                         enqueue_status_snapshot()
+                        await broadcast_slot_list()
                         continue
                     with tracking_lock:
                         clients[client_id]["slot"] = requested_slot
@@ -916,6 +1131,7 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                     slot_info = build_slot_list()
                     await send_json(websocket, envelope(MSG_SLOT_LIST, **slot_info))
                     enqueue_status_snapshot()
+                    await broadcast_slot_list()
                     continue
 
                 if msg_type == MSG_GAME_INPUT:
@@ -1000,6 +1216,10 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                 except Exception:
                     pass
             enqueue_status_snapshot()
+            try:
+                await broadcast_slot_list()
+            except Exception:
+                pass
 
     async def handle_versions(request):
         return web.json_response(
@@ -1089,6 +1309,10 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
 
     async def main():
         logger.info("Starting websocket server on port %s", PORT)
+        aio_loop_holder.clear()
+        aio_loop_holder.append(asyncio.get_running_loop())
+        state_wakeup_holder.clear()
+        state_wakeup_holder.append(asyncio.Event())
         threading.Thread(target=start_http_server, daemon=True, name="http-server").start()
         asyncio.create_task(broadcast_loop())
         asyncio.create_task(cleanup_stale_clients_loop())

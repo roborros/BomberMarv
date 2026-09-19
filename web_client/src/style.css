@@ -31,15 +31,16 @@ body {
 }
 
 #render-toggle-wrap {
-  font-size: 1.5rem;
+  font-size: clamp(0.95rem, 2vw, 1.1rem);
   color: #cfd7e3;
   display: flex;
-  gap: 12px;
+  gap: 10px;
   align-items: center;
-  padding: 14px 18px;
+  padding: 10px 14px;
   border: 1px solid #3b4b60;
   border-radius: 12px;
   background: #202a38;
+  white-space: nowrap;
 }
 
 canvas {
@@ -111,42 +112,97 @@ canvas {
 .lobby-content {
   text-align: center;
   width: min(1100px, 95vw);
-  background: linear-gradient(180deg, #1f2836, #1a222f);
-  padding: 48px;
+  background: linear-gradient(180deg, #243044 0%, #1a222f 70%);
+  padding: clamp(28px, 4vw, 48px);
   border-radius: 24px;
-  border: 1px solid #34465f;
+  border: 1px solid #3d5674;
+  border-top: 6px solid #d4af37;
   box-shadow: 0 24px 48px rgba(0, 0, 0, 0.45);
 }
 
+.lobby-kicker {
+  margin: 0 0 8px 0;
+  color: #d4af37;
+  font-size: clamp(0.85rem, 1.8vw, 1.05rem);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
 .lobby-content h1 {
-  margin: 0 0 16px 0;
-  font-size: 72px;
-  letter-spacing: 0.5px;
+  margin: 0 0 10px 0;
+  font-size: clamp(32px, 5.4vw, 52px);
+  letter-spacing: 0.4px;
+  line-height: 1.15;
 }
 
 #lobby-help {
-  margin: 0 0 24px 0;
+  margin: 0 auto 24px auto;
+  max-width: 40rem;
   color: #a9b5c6;
-  font-size: 1.5rem;
+  font-size: clamp(0.95rem, 2vw, 1.2rem);
+  line-height: 1.45;
 }
 
 .lobby-controls-row {
   display: flex;
-  gap: 20px;
+  gap: 16px;
   justify-content: center;
   align-items: center;
   flex-wrap: wrap;
-  margin-bottom: 24px;
+  margin-bottom: 20px;
 }
 
 #player-name {
-  width: 400px;
-  padding: 14px 18px;
+  width: min(400px, 90vw);
+  padding: 12px 18px;
   border-radius: 12px;
   border: 1px solid #3b4b60;
   background: #202a38;
   color: #fff;
-  font-size: 30px;
+  font-size: clamp(20px, 3vw, 28px);
+}
+
+#slot-container {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 12px;
+  margin: 18px 0 16px 0;
+}
+
+.slot-btn {
+  width: auto;
+  min-height: 118px;
+  padding: 12px 8px;
+  border: 2px solid #445975;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #2a3648, #223043);
+  color: white;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
+}
+
+.slot-id {
+  font-size: clamp(24px, 3.4vw, 36px);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.slot-label {
+  max-width: 100%;
+  font-size: 15px;
+  line-height: 1.2;
+  color: #d5e0ee;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 #player-name:focus {
@@ -155,35 +211,69 @@ canvas {
   box-shadow: 0 0 0 2px rgba(125, 184, 255, 0.2);
 }
 
-#slot-container {
-  display: flex;
-  gap: 20px;
-  margin: 28px 0 24px 0;
-  justify-content: center;
-  flex-wrap: wrap;
-}
-
-.slot-btn {
-  width: 140px;
-  height: 140px;
-  border: 2px solid #445975;
-  border-radius: 18px;
-  background: linear-gradient(180deg, #2a3648, #223043);
-  color: white;
-  font-size: 44px;
-  cursor: pointer;
-  transition: all 0.2s;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
-}
-
 .slot-btn:hover:not(:disabled) {
   transform: translateY(-2px);
-  border-color: #b7d6ff;
   box-shadow: 0 8px 18px rgba(0, 0, 0, 0.35);
+}
+
+.slot-btn.taken {
+  border-color: #5d6f85;
+  opacity: 0.55;
+}
+
+/* Player colors matching renderer */
+.slot-btn[data-slot="1"] {
+  border-color: #6496C8;
+  background: linear-gradient(180deg, #314860, #223043);
+}
+
+.slot-btn[data-slot="2"] {
+  border-color: #C89664;
+  background: linear-gradient(180deg, #5a4638, #223043);
+}
+
+.slot-btn[data-slot="3"] {
+  border-color: #96C864;
+  background: linear-gradient(180deg, #3d5434, #223043);
+}
+
+.slot-btn[data-slot="4"] {
+  border-color: #C86496;
+  background: linear-gradient(180deg, #5a3348, #223043);
+}
+
+.slot-btn[data-slot="5"] {
+  border-color: #64C896;
+  background: linear-gradient(180deg, #2f5448, #223043);
+}
+
+.slot-btn[data-slot="6"] {
+  border-color: #9664C8;
+  background: linear-gradient(180deg, #46345a, #223043);
+}
+
+.slot-btn[data-slot="1"]:hover:not(:disabled) {
+  background: #2f4460;
+}
+
+.slot-btn[data-slot="2"]:hover:not(:disabled) {
+  background: #5e4834;
+}
+
+.slot-btn[data-slot="3"]:hover:not(:disabled) {
+  background: #3f5b2f;
+}
+
+.slot-btn[data-slot="4"]:hover:not(:disabled) {
+  background: #61324b;
+}
+
+.slot-btn[data-slot="5"]:hover:not(:disabled) {
+  background: #2d5c49;
+}
+
+.slot-btn[data-slot="6"]:hover:not(:disabled) {
+  background: #4a3362;
 }
 
 .slot-btn:disabled {
@@ -193,77 +283,24 @@ canvas {
   border-color: #2b3545;
 }
 
-.slot-btn.taken {
-  border-color: #5d6f85;
-  opacity: 0.55;
-}
-
-/* Player Colors matching renderer */
-.slot-btn[data-slot="1"] {
-  border-color: #6496C8;
-}
-
-/* Blue */
-.slot-btn[data-slot="2"] {
-  border-color: #C89664;
-}
-
-/* Brown */
-.slot-btn[data-slot="3"] {
-  border-color: #96C864;
-}
-
-/* Green */
-.slot-btn[data-slot="4"] {
-  border-color: #C86496;
-}
-
-/* Pink */
-.slot-btn[data-slot="5"] {
-  border-color: #64C896;
-}
-
-/* Teal */
-.slot-btn[data-slot="6"] {
-  border-color: #9664C8;
-}
-
-/* Purple */
-
-.slot-btn[data-slot="1"]:hover {
-  background: #2f4460;
-  color: black;
-}
-
-.slot-btn[data-slot="2"]:hover {
-  background: #5e4834;
-  color: black;
-}
-
-.slot-btn[data-slot="3"]:hover {
-  background: #3f5b2f;
-  color: black;
-}
-
-.slot-btn[data-slot="4"]:hover {
-  background: #61324b;
-  color: black;
-}
-
-.slot-btn[data-slot="5"]:hover {
-  background: #2d5c49;
-  color: black;
-}
-
-.slot-btn[data-slot="6"]:hover {
-  background: #4a3362;
-  color: black;
-}
-
 #lobby-status {
-  margin-top: 20px;
+  margin-top: 16px;
   color: #9fb0c6;
-  font-family: monospace;
-  font-size: 1.2rem;
-  min-height: 36px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: clamp(0.95rem, 2vw, 1.15rem);
+  min-height: 32px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 900px) {
+  #slot-container {
+    grid-template-columns: repeat(3, minmax(90px, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  #slot-container {
+    grid-template-columns: repeat(2, minmax(90px, 1fr));
+  }
 }

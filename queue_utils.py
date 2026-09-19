@@ -13,12 +13,12 @@ def put_latest_nonblocking(target_queue, payload: Any, metrics: Dict[str, int], 
         metrics[sent_key] = metrics.get(sent_key, 0) + 1
         return
     except queue.Full:
-        metrics[dropped_key] = metrics.get(dropped_key, 0) + 1
+        pass
     except Exception:
         metrics[dropped_key] = metrics.get(dropped_key, 0) + 1
         return
 
-    # Drop one old item and retry once.
+    # Drop one old item and retry once. Count a single drop for the replaced item.
     try:
         target_queue.get_nowait()
         metrics[dropped_key] = metrics.get(dropped_key, 0) + 1

@@ -2,7 +2,7 @@
 
 def circle_rect_collision(circle_center, circle_radius, rect):
     # all rectangle collision boxes in game are orthogonal, none are rotated
-    # rect is now a numpy array [x, y, width, height]
+    # rect is a sequence [x, y, width, height]
     
     def clamp(value, min_value, max_value):
         return max(min_value, min(value, max_value))

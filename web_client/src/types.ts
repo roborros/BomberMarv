@@ -7,6 +7,10 @@ export interface PlayerState {
     alive: boolean;
     direction: [number, number];
     quad_damage: boolean;
+    trophies?: number;
+    death_time_rel_ms?: number | null;
+    fire_power_at_death?: number | null;
+    bomb_capacity_at_death?: number | null;
     death_anim_time: number | null;
     fire_power?: number;
     bomb_capacity?: number;
@@ -24,6 +28,8 @@ export interface PlayerState {
     owner_client_id?: number | null;
     owner_client_player_id?: number | null;
     is_ai?: boolean;
+    shield_until?: number;
+    boss_lives_remaining?: number;
 }
 
 export interface BombState {
@@ -67,21 +73,46 @@ export interface GameState {
     powerups: PowerUpState[];
     crushing_walls: CrushingWallsState;
     boss_fight_winner?: BossFightWinner | null;
+    local_player_count?: number
+    grid_width?: number
+    grid_height?: number
+    _sim_tick?: number
     _net_metrics?: {
-        host_fps_5s?: number;
-        host_render_fps_5s?: number;
-        avg_input_apply_ms?: number;
-        input_apply_p50_ms?: number;
-        input_apply_p95_ms?: number;
-        input_apply_p99_ms?: number;
-        sim_step_avg_ms?: number;
-        sim_step_p95_ms?: number;
-        sim_tick?: number;
-        input_tick_reused?: number;
-        input_tick_buffered?: number;
-        input_tick_apply_lag_p95?: number;
-    };
+        clock?: string
+        meaning?: string
+        host_fps_5s?: number
+        host_render_fps_5s?: number
+        avg_input_apply_ms?: number
+        input_apply_p50_ms?: number
+        input_apply_p95_ms?: number
+        input_apply_p99_ms?: number
+        input_queue_delay_avg_ms?: number
+        input_queue_delay_p50_ms?: number
+        input_queue_delay_p95_ms?: number
+        input_queue_delay_p99_ms?: number
+        sim_step_avg_ms?: number
+        sim_step_p95_ms?: number
+        sim_tick?: number
+        input_tick_reused?: number
+        input_tick_buffered?: number
+        input_tick_apply_lag_p95?: number
+    }
+    trophy_win_threshold?: number
+    result_prompt?: string
+    ai_count?: number
     _host_published_at_ms?: number;
+}
+
+export type BoardPatch = [number, number, number]
+
+export interface PlayerPatch extends Partial<PlayerState> {
+    id: number
+}
+
+export interface GameStateDelta extends Partial<GameState> {
+    player_patches?: PlayerPatch[]
+    player_removed?: number[]
+    board_patches?: BoardPatch[]
 }
 
 export interface ProtocolEnvelope {
@@ -95,7 +126,10 @@ export interface HelloAckMessage extends ProtocolEnvelope {
     ws_version?: string;
     webrtc_offered?: boolean;
     webrtc_enabled?: boolean;
-    rtc_codec?: 'json' | 'msgpack';
+    rtc_codec?: 'json' | 'msgpack'
+    encoding?: 'json' | 'msgpack'
+    ws_codec?: 'json' | 'msgpack'
+    metrics_clock?: string;
     strict_input_mode?: boolean;
     input_lead_ticks?: number;
     transport_active?: 'ws' | 'rtc';
@@ -110,6 +144,7 @@ export interface SlotListMessage extends ProtocolEnvelope {
     type: 'slot_list';
     slots: Record<string, boolean>;
     slot_reasons?: Record<string, 'local' | 'remote'>;
+    trophy_win_threshold?: number;
 }
 
 export interface RegistrationConfirmedMessage extends ProtocolEnvelope {
@@ -139,7 +174,7 @@ export interface GameStateDeltaMessage extends ProtocolEnvelope {
     seq: number;
     server_timestamp?: number;
     tick_id?: number;
-    delta: Partial<GameState>;
+    delta: GameStateDelta;
 }
 
 export interface InputAckMessage extends ProtocolEnvelope {
@@ -148,7 +183,9 @@ export interface InputAckMessage extends ProtocolEnvelope {
     original_timestamp?: number;
     server_timestamp: number;
     tick_id?: number;
-    apply_tick_id?: number;
+    apply_tick_id?: number
+    clock?: string
+    rtt_clock?: string
 }
 
 export interface PongMessage extends ProtocolEnvelope {
@@ -159,6 +196,24 @@ export interface PongMessage extends ProtocolEnvelope {
 export interface ErrorMessage extends ProtocolEnvelope {
     type: 'error';
     message: string;
+}
+
+export interface StateKeepaliveMessage extends ProtocolEnvelope {
+    type: 'state_keepalive'
+    seq: number
+    time?: number
+    _sim_tick?: number
+    _host_published_at_ms?: number
+    server_timestamp?: number
+    tick_id?: number
+}
+
+export interface NetMetricsMessage extends ProtocolEnvelope {
+    type: 'net_metrics'
+    metrics: NonNullable<GameState['_net_metrics']>
+    clock?: string
+    seq?: number
+    server_timestamp?: number
 }
 
 export interface RtcOfferMessage extends ProtocolEnvelope {
@@ -202,6 +257,8 @@ export type ServerMessage =
     | RegistrationRejectedMessage
     | GameStateMessage
     | GameStateDeltaMessage
+    | StateKeepaliveMessage
+    | NetMetricsMessage
     | InputAckMessage
     | PongMessage
     | ErrorMessage

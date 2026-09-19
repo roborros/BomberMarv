@@ -5,7 +5,6 @@ import multiprocessing
 import os
 import psutil
 import queue
-import statistics
 import time
 import pygame
 from frontend import FrontendManager
@@ -25,6 +24,17 @@ from bm_classes import Game
 from queue_utils import put_latest_nonblocking
 from bm_sounds import bonus_sound
 from lobby import build_status_signature
+from timing_abstraction import get_ticks
+from net_protocol import should_buffer_remote_input
+from latency_metrics import (
+    build_hud_metrics,
+    gameplay_fingerprint,
+    prepare_wire_state,
+    queue_delay_ms,
+    should_attach_hud_metrics,
+    should_publish_snapshot,
+    wall_clock_ms,
+)
 import ws_stream_server
 
 
@@ -192,7 +202,7 @@ if __name__ == "__main__":
                     print(f"DEBUG: CLIENT DEBUG -> event={event.get('event')} key={event.get('key')} pressed={event.get('pressed_keys')}")
                 received_ts = event.get("ws_received_timestamp") if isinstance(event, dict) else None
                 if isinstance(received_ts, (int, float)):
-                    sample = max(0, int(theGame.current_time - int(received_ts)))
+                    sample = queue_delay_ms(received_ts, wall_clock_ms())
                     runtime_metrics["input_apply_samples_ms"].append(sample)
                     if len(runtime_metrics["input_apply_samples_ms"]) > 300:
                         runtime_metrics["input_apply_samples_ms"] = runtime_metrics["input_apply_samples_ms"][-300:]
@@ -201,7 +211,7 @@ if __name__ == "__main__":
                     remote_players_seen.add(player_key)
                     apply_tick_raw = event.get("apply_tick_id")
                     apply_tick = int(apply_tick_raw) if isinstance(apply_tick_raw, (int, float)) else None
-                    if apply_tick is not None and apply_tick > current_tick:
+                    if should_buffer_remote_input(apply_tick, current_tick):
                         bucket = pending_remote_input_by_tick.setdefault(apply_tick, [])
                         bucket.append(event)
                         runtime_metrics["input_tick_buffered"] += 1
@@ -222,7 +232,7 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"DEBUG: Exception processing input queue: {e}")
                 runtime_metrics["input_events_errors"] += 1
-                break
+                continue
 
     def apply_buffered_remote_input(current_tick):
         due_ticks = sorted(tick for tick in pending_remote_input_by_tick.keys() if tick <= current_tick)
@@ -278,82 +288,85 @@ if __name__ == "__main__":
 
     def build_state_payload():
         state_payload = theGame.to_dict()
-        samples = runtime_metrics["input_apply_samples_ms"]
-        sim_samples = runtime_metrics["sim_step_samples_ms"]
-        tick_lag_samples = runtime_metrics["input_tick_apply_lag_samples"]
-        avg_input_apply = sum(samples) / len(samples) if samples else 0.0
-        avg_sim_step = statistics.fmean(sim_samples) if sim_samples else 0.0
-        state_payload["_net_metrics"] = {
-            "input_events_processed": runtime_metrics["input_events_processed"],
-            "input_events_errors": runtime_metrics["input_events_errors"],
-            "state_queue_sent": runtime_metrics["state_queue_sent"],
-            "state_queue_dropped": runtime_metrics["state_queue_dropped"],
-            "avg_input_apply_ms": round(avg_input_apply, 2),
-            "input_apply_p50_ms": round(percentile(samples, 50), 2),
-            "input_apply_p95_ms": round(percentile(samples, 95), 2),
-            "input_apply_p99_ms": round(percentile(samples, 99), 2),
-            "sim_step_avg_ms": round(avg_sim_step, 2),
-            "sim_step_p95_ms": round(percentile(sim_samples, 95), 2),
-            "host_fps_5s": round(runtime_metrics["avg_sim_fps_5s"], 1),
-            "host_render_fps_5s": round(runtime_metrics["avg_render_fps_5s"], 1),
-            "sim_tick": int(runtime_metrics["sim_tick"]),
-            "input_tick_reused": int(runtime_metrics["input_tick_reused"]),
-            "input_tick_buffered": int(runtime_metrics["input_tick_buffered"]),
-            "input_tick_apply_lag_p95": round(percentile(tick_lag_samples, 95), 2),
-        }
-        state_payload["_host_published_at_ms"] = int(time.time() * 1000)
+        hud = build_hud_metrics(
+            input_queue_delay_samples_ms=runtime_metrics["input_apply_samples_ms"],
+            sim_step_samples_ms=runtime_metrics["sim_step_samples_ms"],
+            tick_lag_samples=runtime_metrics["input_tick_apply_lag_samples"],
+            input_events_processed=runtime_metrics["input_events_processed"],
+            input_events_errors=runtime_metrics["input_events_errors"],
+            state_queue_sent=runtime_metrics["state_queue_sent"],
+            state_queue_dropped=runtime_metrics["state_queue_dropped"],
+            host_fps_5s=runtime_metrics["avg_sim_fps_5s"],
+            host_render_fps_5s=runtime_metrics["avg_render_fps_5s"],
+            sim_tick=int(runtime_metrics["sim_tick"]),
+            input_tick_reused=int(runtime_metrics["input_tick_reused"]),
+            input_tick_buffered=int(runtime_metrics["input_tick_buffered"]),
+        )
+        state_payload["_net_metrics"] = hud
+        state_payload["_host_published_at_ms"] = wall_clock_ms()
         state_payload["_sim_tick"] = int(runtime_metrics["sim_tick"])
         return state_payload
 
     last_countdown_second = [None]
+    last_state_publish_ms = [-1]
+    last_state_fingerprint = [None]
+    last_hud_metrics_ms = [-1]
 
     def simulate_step(step_ms):
         step_started = time.perf_counter()
         runtime_metrics["sim_tick"] += 1
         current_tick = int(runtime_metrics["sim_tick"])
         theGame.dt = int(step_ms)
-        theGame.current_time = pygame.time.get_ticks()
+        theGame.current_time = get_ticks()
         runtime_metrics["sim_loop_timestamps_ms"].append(theGame.current_time)
         drain_remote_input(current_tick)
         apply_buffered_remote_input(current_tick)
         drain_status_updates()
         maybe_refresh_lobby_status()
-        if theGame.game_state == "get_ready":
-            remaining_ms = max(0, int(theGame.game_start_time - theGame.current_time))
-            remaining_sec = (remaining_ms + 999) // 1000
-            if remaining_sec != last_countdown_second[0]:
-                last_countdown_second[0] = remaining_sec
-                try:
-                    bonus_sound.play()
-                except Exception:
-                    pass
-            if theGame.current_time >= theGame.game_start_time:
-                theGame.game_state = "playing"
-        elif theGame.game_state == "boss_fight":
-            remaining_ms = max(0, int(theGame.game_start_time - theGame.current_time))
-            remaining_sec = (remaining_ms + 999) // 1000
-            if remaining_sec != last_countdown_second[0]:
-                last_countdown_second[0] = remaining_sec
-                try:
-                    bonus_sound.play()
-                except Exception:
-                    pass
-            if theGame.current_time >= theGame.game_start_time:
-                theGame.update()
-        elif theGame.game_state == "playing":
-            theGame.update()
+        countdown_second = theGame.simulate(step_ms, now_ms=theGame.current_time)
+        if countdown_second is not None and countdown_second != last_countdown_second[0]:
+            last_countdown_second[0] = countdown_second
+            try:
+                bonus_sound.play()
+            except Exception:
+                pass
         step_duration_ms = (time.perf_counter() - step_started) * 1000.0
         runtime_metrics["sim_step_samples_ms"].append(step_duration_ms)
         if len(runtime_metrics["sim_step_samples_ms"]) > 300:
             runtime_metrics["sim_step_samples_ms"] = runtime_metrics["sim_step_samples_ms"][-300:]
         state_payload = build_state_payload()
-        put_latest_nonblocking(
-            state_queue,
-            state_payload,
-            runtime_metrics,
-            sent_key="state_queue_sent",
-            dropped_key="state_queue_dropped",
-        )
+        now_ms = wall_clock_ms()
+        game_state = state_payload.get("state")
+        if game_state in {"playing", "get_ready", "boss_fight"}:
+            fingerprint = last_state_fingerprint[0]
+        else:
+            fingerprint = gameplay_fingerprint(state_payload)
+        if should_publish_snapshot(
+            game_state,
+            fingerprint,
+            last_state_fingerprint[0],
+            now_ms,
+            last_state_publish_ms[0],
+        ):
+            hud = None
+            if should_attach_hud_metrics(now_ms, last_hud_metrics_ms[0]):
+                hud = state_payload.get("_net_metrics")
+                last_hud_metrics_ms[0] = now_ms
+            wire_payload = prepare_wire_state(
+                state_payload,
+                wall_ms=now_ms,
+                hud_metrics=hud if isinstance(hud, dict) else None,
+                sim_tick=int(runtime_metrics["sim_tick"]),
+            )
+            put_latest_nonblocking(
+                state_queue,
+                wire_payload,
+                runtime_metrics,
+                sent_key="state_queue_sent",
+                dropped_key="state_queue_dropped",
+            )
+            last_state_publish_ms[0] = now_ms
+            last_state_fingerprint[0] = fingerprint
         if theGame.current_time - runtime_metrics["last_metrics_log_time"] > 5000:
             runtime_metrics["last_metrics_log_time"] = theGame.current_time
             print(
@@ -378,7 +391,7 @@ if __name__ == "__main__":
             if elapsed < 2000:
                 alpha = 255
             elif elapsed < 2800:
-                alpha = int(255 * (2500 - elapsed) / 500)
+                alpha = max(0, int(255 * (2800 - elapsed) / 800))
             else:
                 alpha = 0
             draw_title_page(game_surface, alpha)
@@ -400,15 +413,14 @@ if __name__ == "__main__":
             # Keep host render path single-pass; double rendering for shake was a major FPS sink.
             draw_game_screen(game_surface, theGame)
         elif theGame.game_state == "win":
-            draw_title_page(game_surface, alpha=255)
             alive_players = [p for p in theGame.players if p.alive]
             draw_stat_screen(game_surface, alive_players[0] if alive_players else None, theGame.players, theGame)
         elif theGame.game_state == "champion":
             alive_players = [p for p in theGame.players if p.alive]
-            draw_champion_screen(game_surface, alive_players[0] if alive_players else None)
+            draw_champion_screen(game_surface, alive_players[0] if alive_players else None, theGame.players, theGame)
         elif theGame.game_state == "boss_result":
             winner = getattr(theGame, 'boss_fight_winner', None)
-            draw_boss_result_screen(game_surface, winner)
+            draw_boss_result_screen(game_surface, winner, theGame.players, theGame)
 
         if bm_params.DEBUG_MODE:
             perf = state_payload["_net_metrics"]
