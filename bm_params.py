@@ -18,7 +18,7 @@ PLAYER_SPEED_MULTIPLIER = 1.15  # Configurable: 1.0 = default, 1.15 = 15% faster
 PLAYER_SPEED = int(CELL_SIZE * 2.5 * PLAYER_SPEED_MULTIPLIER)  # Default player speed (pixels per second)
 
 PLAYER_DRAW_SCALE = 0.85     # Drawn sprite diameter = 85% of cell edge
-PLAYER_COLLISION_SCALE = 0.7 # Collision circle = 75% of cell edge
+PLAYER_COLLISION_SCALE = 0.7 # Collision circle diameter = 70% of cell edge
 
 BOMB_DRAW_SCALE = 0.9         # Bomb drawn diameter = 90% of cell edge
 BOMB_PULSE_AMPLITUDE = 0.1    # 10% pulse modulation
@@ -92,9 +92,12 @@ BIG_EXPLOSION_TILE_THRESHOLD = 40
 BIG_EXPLOSION_WINDOW_MS = 500
 BIG_EXPLOSION_SOUND_DELAY_MS = 300
 
-# Explosion collision area scale (portion of cell covered by hitbox)
-# 0.85 => 85% of cell size with equal margins on all sides
-EXPLOSION_COLLISION_SCALE = 0.6
+# Explosion collision: only the inner portion of a flaming cell can kill.
+# 0.5 => 50% of the cell (25px margin on each side at CELL_SIZE=100).
+# Player uses a smaller radius for blast hits so a slight peek is safe.
+EXPLOSION_COLLISION_SCALE = 0.5
+EXPLOSION_PLAYER_HIT_SCALE = 0.30  # radius = 30% of half-cell (~15px)
+SCARED_BLAST_MAX_CELLS = 5
 
 # Post-win delay (ms): keep game running briefly after a win before showing screen
 ENDGAME_POST_DELAY_MS = 2500
@@ -106,8 +109,9 @@ REPLAY_LOG_INTERVAL_MS = 16
 REPLAY_BUFFER_MS = 6500
 # Camera radius in cells (viewport will be (2*r+1) cells in width/height)
 REPLAY_CAMERA_RADIUS_CELLS = 5
-# Replay panel width as a fraction of base width on the win screen
-REPLAY_PANEL_WIDTH_RATIO = 0.42
+# Replay panel on the win screen sits below the stats table
+REPLAY_PANEL_WIDTH_RATIO = 0.80
+REPLAY_PANEL_HEIGHT_RATIO = 0.44
 REPLAY_PANEL_PADDING = 12
 # Kill-cam window around each death, played in death order then looped
 REPLAY_KILLCAM_PRE_MS = 3500
@@ -132,6 +136,14 @@ KEY_SEND_FREQUENCY_LIMIT = 20  # Minimum milliseconds between key events (20ms =
 # Recommended range: 10-50ms (100Hz-20Hz)
 
 player_names = ["Marv", "Sobi", "Tom", "Zelda", "Ondra", "Sasa", "Luna", "Kai"]
+AI_NAME_LEFT = (
+    "Zesty", "Nitro", "Pixel", "Cosmic", "Spicy", "Fuzzy", "Neon", "Dusty",
+    "Turbo", "Lucky", "Giga", "Tiny", "Sneaky", "Bouncy", "Rusty",
+)
+AI_NAME_RIGHT = (
+    "Badger", "Noodle", "Comet", "Pickle", "Waffle", "Gremlin", "Rocket",
+    "Muffin", "Penguin", "Cactus", "Otter", "Falcon", "Bean", "Goblin", "Yeti",
+)
 #players = []
 colors = [
     (100, 150, 200),  # Light Blue

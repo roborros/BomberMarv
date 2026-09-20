@@ -99,6 +99,11 @@ export interface GameState {
     }
     trophy_win_threshold?: number
     result_prompt?: string
+    leave_prompt?: {
+        open: boolean
+        choice: 'no' | 'yes'
+        title: string
+    }
     ai_count?: number
     _host_published_at_ms?: number;
 }

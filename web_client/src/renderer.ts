@@ -1,6 +1,6 @@
 import type { GameState, PlayerState, BombState, ExplosionState, PowerUpState } from './types';
 import { computeBoardSignature } from './boardHash';
-import { isPlayerNearBomb, isPlayerNearExplosion } from './explosionVisual';
+import { isPlayerInPlannedBlast } from './explosionVisual';
 import { buildWinStatRows } from './winStats';
 import { computeCanvasBackingStore } from './canvasScale';
 import { BOSS_COLOR, BOSS_NAME, BOSS_QUOTE, bossWinsLabel, championAnnouncement } from './championChallenge';
@@ -46,8 +46,6 @@ export class Renderer {
     private worldToBackingX = 1;
     private worldToBackingY = 1;
     private avatarCache: Map<string, HTMLImageElement | null> = new Map();
-    private playerScaredUntil: Map<number, number> = new Map();
-    private playerNearBombSince: Map<number, number> = new Map();
 
     constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
@@ -103,6 +101,7 @@ export class Renderer {
         } else if (state.state === 'win' || state.state === 'boss_result') {
             this.drawWinStats(state);
         }
+        this.drawLeavePrompt(state);
         const renderDurationMs = performance.now() - renderStart;
         this.renderSamplesMs.push(renderDurationMs);
         if (this.renderSamplesMs.length > 240) {
@@ -156,14 +155,6 @@ export class Renderer {
         this.blastArmQd = this.loadImage('/img/blast_qd.png');
         this.blastCenter = this.loadImage('/img/blast_centre.png');
         this.blastCenterQd = this.loadImage('/img/blast_centre_qd.png');
-    }
-
-    private isPlayerNearExplosion(player: PlayerState, explosions: ExplosionState[], currentTimeMs: number): boolean {
-        return isPlayerNearExplosion(player, explosions, currentTimeMs);
-    }
-
-    private isPlayerNearBomb(player: PlayerState, bombs: BombState[]): boolean {
-        return isPlayerNearBomb(player, bombs);
     }
 
     private rebuildBoardLayer(board: number[][]) {
@@ -222,24 +213,7 @@ export class Renderer {
         const size = (PYTHON_CELL_SIZE * 0.85) * SCALE; // PLAYER_DRAW_SCALE = 0.85
         const [dx, dy] = player.direction;
 
-        // Scared state: explosion nearby (max 1 cell) triggers O-mouth + bigger eyes for 1s;
-        // or standing next to a bomb for >1s
-        let scared = false;
-        if (this.isPlayerNearExplosion(player, state.explosions || [], currentTimeMs)) {
-            this.playerScaredUntil.set(player.id, currentTimeMs + 1000);
-        }
-        scared = currentTimeMs < (this.playerScaredUntil.get(player.id) ?? 0);
-        if (!scared) this.playerScaredUntil.delete(player.id);
-        if (!scared && this.isPlayerNearBomb(player, state.bombs || [])) {
-            if (!this.playerNearBombSince.has(player.id)) {
-                this.playerNearBombSince.set(player.id, currentTimeMs);
-            }
-            if (currentTimeMs - (this.playerNearBombSince.get(player.id) ?? 0) >= 1000) {
-                scared = true;
-            }
-        } else {
-            this.playerNearBombSince.delete(player.id);
-        }
+        const scared = isPlayerInPlannedBlast(player, state.bombs || [], state.board || [])
 
         // Draw Shadow
         this.ctx.fillStyle = 'rgba(0,0,0,0.3)';
@@ -947,6 +921,62 @@ export class Renderer {
                 this.fillClippedText(value, x, textY, col.width, rowH);
             }
         }
+    }
+
+    private drawLeavePrompt(state: GameState) {
+        const prompt = state.leave_prompt;
+        if (!prompt?.open) return;
+        const w = this.width;
+        const h = this.height;
+        this.ctx.save();
+        this.ctx.setTransform(this.worldToBackingX, 0, 0, this.worldToBackingY, 0, 0);
+        this.ctx.fillStyle = 'rgba(8, 10, 16, 0.72)';
+        this.ctx.fillRect(0, 0, w, h);
+        const panelW = Math.min(720, Math.max(420, w * 0.52));
+        const panelH = Math.min(280, Math.max(200, h * 0.28));
+        const panelX = (w - panelW) / 2;
+        const panelY = (h - panelH) / 2;
+        this.roundRect(panelX, panelY, panelW, panelH, 16);
+        this.ctx.fillStyle = 'rgb(28, 34, 46)';
+        this.ctx.fill();
+        this.ctx.strokeStyle = 'rgb(196, 209, 228)';
+        this.ctx.lineWidth = 2;
+        this.ctx.stroke();
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'middle';
+        this.setUiFont(Math.min(36, Math.max(24, panelH / 7)), true);
+        this.ctx.fillStyle = 'rgb(238, 244, 255)';
+        this.ctx.fillText(prompt.title || 'Leave game?', w / 2, panelY + panelH * 0.28);
+        this.setUiFont(Math.min(20, Math.max(14, panelH / 12)));
+        this.ctx.fillStyle = 'rgb(164, 178, 198)';
+        this.ctx.fillText('Host: arrows select  ·  Enter confirm  ·  Esc resume', w / 2, panelY + panelH * 0.46);
+        const btnW = Math.min(160, Math.max(110, panelW * 0.28));
+        const btnH = Math.min(56, Math.max(40, panelH * 0.22));
+        const gap = 24;
+        const noX = w / 2 - gap / 2 - btnW;
+        const yesX = w / 2 + gap / 2;
+        const btnY = panelY + panelH - btnH - 28;
+        this.drawLeaveButton('NO', noX, btnY, btnW, btnH, prompt.choice !== 'yes');
+        this.drawLeaveButton('YES', yesX, btnY, btnW, btnH, prompt.choice === 'yes');
+        this.ctx.restore();
+    }
+
+    private drawLeaveButton(label: string, x: number, y: number, w: number, h: number, selected: boolean) {
+        this.roundRect(x, y, w, h, 12);
+        if (selected) {
+            this.ctx.fillStyle = label === 'YES' ? 'rgb(176, 72, 78)' : 'rgb(86, 168, 118)';
+        } else {
+            this.ctx.fillStyle = 'rgb(46, 56, 70)';
+        }
+        this.ctx.fill();
+        this.ctx.strokeStyle = selected ? 'rgb(230, 240, 232)' : 'rgb(90, 108, 132)';
+        this.ctx.lineWidth = selected ? 2 : 1;
+        this.ctx.stroke();
+        this.setUiFont(Math.min(28, Math.max(18, h * 0.45)), true);
+        this.ctx.fillStyle = selected && label === 'YES' ? 'rgb(255, 236, 236)' : selected ? 'rgb(22, 32, 28)' : 'rgb(210, 220, 232)';
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'middle';
+        this.ctx.fillText(label, x + w / 2, y + h / 2);
     }
 
     private buildDebugLine(state: GameState, metrics?: { latency5sMs?: number; fps5s?: number; hostFps5s?: number; hostRenderFps5s?: number; renderPipelineP95Ms?: number; presentDelayP95Ms?: number; decodeP95Ms?: number; localCorrectionP95Px?: number; queueDelayP95Ms?: number; }, renderP95Ms?: number): string {

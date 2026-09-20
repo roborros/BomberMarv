@@ -9,12 +9,14 @@ from bm_params import *
 from input_abstraction import get_key_name
 from timing_abstraction import get_ticks
 from lib_collisions import circle_rect_collision
-from explosions import compute_explosion_active_cells
+from explosions import (
+    explosion_cell_rect,
+    explosion_player_radius,
+    is_player_in_planned_blast,
+)
 from replay import frame_at_time, hydrate_replay_snapshot, letterbox_dest, pick_kill_cam
 
 _AVATAR_CACHE = {}
-_PLAYER_SCARED_UNTIL = {}  # player_id -> ticks when scared expression ends
-_PLAYER_NEAR_BOMB_SINCE = {}  # player_id -> when they first got near a bomb (for 1s+ scared)
 _ASSETS_READY = False
 _SCALED_IMAGE_CACHE = {}
 _BOARD_LAYER_CACHE = {"signature": None, "surface": None}
@@ -308,7 +310,9 @@ def _load_avatar_by_name(name, size):
     key = (name.lower(), int(size))
     if key in _AVATAR_CACHE:
         return _AVATAR_CACHE[key]
-    avatar_path = os.path.join('img', 'avatars', f'{name}.png')
+    from bm_paths import resource_path
+
+    avatar_path = resource_path("img", "avatars", f"{name}.png")
     if not os.path.exists(avatar_path):
         _AVATAR_CACHE[key] = None
         return None
@@ -538,29 +542,8 @@ def draw_trophy_icon(surface, pos, size):
     base_rect = np.array([x + int(width * 0.3), y + int(height * 0.85), int(width * 0.4), int(height * 0.15)], dtype=np.float64)
     pygame.draw.rect(surface, trophy_color, base_rect)
 
-def _is_player_near_explosion(player, explosions, current_time):
-    """Return True if any active explosion cell is within 1 cell (Chebyshev) of the player."""
-    px, py = player.get_grid_pos()
-    for explosion in explosions:
-        active = compute_explosion_active_cells(explosion, current_time, EXPLOSION_DURATION)
-        for (ex, ey) in active:
-            if abs(px - ex) <= 1 and abs(py - ey) <= 1:
-                return True
-    return False
-
-
-def _is_player_near_bomb(player, bombs):
-    """Return True if any bomb is within 1 cell (Chebyshev) of the player."""
-    px, py = player.get_grid_pos()
-    for bomb in bombs:
-        if abs(px - bomb.x) <= 1 and abs(py - bomb.y) <= 1:
-            return True
-    return False
-
-
-def draw_players(surface, players, explosions=None, current_time=None, bombs=None):
+def draw_players(surface, players, explosions=None, current_time=None, bombs=None, board=None, grid_width=None, grid_height=None):
     _ensure_fonts_initialized()
-    global _PLAYER_SCARED_UNTIL, _PLAYER_NEAR_BOMB_SINCE
     for player in players:
         if not player.alive and player.death_animation_time <= 0:
             continue
@@ -578,24 +561,15 @@ def draw_players(surface, players, explosions=None, current_time=None, bombs=Non
             helmet_color = (min(player.color[0]+30,255), min(player.color[1]+30,255), min(player.color[2]+30,255))
             rect_head = np.array([pos[0]-r, pos[1]-r, 2*r, 2*r], dtype=np.float64)
             pygame.draw.arc(surface, helmet_color, rect_head, math.pi, 2*math.pi, 3)
-            # Scared state: explosion nearby (max 1 cell) triggers O-mouth + bigger eyes for 1s;
-            # or standing next to a bomb for >1s
+            # Scared only while standing on a live bomb's planned blast (max 5 cells).
             scared = False
-            player_key = getattr(player, 'global_id', id(player))
-            if explosions is not None and current_time is not None:
-                if _is_player_near_explosion(player, explosions, current_time):
-                    _PLAYER_SCARED_UNTIL[player_key] = current_time + 1000
-                scared = current_time < _PLAYER_SCARED_UNTIL.get(player_key, 0)
-                if not scared and player_key in _PLAYER_SCARED_UNTIL:
-                    _PLAYER_SCARED_UNTIL.pop(player_key, None)
-            if bombs is not None and current_time is not None and not scared:
-                if _is_player_near_bomb(player, bombs):
-                    if player_key not in _PLAYER_NEAR_BOMB_SINCE:
-                        _PLAYER_NEAR_BOMB_SINCE[player_key] = current_time
-                    if current_time - _PLAYER_NEAR_BOMB_SINCE[player_key] >= 1000:
-                        scared = True
-                else:
-                    _PLAYER_NEAR_BOMB_SINCE.pop(player_key, None)
+            if bombs and board:
+                px, py = player.get_grid_pos()
+                gw = grid_width if grid_width is not None else len(board[0])
+                gh = grid_height if grid_height is not None else len(board)
+                scared = is_player_in_planned_blast(
+                    px, py, bombs, board, gw, gh, SCARED_BLAST_MAX_CELLS
+                )
             # Eyes: static white circles with black pupils that turn in direction of movement
             dx = float(getattr(player, 'direction', [0, 0])[0])
             dy = float(getattr(player, 'direction', [0, 0])[1])
@@ -805,13 +779,14 @@ def draw_explosion_collision_debug(surface, current_time, explosions, players=No
                 active_cells.append((cx + i, cy))
             
             # Draw collision boxes only for currently active cells
+            hit_radius = explosion_player_radius(CELL_SIZE, EXPLOSION_PLAYER_HIT_SCALE)
             for cell in active_cells:
                 x, y = cell
-                # Calculate the reduced collision rectangle (same as handle_explosions)
-                scale = EXPLOSION_COLLISION_SCALE
-                margin = CELL_SIZE * (1.0 - scale) / 2.0
-                hitbox_size = CELL_SIZE * scale
-                collision_rect = np.array([x * CELL_SIZE + margin, y * CELL_SIZE + margin, hitbox_size, hitbox_size], dtype=np.float64)
+                collision_rect = np.array(
+                    explosion_cell_rect(x, y, CELL_SIZE, EXPLOSION_COLLISION_SCALE),
+                    dtype=np.float64,
+                )
+                hitbox_size = collision_rect[2]
                 
                 # Draw filled semi-transparent rect and border for clarity
                 border_width = max(2, int(4 * arm_factor))
@@ -833,8 +808,8 @@ def draw_explosion_collision_debug(surface, current_time, explosions, players=No
                 if players and arm_factor > 0.5:
                     for player in players:
                         if player.alive:
-                            if circle_rect_collision((player.pos[0], player.pos[1]), player.collision_radius, collision_rect):
-                                pygame.draw.circle(surface, (255, 255, 0), (int(player.pos[0]), int(player.pos[1])), int(player.collision_radius), 2)
+                            if circle_rect_collision((player.pos[0], player.pos[1]), hit_radius, collision_rect):
+                                pygame.draw.circle(surface, (255, 255, 0), (int(player.pos[0]), int(player.pos[1])), int(hit_radius), 2)
 
 def draw_blast_arm(surface, start_pos, end_offset, image):
     x1, y1 = start_pos
@@ -875,6 +850,32 @@ def draw_controls(surface, players):
         rect = text.get_rect(center=(sw // 2, y_offset))
         surface.blit(text, rect)
         y_offset += 50
+
+def _win_screen_regions(sw, sh, has_replay):
+    """Stats use the full width; replay is a larger panel under the table."""
+    padding = max(16, int(sw * 0.012))
+    gap = 14
+    table_top_min = int(sh * 0.36)
+    table_w = sw - 2 * padding
+    replay_w = 0
+    replay_h = 0
+    if has_replay:
+        replay_w = int(sw * REPLAY_PANEL_WIDTH_RATIO)
+        replay_h = int(sh * REPLAY_PANEL_HEIGHT_RATIO)
+        max_replay_h = max(160, sh - table_top_min - 150 - padding)
+        replay_h = min(replay_h, max_replay_h)
+        replay_h = max(int(sh * 0.34), replay_h)
+    available_h = max(120, sh - table_top_min - padding - (replay_h + gap if has_replay else 0))
+    return {
+        "padding": padding,
+        "gap": gap,
+        "table_top_min": table_top_min,
+        "table_w": table_w,
+        "available_h": available_h,
+        "replay_w": replay_w,
+        "replay_h": replay_h,
+    }
+
 
 def draw_stat_screen(surface, winner, players, game=None, heading=None):
     _ensure_fonts_initialized()
@@ -956,38 +957,15 @@ def draw_stat_screen(surface, winner, players, game=None, heading=None):
     has_replay_segment = game is not None and hasattr(game, 'replay_segment') and bool(game.replay_segment)
     has_replay_buffer = game is not None and hasattr(game, 'replay_buffer') and bool(game.replay_buffer)
     has_replay = game is not None and (has_kill_cams or has_replay_segment or has_replay_buffer)
-    padding = max(16, int(sw * 0.012))
-    gap = 16
-    preferred_replay_w = int(sw * min(REPLAY_PANEL_WIDTH_RATIO, 0.34)) if has_replay else 0
-    min_replay_w = min(preferred_replay_w, max(260, int(sw * 0.22))) if has_replay else 0
-    table_top_min = int(sh * 0.40)
-    available_h = max(120, sh - table_top_min - padding)
-
-    layout = None
-    replay_w = 0
-    table_w = sw - 2 * padding
-    replay_candidates = []
-    if has_replay:
-        replay_candidates = [preferred_replay_w]
-        if min_replay_w and min_replay_w != preferred_replay_w:
-            replay_candidates.append(min_replay_w)
-    replay_candidates.append(0)
-    best = None
-    for replay_try in replay_candidates:
-        candidate_table_w = sw - padding - ((replay_try + REPLAY_PANEL_PADDING + gap) if replay_try else padding)
-        candidate = _fit_win_stats_layout(rows, candidate_table_w, available_h, n_players)
-        if not candidate or not candidate.get("columns"):
-            continue
-        choice = (candidate, replay_try, candidate_table_w)
-        if best is None or candidate["font_size"] > best[0]["font_size"]:
-            best = choice
-        if candidate["font_size"] >= 28:
-            layout, replay_w, table_w = choice
-            break
-    if layout is None and best is not None:
-        layout, replay_w, table_w = best
-    if layout is None:
-        layout = _fit_win_stats_layout(rows, table_w, available_h, n_players)
+    regions = _win_screen_regions(sw, sh, has_replay)
+    padding = regions["padding"]
+    gap = regions["gap"]
+    table_top_min = regions["table_top_min"]
+    table_w = regions["table_w"]
+    available_h = regions["available_h"]
+    replay_w = regions["replay_w"]
+    replay_h = regions["replay_h"]
+    layout = _fit_win_stats_layout(rows, table_w, available_h, n_players)
 
     table_left = padding
     font = layout["font"]
@@ -1090,12 +1068,16 @@ def draw_stat_screen(surface, winner, players, game=None, heading=None):
             text_surf = use_font.render(value, True, color)
             _blit_clipped(surface, text_surf, x, text_y, col["width"], row_h)
 
-    # Draw replay panel on the right side (if replay data is available)
-    if has_replay and replay_w > 0:
+    # Draw replay under the stats table (if replay data is available)
+    if has_replay and replay_w > 0 and replay_h > 0:
         panel_w = replay_w
-        panel_h = sh - 2 * REPLAY_PANEL_PADDING
-        panel_x = sw - panel_w - REPLAY_PANEL_PADDING
-        panel_y = REPLAY_PANEL_PADDING
+        panel_h = replay_h
+        panel_x = max(padding, (sw - panel_w) // 2)
+        panel_y = table_top + table_h + gap
+        if panel_y + panel_h > sh - padding:
+            panel_h = max(140, sh - padding - panel_y)
+        if panel_y + panel_h > sh - 4:
+            panel_y = max(table_top + table_h + 8, sh - padding - panel_h)
         pygame.draw.rect(surface, (30, 30, 30), (panel_x, panel_y, panel_w, panel_h))
         pygame.draw.rect(surface, (120, 120, 120), (panel_x, panel_y, panel_w, panel_h), 2)
 
@@ -1172,9 +1154,18 @@ def draw_stat_screen(surface, winner, players, game=None, heading=None):
             draw_bombs(world_surface, frame["t"], frame["bombs"])
             if frame["explosions"]:
                 draw_explosions(world_surface, frame["t"], frame["explosions"])
-            draw_players(world_surface, frame["players"], frame["explosions"], frame["t"], frame["bombs"])
+            draw_players(
+                world_surface,
+                frame["players"],
+                frame["explosions"],
+                frame["t"],
+                frame["bombs"],
+                board,
+                gw,
+                gh,
+            )
 
-            # Keep a square crop even at map edges, then letterbox into the tall panel.
+            # Keep a square crop even at map edges, then letterbox into the panel.
             crop = pygame.Surface((view_w, view_h))
             crop.fill(COLOR_BG)
             crop.blit(world_surface, (-view_rect.x, -view_rect.y))
@@ -1297,7 +1288,16 @@ def draw_game_screen(surface, theGame):
     draw_explosions(surface, theGame.current_time, theGame.explosions)
     if SHOW_EXPLOSION_COLLISION_DEBUG:
         draw_explosion_collision_debug(surface, theGame.current_time, theGame.explosions, theGame.players)
-    draw_players(surface, theGame.players, theGame.explosions, theGame.current_time, theGame.bombs)
+    draw_players(
+        surface,
+        theGame.players,
+        theGame.explosions,
+        theGame.current_time,
+        theGame.bombs,
+        theGame.board,
+        theGame.grid_width,
+        theGame.grid_height,
+    )
     if SHOW_PLAYER_DIRECTIONS:
         draw_player_directions(surface, theGame.players, theGame)
         
@@ -1418,37 +1418,23 @@ def draw_game_prep(surface, Game):
     if not hasattr(Game, '_cached_status'):
         Game._cached_status = None
 
-    # Build player list used by the left panel.
-    all_players = []
-    global_player_id = 1
-    for i in range(min(int(Game.prep_num_players), MAX_PLAYERS)):
-        all_players.append({
-            'id': global_player_id,
-            'name': Game.prep_player_names[i % len(Game.prep_player_names)],
-            'color': Game.prep_player_colors[i % len(Game.prep_player_colors)],
-            'team': Game.prep_player_teams[i % len(Game.prep_player_teams)],
-            'type': 'local',
-            'source': i,
-            'status': _format_controls(Game.prep_controls[i % len(Game.prep_controls)]),
-        })
-        global_player_id += 1
-
     cached_clients = {}
     cached_players = {}
     if Game._cached_status:
         cached_clients = Game._cached_status.get('clients', {})
         cached_players = Game._cached_status.get('players', {})
 
-    for client_id, client_info in cached_clients.items():
-        if len(all_players) >= MAX_PLAYERS:
-            break
-        if not client_info.get('registered', False):
-            continue
-        display_name = str(client_info.get('display_name', '') or '').strip()
-        client_latency_5s = float(client_info.get('avg_latency_5s', client_info.get('avg_latency', 0)) or 0)
-        for player_id in client_info.get('players', []):
-            if len(all_players) >= MAX_PLAYERS:
-                break
+    all_players = Game.get_all_players_info()
+    for p in all_players:
+        if p.get('type') == 'local':
+            controls = p.get('controls') or Game.prep_controls[p.get('source', 0) % len(Game.prep_controls)]
+            p['status'] = _format_controls(controls)
+        elif p.get('type') == 'ai':
+            p['status'] = 'CPU'
+        else:
+            source = p.get('source') or (None, None)
+            client_id, player_id = source if isinstance(source, tuple) else (source, None)
+            client_info = cached_clients.get(client_id, {}) or cached_clients.get(str(client_id), {})
             pinfo = cached_players.get(str(player_id), {})
             keys = pinfo.get('keys', {})
             pressed = []
@@ -1457,36 +1443,8 @@ def draw_game_prep(surface, Game):
             if keys.get('left'): pressed.append('LEFT')
             if keys.get('right'): pressed.append('RIGHT')
             if keys.get('bomb'): pressed.append('BOMB')
-            live_status = ' + '.join(pressed) if pressed else 'IDLE'
-            resolved_name = display_name if display_name else f"Client {client_id} P{player_id}"
-            all_players.append({
-                'id': global_player_id,
-                'name': resolved_name,
-                'color': global_player_id % len(colors),
-                'team': (global_player_id - 1) % 2,
-                'type': 'client',
-                'source': (client_id, player_id),
-                'status': live_status,
-                'latency_5s': client_latency_5s,
-            })
-            global_player_id += 1
-
-    used_names = {p['name'] for p in all_players}
-    human_count = len(all_players)
-    ai_count = min(int(getattr(Game, "prep_ai_count", 0) or 0), MAX_PLAYERS - human_count)
-    name_pool = [name for name in player_names if name not in used_names]
-    for slot in range(max(0, ai_count)):
-        ai_name = f"{name_pool[slot]} AI" if slot < len(name_pool) else f"CPU {slot + 1}"
-        all_players.append({
-            'id': global_player_id,
-            'name': ai_name,
-            'color': (human_count + slot) % len(colors),
-            'team': (human_count + slot) % 2,
-            'type': 'ai',
-            'source': slot,
-            'status': 'CPU',
-        })
-        global_player_id += 1
+            p['status'] = ' + '.join(pressed) if pressed else 'IDLE'
+            p['latency_5s'] = float(client_info.get('avg_latency_5s', client_info.get('avg_latency', 0)) or 0)
 
     margin = max(28, int(sw * 0.02))
     title_font = _ui_font(min(58, max(36, sh // 32)), bold=True)
@@ -1701,3 +1659,51 @@ def draw_game_prep(surface, Game):
 
     help_text = "Arrows navigate  ·  Enter select/edit  ·  Local 1-8  ·  AI 0-7  ·  Trophies 1-5  ·  Left/Right color  ·  T team  ·  Tab start  ·  Esc back"
     _blit_label(surface, help_font, help_text, (160, 176, 198), footer.x + 22, footer.y + 20 + footer_font.get_height(), text_w, help_font.get_height() + 6, vcenter=False)
+
+
+def draw_leave_prompt(surface, game):
+    """Dim the playfield and ask whether to cancel the session."""
+    if not getattr(game, "leave_prompt_open", False):
+        return
+    _ensure_fonts_initialized()
+    sw, sh = surface.get_size()
+    dim = pygame.Surface((sw, sh), pygame.SRCALPHA)
+    dim.fill((8, 10, 16, 180))
+    surface.blit(dim, (0, 0))
+
+    panel_w = min(720, max(420, int(sw * 0.52)))
+    panel_h = min(280, max(200, int(sh * 0.28)))
+    panel = pygame.Rect((sw - panel_w) // 2, (sh - panel_h) // 2, panel_w, panel_h)
+    pygame.draw.rect(surface, (28, 34, 46), panel, border_radius=16)
+    pygame.draw.rect(surface, (196, 209, 228), panel, 2, border_radius=16)
+
+    title = game.leave_prompt_title() if hasattr(game, "leave_prompt_title") else "Leave game?"
+    title_font = _ui_font(min(36, max(24, panel_h // 7)), bold=True)
+    hint_font = _ui_font(min(20, max(14, panel_h // 12)))
+    btn_font = _ui_font(min(28, max(18, panel_h // 8)), bold=True)
+    _blit_label(surface, title_font, title, (238, 244, 255), panel.x + 24, panel.y + 22, panel.width - 48, title_font.get_height() + 8)
+    _blit_label(
+        surface, hint_font, "Arrows select   ·   Enter confirm   ·   Esc resume",
+        (164, 178, 198), panel.x + 24, panel.y + 28 + title_font.get_height(), panel.width - 48, hint_font.get_height() + 6,
+    )
+
+    choice = getattr(game, "leave_prompt_choice", "no")
+    btn_w = min(160, max(110, int(panel_w * 0.28)))
+    btn_h = min(56, max(40, int(panel_h * 0.22)))
+    gap = 24
+    pair_w = btn_w * 2 + gap
+    btn_y = panel.bottom - btn_h - 28
+    no_rect = pygame.Rect(panel.centerx - pair_w // 2, btn_y, btn_w, btn_h)
+    yes_rect = pygame.Rect(no_rect.right + gap, btn_y, btn_w, btn_h)
+    for label, rect, selected in (("NO", no_rect, choice != "yes"), ("YES", yes_rect, choice == "yes")):
+        if selected:
+            fill = (86, 168, 118) if label == "NO" else (176, 72, 78)
+            text = (22, 32, 28) if label == "NO" else (255, 236, 236)
+            border = (230, 240, 232)
+        else:
+            fill = (46, 56, 70)
+            text = (210, 220, 232)
+            border = (90, 108, 132)
+        pygame.draw.rect(surface, fill, rect, border_radius=12)
+        pygame.draw.rect(surface, border, rect, 2 if selected else 1, border_radius=12)
+        _blit_label(surface, btn_font, label, text, rect.x, rect.y, rect.width, rect.height)

@@ -13,6 +13,9 @@ from explosions import (
     compute_explosion_active_cells,
     count_unique_explosion_tiles,
     crossed_big_explosion_threshold,
+    explosion_cell_rect,
+    explosion_player_radius,
+    planned_blast_cells,
     prune_explosion_events,
 )
 from powerups import choose_death_bonus_effect
@@ -524,6 +527,10 @@ class Game:
         self.prep_name_edit_index = 0  # Which player name we're editing
         self.prep_web_player_names = {}  # Store web player names {global_id: name}
         self.prep_web_player_colors = {}  # Store web player colors {global_id: color_index}
+        self.prep_ai_names = []
+        self.leave_prompt_open = False
+        self.leave_prompt_choice = "no"
+        self.leave_prompt_paused_at = None
         
         # Track if prep screen has been shown
         self.prep_screen_completed = False
@@ -610,15 +617,11 @@ class Game:
         used_names = {p['name'] for p in all_players}
         human_count = len(all_players)
         ai_count = min(int(getattr(self, "prep_ai_count", 0) or 0), MAX_PLAYERS - human_count)
-        name_pool = [name for name in player_names if name not in used_names]
+        ai_names = self._ensure_ai_names(ai_count, used_names)
         for slot in range(max(0, ai_count)):
-            if slot < len(name_pool):
-                ai_name = f"{name_pool[slot]} AI"
-            else:
-                ai_name = f"CPU {slot + 1}"
             all_players.append({
                 'id': global_player_id,
-                'name': ai_name,
+                'name': ai_names[slot],
                 'color': (human_count + slot) % len(colors),
                 'team': (human_count + slot) % 2,
                 'type': 'ai',
@@ -628,6 +631,25 @@ class Game:
             global_player_id += 1
         
         return all_players
+
+    def _ensure_ai_names(self, count, used_names):
+        wanted = max(0, int(count or 0))
+        human_used = set(used_names or [])
+        names = [name for name in (getattr(self, "prep_ai_names", []) or []) if name not in human_used]
+        used = set(human_used) | set(names)
+        while len(names) < wanted:
+            candidate = None
+            for _ in range(80):
+                trial = f"{random.choice(AI_NAME_LEFT)} {random.choice(AI_NAME_RIGHT)}"
+                if trial not in used:
+                    candidate = trial
+                    break
+            if candidate is None:
+                candidate = f"CPU {len(names) + 1}"
+            names.append(candidate)
+            used.add(candidate)
+        self.prep_ai_names = names[:wanted]
+        return self.prep_ai_names
     
     def create_players(self):
         """Create players based on current prep screen settings and client players"""
@@ -935,14 +957,14 @@ class Game:
 
     def result_prompt(self):
         if self.game_state == "win":
-            return "Enter: next round"
+            return "Enter: next round   ·   Esc: leave game"
         if self.game_state == "champion":
             champ = next((p for p in self.players if p.alive), None)
             if champ is not None and not getattr(champ, "is_ai", False):
-                return f"Enter: fight {BOSS_NAME}   ·   R: reset trophies from zero"
-            return "Enter or R: reset trophies from zero and start a new series"
+                return f"Enter: fight {BOSS_NAME}   ·   R: reset trophies   ·   Esc: leave game"
+            return "Enter or R: reset trophies from zero   ·   Esc: leave game"
         if self.game_state == "boss_result":
-            return "Enter or R: reset trophies from zero and start a new series"
+            return "Enter or R: reset trophies from zero   ·   Esc: leave game"
         return ""
 
     def reset_series_and_start(self):
@@ -965,6 +987,8 @@ class Game:
         return True
 
     def continue_from_intermission(self):
+        if getattr(self, "leave_prompt_open", False):
+            return False
         if self.game_state == "win":
             self.init_game()
             self.game_state = "get_ready"
@@ -974,6 +998,113 @@ class Game:
         if self.game_state == "boss_result":
             return self.reset_series_and_start()
         return False
+
+    def leave_prompt_states(self):
+        return {"playing", "get_ready", "boss_fight", "win", "champion", "boss_result"}
+
+    def leave_prompt_title(self):
+        if self.game_state in ("win", "champion", "boss_result"):
+            return "Leave game?"
+        return "Do you want to cancel the game session?"
+
+    def open_leave_prompt(self):
+        if self.game_state not in self.leave_prompt_states():
+            return False
+        if not getattr(self, "leave_prompt_open", False):
+            self.leave_prompt_paused_at = int(self.current_time or get_ticks())
+        self.leave_prompt_open = True
+        self.leave_prompt_choice = "no"
+        return True
+
+    def close_leave_prompt(self):
+        if not getattr(self, "leave_prompt_open", False):
+            return False
+        now = get_ticks()
+        paused_at = getattr(self, "leave_prompt_paused_at", None)
+        if paused_at is None:
+            paused_at = int(self.current_time or now)
+        if self.game_state in ("playing", "get_ready", "boss_fight"):
+            self.current_time = int(paused_at)
+            self._shift_game_clocks(now - int(paused_at))
+        self.leave_prompt_open = False
+        self.leave_prompt_choice = "no"
+        self.leave_prompt_paused_at = None
+        return True
+
+    def toggle_leave_prompt_choice(self):
+        if not getattr(self, "leave_prompt_open", False):
+            return False
+        self.leave_prompt_choice = "yes" if self.leave_prompt_choice == "no" else "no"
+        return True
+
+    def confirm_leave_prompt(self):
+        if not getattr(self, "leave_prompt_open", False):
+            return False
+        if self.leave_prompt_choice == "yes":
+            return self.return_to_lobby()
+        return self.close_leave_prompt()
+
+    def return_to_lobby(self):
+        """Abort the session and return to the lobby with the current roster."""
+        self.leave_prompt_open = False
+        self.leave_prompt_choice = "no"
+        self.reset_trophies()
+        self.boss_fight_winner = None
+        self.boss_fight_champion = None
+        self.bombs = []
+        self.explosions = []
+        self.powerups = []
+        self.kill_cam_clips = []
+        self._pending_kill_cams = []
+        self.replay_buffer = []
+        self.replay_segment = None
+        self.replay_loop_anchor_time = None
+        self.endgame_hold_until = None
+        self.post_win_target_state = None
+        self.post_win_transition_time = None
+        self.crushing_walls_active = False
+        self.prep_screen_completed = False
+        self.leave_prompt_paused_at = None
+        self.game_state = "game_prep"
+        self.create_players()
+        return True
+
+    def _shift_game_clocks(self, delta_ms):
+        delta = int(delta_ms or 0)
+        if delta <= 0:
+            return
+        self.current_time = int(self.current_time) + delta
+        for attr in (
+            "game_start_time",
+            "round_start_time",
+            "startup_start_time",
+            "crushing_walls_last_time",
+            "last_replay_log_time",
+            "replay_loop_anchor_time",
+            "endgame_hold_until",
+            "post_win_transition_time",
+        ):
+            value = getattr(self, attr, None)
+            if isinstance(value, (int, float)):
+                setattr(self, attr, int(value) + delta)
+        for bomb in getattr(self, "bombs", []) or []:
+            bomb.start_time = int(bomb.start_time) + delta
+        for explosion in getattr(self, "explosions", []) or []:
+            explosion.start_time = int(explosion.start_time) + delta
+        for powerup in getattr(self, "powerups", []) or []:
+            spawn = getattr(powerup, "spawn_time", None)
+            if isinstance(spawn, (int, float)):
+                powerup.spawn_time = int(spawn) + delta
+        sounds_at = getattr(self, "big_explosion_sound_at", None)
+        if sounds_at:
+            self.big_explosion_sound_at = [int(t) + delta for t in sounds_at]
+        for player in getattr(self, "players", []) or []:
+            for attr in ("quad_damage_start_time", "boss_shield_until", "pickup_message_end_time"):
+                value = getattr(player, attr, None)
+                if isinstance(value, (int, float)) and value:
+                    setattr(player, attr, int(value) + delta)
+        if getattr(self, "replay_buffer", None):
+            self.replay_buffer = [(int(t) + delta, snap) for t, snap in self.replay_buffer]
 
     def count_destroyable_cells(self):
         """Count the number of destroyable cells on the board"""
@@ -1152,20 +1283,19 @@ class Game:
                                 death_sound.play()
                                 self._queue_kill_cam(player)
 
-    def get_explosion_cells(self,bomb):
-        cells = [(bomb.x, bomb.y)]
-        for dx, dy in [(1,0), (-1,0), (0,1), (0,-1)]:
-            for i in range(1, bomb.fire_power + 1):
-                nx = bomb.x + dx * i
-                ny = bomb.y + dy * i
-                if nx < 0 or nx >= self.grid_width or ny < 0 or ny >= self.grid_height:
-                    break
-                if self.board[ny][nx] == INDESTRUCTIBLE:
-                    break
-                cells.append((nx, ny))
-                if self.board[ny][nx] == DESTRUCTIBLE:
-                    break
-        return cells
+    def get_explosion_cells(self, bomb):
+        return planned_blast_cells(
+            bomb.x,
+            bomb.y,
+            bomb.fire_power,
+            self.board,
+            self.grid_width,
+            self.grid_height,
+            max_range=bomb.fire_power,
+            empty=EMPTY,
+            indestructible=INDESTRUCTIBLE,
+            destructible=DESTRUCTIBLE,
+        )
 
     def _detonate_bomb(self, bomb):
         """Remove a live bomb and return its explosion. Safe if already removed."""
@@ -1247,10 +1377,7 @@ class Game:
             active_cells = compute_explosion_active_cells(explosion, self.current_time, EXPLOSION_DURATION)
             # Only check for kills when explosion arms are active
             if active_cells:
-                # Prepare reduced collision rectangle dimensions (centered in the cell)
-                scale = EXPLOSION_COLLISION_SCALE
-                margin = CELL_SIZE * (1.0 - scale) / 2.0
-                hitbox_size = CELL_SIZE * scale
+                hit_radius = explosion_player_radius(CELL_SIZE, EXPLOSION_PLAYER_HIT_SCALE)
 
                 # Check for player deaths only in currently active cells
                 for player in self.players:
@@ -1267,13 +1394,10 @@ class Game:
                             continue
                         for cell in active_cells:
                             cell_x, cell_y = cell
-                            explosion_rect = (
-                                cell_x * CELL_SIZE + margin,
-                                cell_y * CELL_SIZE + margin,
-                                hitbox_size,
-                                hitbox_size,
+                            explosion_rect = explosion_cell_rect(
+                                cell_x, cell_y, CELL_SIZE, EXPLOSION_COLLISION_SCALE
                             )
-                            if circle_rect_collision((player.pos[0], player.pos[1]), player.collision_radius, explosion_rect):
+                            if circle_rect_collision((player.pos[0], player.pos[1]), hit_radius, explosion_rect):
                                 if getattr(player, 'is_ai', False) and getattr(player, 'boss_lives_remaining', 0) > 0:
                                     player.boss_lives_remaining -= 1
                                     player.boss_shield_until = self.current_time + BOSS_SHIELD_DURATION_MS
@@ -1386,6 +1510,11 @@ class Game:
 
     def simulate(self, dt_ms, now_ms=None):
         """Advance one host sim step. The caller owns the clock; this does not sleep."""
+        if getattr(self, "leave_prompt_open", False):
+            frozen = getattr(self, "leave_prompt_paused_at", None)
+            if frozen is not None:
+                self.current_time = int(frozen)
+            return None
         self.dt = int(dt_ms)
         self.current_time = int(now_ms) if now_ms is not None else get_ticks()
         countdown_second = None
@@ -1837,6 +1966,11 @@ class Game:
             'trophy_win_threshold': int(self.trophy_threshold()),
             'result_prompt': self.result_prompt(),
             'boss_fight_winner': self._serialize_boss_winner(),
+            'leave_prompt': {
+                'open': bool(getattr(self, "leave_prompt_open", False)),
+                'choice': getattr(self, "leave_prompt_choice", "no"),
+                'title': self.leave_prompt_title() if getattr(self, "leave_prompt_open", False) else "",
+            },
         }
             
 # Screen class and methods moved to frontend.py

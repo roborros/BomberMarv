@@ -47,6 +47,7 @@ GAMEPLAY_DELTA_KEYS = (
     "boss_fight_winner",
     "trophy_win_threshold",
     "result_prompt",
+    "leave_prompt",
     "ai_count",
     "grid_width",
     "grid_height",

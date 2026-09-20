@@ -9,9 +9,23 @@ from explosions import (
     compute_explosion_active_cells,
     count_unique_explosion_tiles,
     crossed_big_explosion_threshold,
+    explosion_cell_rect,
+    explosion_player_radius,
+    is_player_in_planned_blast,
+    planned_blast_cells,
     prune_explosion_events,
 )
-from bm_params import BIG_EXPLOSION_TILE_THRESHOLD, BIG_EXPLOSION_WINDOW_MS
+from bm_params import (
+    BIG_EXPLOSION_TILE_THRESHOLD,
+    BIG_EXPLOSION_WINDOW_MS,
+    CELL_SIZE,
+    DESTRUCTIBLE,
+    EMPTY,
+    EXPLOSION_COLLISION_SCALE,
+    EXPLOSION_PLAYER_HIT_SCALE,
+    INDESTRUCTIBLE,
+    SCARED_BLAST_MAX_CELLS,
+)
 
 
 class TestBigExplosionWindow(unittest.TestCase):
@@ -89,6 +103,52 @@ class TestBigExplosionWindow(unittest.TestCase):
         pruned = prune_explosion_events(events, 1000, 200)
         self.assertEqual(len(pruned), 1)
         self.assertEqual(pruned[0][0], 900)
+
+
+class PlannedBlastAndHitboxTests(unittest.TestCase):
+    def _open_board(self, size=9):
+        board = [[EMPTY for _ in range(size)] for _ in range(size)]
+        for y in range(size):
+            for x in range(size):
+                if x == 0 or y == 0 or x == size - 1 or y == size - 1:
+                    board[y][x] = INDESTRUCTIBLE
+        return board
+
+    def test_planned_blast_stops_at_wall_and_includes_soft_block(self):
+        board = self._open_board()
+        board[3][5] = INDESTRUCTIBLE
+        board[5][3] = DESTRUCTIBLE
+        cells = planned_blast_cells(3, 3, 4, board, 9, 9)
+        self.assertIn((3, 3), cells)
+        self.assertIn((4, 3), cells)
+        self.assertNotIn((5, 3), cells)
+        self.assertIn((3, 5), cells)
+        self.assertNotIn((3, 6), cells)
+
+    def test_scared_range_is_capped_at_five(self):
+        board = self._open_board(13)
+        cells = planned_blast_cells(1, 1, 10, board, 13, 13, max_range=SCARED_BLAST_MAX_CELLS)
+        self.assertIn((6, 1), cells)
+        self.assertNotIn((7, 1), cells)
+
+    def test_diagonal_cell_is_not_in_planned_blast(self):
+        board = self._open_board()
+
+        class Bomb:
+            x, y, fire_power = 3, 3, 2
+
+        self.assertTrue(is_player_in_planned_blast(3, 3, [Bomb()], board, 9, 9))
+        self.assertTrue(is_player_in_planned_blast(5, 3, [Bomb()], board, 9, 9))
+        self.assertFalse(is_player_in_planned_blast(4, 4, [Bomb()], board, 9, 9))
+
+    def test_explosion_hitbox_is_inner_half_cell(self):
+        x, y, w, h = explosion_cell_rect(3, 2, CELL_SIZE, EXPLOSION_COLLISION_SCALE)
+        self.assertEqual(EXPLOSION_COLLISION_SCALE, 0.5)
+        self.assertEqual(w, 50)
+        self.assertEqual(h, 50)
+        self.assertEqual(x, 325)
+        self.assertEqual(y, 225)
+        self.assertAlmostEqual(explosion_player_radius(CELL_SIZE, EXPLOSION_PLAYER_HIT_SCALE), 15.0)
 
 
 if __name__ == "__main__":

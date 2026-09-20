@@ -36,30 +36,52 @@ export function getExplosionActiveCells(
   return cells
 }
 
+export const SCARED_BLAST_MAX_CELLS = 5
+export const TILE_EMPTY = 0
+export const TILE_INDESTRUCTIBLE = 1
+export const TILE_DESTRUCTIBLE = 2
+
 export function isAdjacentCell(ax: number, ay: number, bx: number, by: number): boolean {
   return Math.abs(ax - bx) <= 1 && Math.abs(ay - by) <= 1
 }
 
-export function isPlayerNearExplosion(
+export function plannedBlastCells(
+  bombX: number,
+  bombY: number,
+  firePower: number,
+  board: number[][],
+  maxRange = SCARED_BLAST_MAX_CELLS
+): [number, number][] {
+  const height = board.length
+  const width = board[0]?.length ?? 0
+  const reach = Math.max(0, Math.min(Math.floor(firePower), Math.floor(maxRange)))
+  const cells: [number, number][] = [[bombX, bombY]]
+  const dirs: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]]
+  for (const [dx, dy] of dirs) {
+    for (let step = 1; step <= reach; step++) {
+      const nx = bombX + dx * step
+      const ny = bombY + dy * step
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) break
+      const tile = board[ny][nx]
+      if (tile === TILE_INDESTRUCTIBLE) break
+      cells.push([nx, ny])
+      if (tile === TILE_DESTRUCTIBLE) break
+    }
+  }
+  return cells
+}
+
+export function isPlayerInPlannedBlast(
   player: Pick<PlayerState, 'x' | 'y'>,
-  explosions: ExplosionState[],
-  currentTimeMs: number
+  bombs: BombState[],
+  board: number[][],
+  maxRange = SCARED_BLAST_MAX_CELLS
 ): boolean {
   const px = Math.floor(player.x / CELL_SIZE)
   const py = Math.floor(player.y / CELL_SIZE)
-  for (const explosion of explosions) {
-    for (const [ex, ey] of getExplosionActiveCells(explosion, currentTimeMs)) {
-      if (isAdjacentCell(px, py, ex, ey)) return true
-    }
-  }
-  return false
-}
-
-export function isPlayerNearBomb(player: Pick<PlayerState, 'x' | 'y'>, bombs: BombState[]): boolean {
-  const px = Math.floor(player.x / CELL_SIZE)
-  const py = Math.floor(player.y / CELL_SIZE)
   for (const bomb of bombs) {
-    if (isAdjacentCell(px, py, bomb.x, bomb.y)) return true
+    const cells = plannedBlastCells(bomb.x, bomb.y, bomb.fire_power, board, maxRange)
+    if (cells.some(([x, y]) => x === px && y === py)) return true
   }
   return false
 }

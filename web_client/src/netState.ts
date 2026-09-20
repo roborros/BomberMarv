@@ -14,6 +14,7 @@ export function cloneState(state: GameState): GameState {
     explosions: state.explosions.map((e) => ({ ...e, cells: e.cells.map(([x, y]) => [x, y] as [number, number]) })),
     powerups: state.powerups.map((p) => ({ ...p })),
     crushing_walls: { ...state.crushing_walls },
+    leave_prompt: state.leave_prompt ? { ...state.leave_prompt } : undefined,
     _net_metrics: state._net_metrics ? { ...state._net_metrics } : undefined
   }
 }
@@ -40,6 +41,7 @@ export function mergeDelta(base: GameState, delta: GameStateDelta): GameState {
   if (delta.grid_height !== undefined) merged.grid_height = delta.grid_height
   if (delta.trophy_win_threshold !== undefined) merged.trophy_win_threshold = delta.trophy_win_threshold
   if (delta.result_prompt !== undefined) merged.result_prompt = delta.result_prompt
+  if (delta.leave_prompt !== undefined) merged.leave_prompt = { ...delta.leave_prompt }
   if (delta.ai_count !== undefined) merged.ai_count = delta.ai_count
   if (delta._net_metrics !== undefined) merged._net_metrics = { ...(merged._net_metrics ?? {}), ...delta._net_metrics }
   if (delta._host_published_at_ms !== undefined) merged._host_published_at_ms = delta._host_published_at_ms

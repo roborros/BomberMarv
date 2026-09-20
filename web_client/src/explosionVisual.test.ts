@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { explosionArmFactor, getExplosionActiveCells, isPlayerNearBomb, isPlayerNearExplosion } from './explosionVisual'
+import { explosionArmFactor, getExplosionActiveCells, isPlayerInPlannedBlast, plannedBlastCells } from './explosionVisual'
 
 describe('explosionVisual', () => {
   const explosion = {
@@ -25,10 +25,22 @@ describe('explosionVisual', () => {
     expect(getExplosionActiveCells(explosion, 400)).toEqual([])
   })
 
-  it('detects adjacent bombs and explosions', () => {
-    const player = { x: 250, y: 250 }
-    expect(isPlayerNearBomb(player, [{ x: 3, y: 2, start_time: 0, fire_power: 1, quad_damage: false }])).toBe(true)
-    expect(isPlayerNearBomb(player, [{ x: 8, y: 8, start_time: 0, fire_power: 1, quad_damage: false }])).toBe(false)
-    expect(isPlayerNearExplosion(player, [explosion], 200)).toBe(true)
+  it('planned blast stops at walls and caps scared range at 5', () => {
+    const board = Array.from({ length: 11 }, () => Array(11).fill(0))
+    board[2][6] = 1
+    const cells = plannedBlastCells(2, 2, 8, board, 5)
+    expect(cells).toContainEqual([2, 2])
+    expect(cells).toContainEqual([5, 2])
+    expect(cells).not.toContainEqual([6, 2])
+    expect(cells).not.toContainEqual([7, 2])
+  })
+
+  it('scares only players standing on a planned blast cell', () => {
+    const board = Array.from({ length: 9 }, () => Array(9).fill(0))
+    const bombs = [{ x: 3, y: 3, start_time: 0, fire_power: 2, quad_damage: false }]
+    expect(isPlayerInPlannedBlast({ x: 350, y: 350 }, bombs, board)).toBe(true)
+    expect(isPlayerInPlannedBlast({ x: 550, y: 350 }, bombs, board)).toBe(true)
+    expect(isPlayerInPlannedBlast({ x: 450, y: 450 }, bombs, board)).toBe(false)
+    expect(isPlayerInPlannedBlast({ x: 850, y: 350 }, bombs, board)).toBe(false)
   })
 })

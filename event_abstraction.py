@@ -184,8 +184,8 @@ class GameCommandHandler:
         """Handle a game command. Returns True if handled, False otherwise."""
         command = game_event.command
         data = game_event.data or {}
-        
-        # Window commands
+
+        # Window commands stay available while the leave overlay is open.
         if command == GameCommand.TOGGLE_FULLSCREEN:
             self._handle_toggle_fullscreen()
             return True
@@ -197,9 +197,12 @@ class GameCommandHandler:
         elif command == GameCommand.CLOSE_WINDOW:
             self._handle_close_window()
             return True
+
+        if self._handle_leave_prompt(command):
+            return True
         
         # Game state commands
-        elif command == GameCommand.START_GAME:
+        if command == GameCommand.START_GAME:
             return self._handle_start_game()
         
         elif command == GameCommand.QUICK_START_GAME:
@@ -332,3 +335,33 @@ class GameCommandHandler:
         }
         
         return command_to_key.get(command, None)
+
+    def _handle_leave_prompt(self, command) -> bool:
+        game = self.game
+        if getattr(game, "leave_prompt_open", False):
+            if command in (
+                GameCommand.NAVIGATE_UP,
+                GameCommand.NAVIGATE_DOWN,
+                GameCommand.NAVIGATE_LEFT,
+                GameCommand.NAVIGATE_RIGHT,
+            ):
+                return bool(game.toggle_leave_prompt_choice())
+            if command == GameCommand.START_GAME:
+                return bool(game.confirm_leave_prompt())
+            if command == GameCommand.CANCEL_EDIT:
+                return bool(game.close_leave_prompt())
+            if command in (
+                GameCommand.QUICK_START_GAME,
+                GameCommand.RESET_SERIES,
+                GameCommand.ADD_CHARACTER,
+                GameCommand.REMOVE_CHARACTER,
+                GameCommand.CLEAR_TEXT,
+                GameCommand.SWITCH_SECTION,
+            ):
+                return True
+            return False
+        if command == GameCommand.CANCEL_EDIT and hasattr(game, "open_leave_prompt"):
+            states = game.leave_prompt_states() if hasattr(game, "leave_prompt_states") else set()
+            if getattr(game, "game_state", None) in states:
+                return bool(game.open_leave_prompt())
+        return False

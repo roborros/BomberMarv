@@ -58,6 +58,16 @@ class GridSizeTests(unittest.TestCase):
         self.assertEqual(CRUSHING_WALLS_2P_DELAY, 180)
         self.assertEqual(CRUSHING_WALLS_DELAY, 3)
 
+    def test_explosion_hitbox_and_scared_range(self):
+        from bm_params import (
+            EXPLOSION_COLLISION_SCALE,
+            EXPLOSION_PLAYER_HIT_SCALE,
+            SCARED_BLAST_MAX_CELLS,
+        )
+        self.assertEqual(EXPLOSION_COLLISION_SCALE, 0.5)
+        self.assertEqual(EXPLOSION_PLAYER_HIT_SCALE, 0.30)
+        self.assertEqual(SCARED_BLAST_MAX_CELLS, 5)
+
 
 if __name__ == "__main__":
     unittest.main()

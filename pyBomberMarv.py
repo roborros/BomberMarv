@@ -3,6 +3,8 @@
 import socket
 import multiprocessing
 import os
+import sys
+import threading
 import psutil
 import queue
 import time
@@ -15,6 +17,7 @@ from bm_drawing import (
     draw_game_prep,
     draw_game_screen,
     draw_get_ready,
+    draw_leave_prompt,
     draw_stat_screen,
     draw_title_page,
 )
@@ -62,14 +65,24 @@ def is_port_in_use(port):
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 def start_ws_server_with_queue(input_queue, state_queue, status_queue):
-    # Start the server in a process, passing input queue and state queue, and log output to ws_server.log
-    p = multiprocessing.Process(
-        target=ws_stream_server.run_server_with_queue,
-        args=(input_queue, state_queue, status_queue, "ws_server.log"),
-    )
-    p.daemon = True
-    p.start()
-    return p
+    from bm_paths import is_frozen, user_log_path
+
+    log_path = user_log_path("ws_server.log") if is_frozen() else "ws_server.log"
+    args = (input_queue, state_queue, status_queue, log_path)
+    # Frozen Windows builds cannot reliably spawn a second Process of the exe.
+    if is_frozen():
+        thread = threading.Thread(
+            target=ws_stream_server.run_server_with_queue,
+            args=args,
+            daemon=True,
+            name="ws-server",
+        )
+        thread.start()
+        return thread
+    process = multiprocessing.Process(target=ws_stream_server.run_server_with_queue, args=args)
+    process.daemon = True
+    process.start()
+    return process
 
 def kill_existing_ws_server_processes():
     """Kill any running ws_stream_server.py processes (zombie cleanup)."""
@@ -111,6 +124,7 @@ def percentile(values, p):
     return float(ordered[idx])
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     kill_existing_ws_server_processes()
     # Free the TCP ports if occupied
     kill_processes_on_ports({8080, 8765})
@@ -120,6 +134,9 @@ if __name__ == "__main__":
     state_queue = multiprocessing.Queue(maxsize=16)
     status_queue = multiprocessing.Queue(maxsize=128)
     ws_process = start_ws_server_with_queue(input_queue, state_queue, status_queue)
+    from bm_paths import print_join_urls
+
+    print_join_urls(http_port=ws_stream_server.HTTP_PORT, ws_port=ws_stream_server.PORT)
     runtime_metrics = {
         "input_events_processed": 0,
         "input_events_errors": 0,
@@ -421,6 +438,8 @@ if __name__ == "__main__":
         elif theGame.game_state == "boss_result":
             winner = getattr(theGame, 'boss_fight_winner', None)
             draw_boss_result_screen(game_surface, winner, theGame.players, theGame)
+
+        draw_leave_prompt(game_surface, theGame)
 
         if bm_params.DEBUG_MODE:
             perf = state_payload["_net_metrics"]

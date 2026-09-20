@@ -50,6 +50,13 @@ class StateDeltaTests(unittest.TestCase):
         self.assertIn("boss_fight_winner", delta)
         self.assertEqual(delta["boss_fight_winner"]["name"], "Marv")
 
+    def test_includes_leave_prompt(self):
+        previous = {"leave_prompt": {"open": False, "choice": "no", "title": ""}, "players": []}
+        current = {"leave_prompt": {"open": True, "choice": "yes", "title": "Leave game?"}, "players": []}
+        delta = build_state_delta(previous, current)
+        self.assertEqual(delta["leave_prompt"]["open"], True)
+        self.assertEqual(delta["leave_prompt"]["choice"], "yes")
+
 
 if __name__ == "__main__":
     unittest.main()

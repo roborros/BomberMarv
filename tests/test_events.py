@@ -137,6 +137,54 @@ class GameCommandHandlerTests(unittest.TestCase):
         handler = GameCommandHandler(game)
         self.assertFalse(handler.handle_command(GameEvent(EventType.KEY_PRESS, GameCommand.QUICK_START_GAME)))
 
+    def test_escape_opens_leave_prompt_while_playing(self):
+        calls = []
+        game = types.SimpleNamespace(
+            game_state="playing",
+            leave_prompt_open=False,
+            frontend=None,
+            screen=None,
+            leave_prompt_states=lambda: {"playing", "win"},
+            open_leave_prompt=lambda: calls.append("open") or True,
+        )
+        handler = GameCommandHandler(game)
+        handled = handler.handle_command(GameEvent(EventType.KEY_PRESS, GameCommand.CANCEL_EDIT))
+        self.assertTrue(handled)
+        self.assertEqual(calls, ["open"])
+
+    def test_leave_prompt_arrows_and_enter(self):
+        calls = []
+        game = types.SimpleNamespace(
+            game_state="win",
+            leave_prompt_open=True,
+            frontend=None,
+            screen=None,
+            toggle_leave_prompt_choice=lambda: calls.append("toggle") or True,
+            confirm_leave_prompt=lambda: calls.append("confirm") or True,
+            close_leave_prompt=lambda: calls.append("close") or True,
+        )
+        handler = GameCommandHandler(game)
+        handler.handle_command(GameEvent(EventType.KEY_PRESS, GameCommand.NAVIGATE_RIGHT))
+        handler.handle_command(GameEvent(EventType.KEY_PRESS, GameCommand.START_GAME))
+        handler.handle_command(GameEvent(EventType.KEY_PRESS, GameCommand.CANCEL_EDIT))
+        self.assertEqual(calls, ["toggle", "confirm", "close"])
+
+    def test_escape_on_prep_does_not_open_leave_prompt(self):
+        calls = []
+        game = types.SimpleNamespace(
+            game_state="game_prep",
+            leave_prompt_open=False,
+            frontend=None,
+            screen=None,
+            leave_prompt_states=lambda: {"playing"},
+            open_leave_prompt=lambda: calls.append("open") or True,
+            handle_prep_key_event=lambda event: calls.append("prep"),
+        )
+        handler = GameCommandHandler(game)
+        handled = handler.handle_command(GameEvent(EventType.KEY_PRESS, GameCommand.CANCEL_EDIT))
+        self.assertTrue(handled)
+        self.assertEqual(calls, ["prep"])
+
 
 if __name__ == "__main__":
     unittest.main()
