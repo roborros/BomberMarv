@@ -1286,6 +1286,33 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
     async def handle_health(request):
         return web.json_response({"status": "ok", "timestamp": int(time.time() * 1000)})
 
+    def _mount_client_static(app: web.Application) -> None:
+        from bm_paths import find_client_static_dir
+
+        static_dir = find_client_static_dir()
+        if not static_dir:
+            return
+        index_path = os.path.join(static_dir, "index.html")
+
+        async def handle_index(_request):
+            return web.FileResponse(index_path)
+
+        async def handle_asset(request):
+            rel = request.match_info["tail"]
+            root = os.path.normpath(static_dir)
+            full = os.path.normpath(os.path.join(static_dir, rel))
+            try:
+                inside = os.path.commonpath([root, full]) == root
+            except ValueError:
+                inside = False
+            if not inside or not os.path.isfile(full):
+                raise web.HTTPNotFound()
+            return web.FileResponse(full)
+
+        app.router.add_get("/", handle_index)
+        app.router.add_get("/{tail:.*}", handle_asset)
+        logger.info("Serving web client from %s", static_dir)
+
     def start_http_server():
         app = web.Application()
         app.router.add_get("/health", handle_health)
@@ -1293,6 +1320,7 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
         app.router.add_get("/config", handle_config)
         app.router.add_get("/status", handle_status)
         app.router.add_get("/metrics", handle_metrics)
+        _mount_client_static(app)
         runner = web.AppRunner(app)
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)

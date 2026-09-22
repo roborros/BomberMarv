@@ -15,6 +15,7 @@ from explosions import (
     crossed_big_explosion_threshold,
     explosion_cell_rect,
     explosion_player_radius,
+    explosion_tip_clip,
     planned_blast_cells,
     prune_explosion_events,
 )
@@ -72,6 +73,7 @@ class Player:
         self._bomb_key_held = False
         self.is_ai = False
         self.ai_role = ""
+        self.ai_personality = ""
         self._ai_last_dir = (0, 0)
         self._ai_intent_dir = None
         self._ai_last_think_ms = None
@@ -461,8 +463,7 @@ class Game:
         self.powerups = []
         self.game_start_time = get_ticks()
         self.players = []
-        self.game_state = "game_prep"  # Start directly in prep mode for testing
-        print(f"Game initialized with state: {self.game_state}")
+        self.game_state = "game_prep"
         self.startup_start_time = get_ticks()
         self.current_time = self.startup_start_time
         self.clock = Clock()
@@ -512,7 +513,9 @@ class Game:
         # Game preparation screen state
         self.prep_num_players = NUM_PLAYERS
         self.prep_ai_count = DEFAULT_AI_COUNT if NUM_PLAYERS <= 1 else 0
+        self.prep_ai_personalities = []
         self.prep_trophy_threshold = TROPHY_WIN_THRESHOLD
+        self.prep_grid_offset = 0
         self.prep_player_names = player_names.copy()
         self.prep_player_colors = list(range(len(colors)))  # Store color indices instead of colors
         self.prep_player_teams = [i % 2 for i in range(len(player_names))]
@@ -553,6 +556,31 @@ class Game:
         except (TypeError, ValueError):
             value = TROPHY_WIN_THRESHOLD
         return max(MIN_TROPHY_WIN, min(MAX_TROPHY_WIN, value))
+
+    def grid_offset(self):
+        from bm_params import clamp_grid_offset
+        return clamp_grid_offset(getattr(self, "prep_grid_offset", 0))
+
+    def resolved_grid_size(self, player_count=None, is_boss_fight=False):
+        from bm_params import get_grid_size
+        if player_count is None:
+            if self.game_state in ("startup", "game_prep"):
+                player_count = len(self.get_all_players_info())
+            else:
+                player_count = len(getattr(self, "players", []) or [])
+        return get_grid_size(
+            player_count,
+            is_boss_fight=is_boss_fight,
+            offset=0 if is_boss_fight else self.grid_offset(),
+        )
+
+    def champion_player(self):
+        """Player who reached the trophy goal, otherwise the last survivor."""
+        threshold = self.trophy_threshold()
+        reached = [p for p in self.players if int(getattr(p, "trophies", 0) or 0) >= threshold]
+        if reached:
+            return max(reached, key=lambda p: (int(p.trophies), 1 if p.alive else 0))
+        return next((p for p in self.players if p.alive), None)
 
     def _clamp_prep_ai(self):
         humans = min(MAX_PLAYERS, max(1, int(self.prep_num_players)))
@@ -618,6 +646,7 @@ class Game:
         human_count = len(all_players)
         ai_count = min(int(getattr(self, "prep_ai_count", 0) or 0), MAX_PLAYERS - human_count)
         ai_names = self._ensure_ai_names(ai_count, used_names)
+        ai_styles = list(getattr(self, "prep_ai_personalities", []) or [])
         for slot in range(max(0, ai_count)):
             all_players.append({
                 'id': global_player_id,
@@ -627,6 +656,7 @@ class Game:
                 'type': 'ai',
                 'source': slot,
                 'controls': None,
+                'personality': ai_styles[slot] if slot < len(ai_styles) else None,
             })
             global_player_id += 1
         
@@ -649,7 +679,21 @@ class Game:
             names.append(candidate)
             used.add(candidate)
         self.prep_ai_names = names[:wanted]
+        self._sync_ai_personalities(wanted)
         return self.prep_ai_names
+
+    def _sync_ai_personalities(self, count):
+        """Keep one style per AI slot. New slots are rolled; existing slots stay."""
+        from ai_controller import AI_PERSONALITIES, roll_cpu_personality
+        wanted = max(0, int(count or 0))
+        styles = [
+            style for style in (getattr(self, "prep_ai_personalities", None) or [])
+            if style in AI_PERSONALITIES
+        ]
+        while len(styles) < wanted:
+            styles.append(roll_cpu_personality())
+        self.prep_ai_personalities = styles[:wanted]
+        return self.prep_ai_personalities
     
     def create_players(self):
         """Create players based on current prep screen settings and client players"""
@@ -679,6 +723,12 @@ class Game:
                 p.is_ai = True
                 p.ai_role = 'cpu'
                 p.ai_slot = int(player_info['source'])
+                from ai_controller import AI_PERSONALITIES, assign_random_personality
+                style = player_info.get('personality')
+                if style in AI_PERSONALITIES:
+                    p.ai_personality = style
+                else:
+                    assign_random_personality(p)
                 p.client_id = None
                 p.client_player_id = None
             else:
@@ -747,11 +797,21 @@ class Game:
                 p.total_powerups_collected = data['total_powerups_collected']
                 p.total_quad_damage_collected = data['total_quad_damage_collected']
                 p.total_cells_walked = data['total_cells_walked']
+                saved_style = data.get('ai_personality')
+                if saved_style and getattr(p, 'is_ai', False) and getattr(p, 'ai_role', '') != 'boss':
+                    p.ai_personality = saved_style
+                    from ai_controller import AI_PERSONALITIES
+                    if saved_style in AI_PERSONALITIES:
+                        slot = int(getattr(p, 'ai_slot', 0) or 0)
+                        styles = list(getattr(self, 'prep_ai_personalities', []) or [])
+                        while len(styles) <= slot:
+                            styles.append(saved_style)
+                        styles[slot] = saved_style
+                        self.prep_ai_personalities = styles
         
         num_players = len(self.players)
         self.starting_player_count = num_players
-        from bm_params import get_grid_size
-        grid_size = get_grid_size(num_players)
+        grid_size = self.resolved_grid_size(num_players)
         self.board = generate_maze(grid_size, grid_size)
         self._set_arena_size(grid_size)
         self.bombs = []
@@ -818,6 +878,7 @@ class Game:
                 'total_powerups_collected': p.total_powerups_collected,
                 'total_quad_damage_collected': p.total_quad_damage_collected,
                 'total_cells_walked': p.total_cells_walked,
+                'ai_personality': getattr(p, 'ai_personality', None) or None,
             }
         return previous_players
 
@@ -845,6 +906,7 @@ class Game:
         boss.is_local = False
         boss.is_ai = True
         boss.ai_role = "boss"
+        boss.ai_personality = "boss"
         boss.ai_slot = 0
         boss.client_id = None
         boss.client_player_id = None
@@ -891,12 +953,13 @@ class Game:
             offsets = corner_patterns.get((p.start_grid_x, p.start_grid_y), [(0, 0), (1, 0), (0, 1)])
             clear_safe_zone(self.board, p.start_grid_x, p.start_grid_y, offsets)
             p.reset()
-            if getattr(p, 'is_ai', False):
+            if p is boss:
                 p.bomb_capacity = BOSS_START_BOMB_CAPACITY
                 p.fire_power = BOSS_START_FIRE_POWER
                 p.speed = int(PLAYER_SPEED * BOSS_SPEED_MULTIPLIER)
                 p.boss_lives_remaining = BOSS_EXTRA_LIVES
                 p.ai_role = "boss"
+                p.ai_personality = "boss"
 
         self.game_start_time = self.current_time + 2000
         self.crushing_walls_active = False
@@ -959,10 +1022,7 @@ class Game:
         if self.game_state == "win":
             return "Enter: next round   ·   Esc: leave game"
         if self.game_state == "champion":
-            champ = next((p for p in self.players if p.alive), None)
-            if champ is not None and not getattr(champ, "is_ai", False):
-                return f"Enter: fight {BOSS_NAME}   ·   R: reset trophies   ·   Esc: leave game"
-            return "Enter or R: reset trophies from zero   ·   Esc: leave game"
+            return f"Enter: fight {BOSS_NAME}   ·   R: reset trophies   ·   Esc: leave game"
         if self.game_state == "boss_result":
             return "Enter or R: reset trophies from zero   ·   Esc: leave game"
         return ""
@@ -977,9 +1037,9 @@ class Game:
         return True
 
     def continue_from_champion(self):
-        """Human champion fights the Boss 1v1; AI champion ends the series."""
-        champion = next((p for p in self.players if p.alive), None)
-        if champion is None or getattr(champion, "is_ai", False):
+        """Trophy winner fights BomberMarv 1v1, including when that winner is AI."""
+        champion = self.champion_player()
+        if champion is None:
             return self.reset_series_and_start()
         self.boss_fight_champion = champion
         self.init_boss_fight(champion)
@@ -1207,6 +1267,7 @@ class Game:
             crushing_min_destroyable = CRUSHING_WALLS_MIN_DESTROYABLE
             crushing_max_alive = CRUSHING_WALLS_MAX_ALIVE
             growth_interval_ms = CRUSHING_WALLS_GROWTH_INTERVAL_MS
+        crushing_delay = max(int(crushing_delay), int(CRUSHING_WALLS_MIN_START_S))
         
         if len(alive_players) <= crushing_max_alive and \
            (self.current_time - self.game_start_time) >= crushing_delay * 1000 and \
@@ -1335,7 +1396,7 @@ class Game:
         return triggered
 
     def _register_new_explosions(self, explosions):
-        """Track new blasts and play mocny_stral when unique tiles exceed the window threshold."""
+        """Track new blasts and play mocny_stral once unique tiles reach the window threshold."""
         if not explosions:
             return
         self.recent_explosion_events = prune_explosion_events(
@@ -1344,7 +1405,7 @@ class Game:
         aged_count = count_unique_explosion_tiles(
             self.recent_explosion_events, self.current_time, BIG_EXPLOSION_WINDOW_MS
         )
-        self.big_explosion_over_threshold = aged_count > BIG_EXPLOSION_TILE_THRESHOLD
+        self.big_explosion_over_threshold = aged_count >= BIG_EXPLOSION_TILE_THRESHOLD
         for exp in explosions:
             cells = tuple((int(cell[0]), int(cell[1])) for cell in exp.cells)
             self.recent_explosion_events.append((exp.start_time, cells))
@@ -1359,7 +1420,7 @@ class Game:
             self.big_explosion_over_threshold, tile_count, BIG_EXPLOSION_TILE_THRESHOLD
         ):
             self.big_explosion_sound_at.append(self.current_time + BIG_EXPLOSION_SOUND_DELAY_MS)
-        self.big_explosion_over_threshold = tile_count > BIG_EXPLOSION_TILE_THRESHOLD
+        self.big_explosion_over_threshold = tile_count >= BIG_EXPLOSION_TILE_THRESHOLD
 
     def _play_due_big_explosion_sounds(self):
         if not self.big_explosion_sound_at:
@@ -1395,7 +1456,17 @@ class Game:
                         for cell in active_cells:
                             cell_x, cell_y = cell
                             explosion_rect = explosion_cell_rect(
-                                cell_x, cell_y, CELL_SIZE, EXPLOSION_COLLISION_SCALE
+                                cell_x,
+                                cell_y,
+                                CELL_SIZE,
+                                EXPLOSION_COLLISION_SCALE,
+                                clip_outward=explosion_tip_clip(
+                                    explosion.cells[0][0],
+                                    explosion.cells[0][1],
+                                    cell_x,
+                                    cell_y,
+                                    active_cells,
+                                ),
                             )
                             if circle_rect_collision((player.pos[0], player.pos[1]), hit_radius, explosion_rect):
                                 if getattr(player, 'is_ai', False) and getattr(player, 'boss_lives_remaining', 0) > 0:
@@ -1555,15 +1626,18 @@ class Game:
         return ticks_now()
 
     def _prep_last_player_row(self):
-        return 2 + len(self.get_all_players_info())
+        return PREP_ROW_PLAYERS + len(self.get_all_players_info()) - 1
 
     def _sync_prep_cursor_col(self):
-        if self.prep_cursor_row == 0:
+        if self.prep_cursor_row == PREP_ROW_LOCAL:
             self.prep_cursor_col = max(0, min(MAX_PLAYERS - 1, self.prep_num_players - 1))
-        elif self.prep_cursor_row == 1:
+        elif self.prep_cursor_row == PREP_ROW_AI:
             self.prep_cursor_col = max(0, min(MAX_PLAYERS - 1, int(getattr(self, "prep_ai_count", 0) or 0)))
-        elif self.prep_cursor_row == 2:
+        elif self.prep_cursor_row == PREP_ROW_TROPHY:
             self.prep_cursor_col = max(0, min(MAX_TROPHY_WIN - 1, self.trophy_threshold() - 1))
+        elif self.prep_cursor_row == PREP_ROW_ARENA:
+            from bm_params import GRID_SIZE_OFFSETS, grid_offset_index
+            self.prep_cursor_col = max(0, min(len(GRID_SIZE_OFFSETS) - 1, grid_offset_index(self.grid_offset())))
 
     def _log_replay_snapshot(self):
         """Capture a lightweight snapshot of the current game state for replay."""
@@ -1609,7 +1683,7 @@ class Game:
             return
         
         if self.prep_section == 'local_players':
-            if self.prep_cursor_row == 0:
+            if self.prep_cursor_row == PREP_ROW_LOCAL:
                 if event.key == Keys.LEFT:
                     if self.prep_cursor_col > 0:
                         self.prep_cursor_col -= 1
@@ -1620,7 +1694,7 @@ class Game:
                     self.prep_num_players = self.prep_cursor_col + 1
                     self._clamp_prep_ai()
                     self.create_players()
-            elif self.prep_cursor_row == 1:
+            elif self.prep_cursor_row == PREP_ROW_AI:
                 if event.key == Keys.LEFT:
                     if self.prep_cursor_col > 0:
                         self.prep_cursor_col -= 1
@@ -1632,7 +1706,7 @@ class Game:
                     self._clamp_prep_ai()
                     self.prep_cursor_col = int(self.prep_ai_count)
                     self.create_players()
-            elif self.prep_cursor_row == 2:
+            elif self.prep_cursor_row == PREP_ROW_TROPHY:
                 if event.key == Keys.LEFT:
                     if self.prep_cursor_col > 0:
                         self.prep_cursor_col -= 1
@@ -1641,8 +1715,19 @@ class Game:
                         self.prep_cursor_col += 1
                 elif event.key == Keys.ENTER:
                     self.prep_trophy_threshold = self.prep_cursor_col + 1
-            elif self.prep_cursor_row > 2:
-                player_index = self.prep_cursor_row - 3
+            elif self.prep_cursor_row == PREP_ROW_ARENA:
+                from bm_params import GRID_SIZE_OFFSETS
+                last_idx = len(GRID_SIZE_OFFSETS) - 1
+                if event.key == Keys.LEFT:
+                    if self.prep_cursor_col > 0:
+                        self.prep_cursor_col -= 1
+                elif event.key == Keys.RIGHT:
+                    if self.prep_cursor_col < last_idx:
+                        self.prep_cursor_col += 1
+                elif event.key == Keys.ENTER:
+                    self.prep_grid_offset = GRID_SIZE_OFFSETS[max(0, min(last_idx, self.prep_cursor_col))]
+            elif self.prep_cursor_row >= PREP_ROW_PLAYERS:
+                player_index = self.prep_cursor_row - PREP_ROW_PLAYERS
                 all_players_info = self.get_all_players_info()
                 if player_index >= len(all_players_info):
                     return

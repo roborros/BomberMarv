@@ -8,6 +8,7 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from bm_drawing import _win_screen_regions
 from replay import (
     ReplayPlayer,
     build_replay_snapshot,
@@ -16,6 +17,7 @@ from replay import (
     hydrate_replay_snapshot,
     letterbox_dest,
     pick_kill_cam,
+    replay_view_rect,
 )
 
 
@@ -90,6 +92,23 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(player.get_grid_pos(), (1, 1))
         self.assertEqual(player.name, "Marv")
 
+    def test_win_screen_puts_replay_below_stats(self):
+        regions = _win_screen_regions(1900, 1900, True)
+        self.assertGreater(regions["replay_w"], 900)
+        self.assertGreater(regions["replay_h"], 700)
+        table_bottom = regions["table_top_min"] + regions["available_h"]
+        self.assertGreater(1900 - regions["replay_h"], table_bottom - 20)
+        aspect = regions["replay_w"] / regions["replay_h"]
+        self.assertGreater(aspect, 0.9)
+        self.assertLess(aspect, 1.4)
+
+    def test_win_screen_hides_replay_when_empty(self):
+        regions = _win_screen_regions(1900, 1900, False)
+        with_replay = _win_screen_regions(1900, 1900, True)
+        self.assertEqual(regions["replay_w"], 0)
+        self.assertEqual(regions["replay_h"], 0)
+        self.assertEqual(regions["table_top_min"], with_replay["table_top_min"])
+
     def test_letterbox_keeps_aspect_in_tall_panel(self):
         dest_w, dest_h, ox, oy = letterbox_dest(1100, 1100, 400, 900)
         self.assertEqual(dest_w, dest_h)
@@ -104,6 +123,15 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(dest_h, 400)
         self.assertGreater(ox, 0)
         self.assertEqual(oy, 0)
+
+    def test_replay_view_clamps_corner_camera_to_the_board(self):
+        x, y, w, h = replay_view_rect(750, 150, 900, 900, 100, 5)
+        self.assertEqual((x, y, w, h), (0, 0, 900, 900))
+
+    def test_replay_view_keeps_interior_camera_centered(self):
+        x, y, w, h = replay_view_rect(950, 950, 1900, 1900, 100, 5)
+        self.assertEqual((w, h), (1100, 1100))
+        self.assertEqual((x, y), (400, 400))
 
     def test_pick_kill_cam_plays_deaths_in_order_then_loops(self):
         clips = [

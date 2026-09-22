@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { explosionArmFactor, getExplosionActiveCells, isPlayerInPlannedBlast, plannedBlastCells } from './explosionVisual'
+import { explosionArmFactor, explosionArmPixelLength, getExplosionActiveCells, isPlayerInPlannedBlast, plannedBlastCells } from './explosionVisual'
 
 describe('explosionVisual', () => {
   const explosion = {
@@ -19,6 +19,12 @@ describe('explosionVisual', () => {
     expect(cells).toContainEqual([2, 0])
     expect(cells).toContainEqual([3, 2])
     expect(explosionArmFactor(0, 200)).toBe(1)
+  })
+
+  it('paints the flame to the last cell center', () => {
+    const flame = explosionArmPixelLength(1, 3, 100)
+    expect(flame).toBe(300)
+    expect(explosionArmPixelLength(1, 0)).toBe(0)
   })
 
   it('collapses when the animation ends', () => {

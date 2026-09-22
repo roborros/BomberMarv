@@ -487,9 +487,9 @@ class GameStateTests(unittest.TestCase):
         self.assertEqual(tuple(boss.color), tuple(BOSS_COLOR))
         self.assertEqual(boss.boss_lives_remaining, BOSS_EXTRA_LIVES)
         self.assertEqual(self.game.grid_width, get_grid_size(is_boss_fight=True))
-        self.assertEqual(self.game.grid_width, 17)
-        self.assertEqual(len(self.game.board), 17)
-        self.assertEqual(len(self.game.board[0]), 17)
+        self.assertEqual(self.game.grid_width, 15)
+        self.assertEqual(len(self.game.board), 15)
+        self.assertEqual(len(self.game.board[0]), 15)
         champ = next(p for p in self.game.players if not getattr(p, "is_ai", False))
         self.assertEqual(champ.total_walls_destroyed, 10)
         self.assertEqual(champ.walls_destroyed, 0)
@@ -532,7 +532,7 @@ class GameStateTests(unittest.TestCase):
         self.game.starting_player_count = 3
         self.game.game_state = "playing"
         self.game.game_start_time = 0
-        self.game.current_time = 10_000
+        self.game.current_time = 120_000
         self.game.handle_crushing_walls()
         self.assertTrue(self.game.crushing_walls_active)
         self.game.crushing_walls_last_time = 0
@@ -553,6 +553,23 @@ class GameStateTests(unittest.TestCase):
         self.game.handle_crushing_walls()
         self.assertFalse(self.game.crushing_walls_active)
         self.game.current_time = 180_000
+        self.game.handle_crushing_walls()
+        self.assertTrue(self.game.crushing_walls_active)
+
+    def test_crushing_walls_not_before_120s(self):
+        self.game.board = open_board(7, 7)
+        self.game.grid_width = 7
+        self.game.grid_height = 7
+        other = _player(5, 5, name="Sobi")
+        other.global_id = 2
+        self.game.players = [_player(3, 3), other]
+        self.game.starting_player_count = 3
+        self.game.game_state = "playing"
+        self.game.game_start_time = 0
+        self.game.current_time = 119_000
+        self.game.handle_crushing_walls()
+        self.assertFalse(self.game.crushing_walls_active)
+        self.game.current_time = 120_000
         self.game.handle_crushing_walls()
         self.assertTrue(self.game.crushing_walls_active)
 
@@ -588,6 +605,24 @@ class GameStateTests(unittest.TestCase):
         self.assertEqual(human.trophies, TROPHY_WIN_THRESHOLD)
         self.assertEqual(self.game.post_win_target_state, "champion")
 
+    def test_ai_trophy_goal_schedules_champion(self):
+        ai = next(p for p in self.game.players if getattr(p, "is_ai", False))
+        for p in self.game.players:
+            p.alive = p is ai
+        ai.trophies = self.game.trophy_threshold() - 1
+        self.game.game_state = "playing"
+        self.game.current_time = 2000
+        self.game.endgame_hold_until = 0
+        self.game.post_win_target_state = None
+        self.game.death_events = [1000]
+        with patch("bm_classes.get_pressed_keys", return_value={}), patch(
+            "bm_classes.is_key_pressed", return_value=False
+        ):
+            self.game.update()
+        self.assertEqual(ai.trophies, self.game.trophy_threshold())
+        self.assertEqual(self.game.post_win_target_state, "champion")
+        self.assertIs(self.game.champion_player(), ai)
+
     def test_champion_continue_starts_boss_fight(self):
         human = next(p for p in self.game.players if not getattr(p, "is_ai", False))
         for p in self.game.players:
@@ -598,6 +633,39 @@ class GameStateTests(unittest.TestCase):
         self.assertEqual(len(self.game.players), 2)
         boss = next(p for p in self.game.players if getattr(p, "is_ai", False))
         self.assertEqual(getattr(boss, "ai_role", ""), "boss")
+
+    def test_ai_champion_starts_boss_fight(self):
+        ai = next(p for p in self.game.players if getattr(p, "is_ai", False))
+        for p in self.game.players:
+            p.alive = p is ai
+            p.trophies = 0
+        ai.trophies = 3
+        self.game.game_state = "champion"
+        self.assertIs(self.game.champion_player(), ai)
+        self.game.continue_from_champion()
+        self.assertEqual(self.game.game_state, "boss_fight")
+        self.assertEqual(len(self.game.players), 2)
+        champion = next(p for p in self.game.players if p.name == ai.name)
+        self.assertTrue(getattr(champion, "is_ai", False))
+        self.assertNotEqual(getattr(champion, "ai_role", ""), "boss")
+        boss = next(p for p in self.game.players if getattr(p, "ai_role", "") == "boss")
+        self.assertEqual(boss.name, BOSS_NAME)
+        self.assertIsNot(champion, boss)
+
+    def test_lobby_arena_offset_overrides_default_size(self):
+        self.game.prep_num_players = 1
+        self.game.prep_ai_count = 2
+        self.game._cached_status = None
+        self.game.game_state = "game_prep"
+        self.game.prep_section = "local_players"
+        self.game.prep_cursor_row = 3
+        self.game.prep_cursor_col = 5
+        self.game.handle_prep_key_event(types.SimpleNamespace(key=Keys.ENTER, unicode=""))
+        self.assertEqual(self.game.grid_offset(), 4)
+        self.game.init_game()
+        self.assertEqual(len(self.game.players), 3)
+        self.assertEqual(self.game.grid_width, 21)
+        self.assertEqual(self.game.grid_height, 21)
 
     def test_reset_series_clears_trophies_and_restarts(self):
         for p in self.game.players:
@@ -612,9 +680,27 @@ class GameStateTests(unittest.TestCase):
     def test_ai_trophies_persist_across_rounds(self):
         ai = next(p for p in self.game.players if getattr(p, "is_ai", False))
         ai.trophies = 2
+        ai.ai_personality = "cautious"
         self.game.init_game()
         restored = next(p for p in self.game.players if getattr(p, "is_ai", False))
         self.assertEqual(restored.trophies, 2)
+        self.assertEqual(restored.ai_personality, "cautious")
+
+    def test_adding_an_ai_rolls_only_the_new_personality(self):
+        self.game.prep_num_players = 1
+        self.game.prep_ai_count = 1
+        self.game.prep_ai_names = ["Steady CPU"]
+        self.game.prep_ai_personalities = ["normal"]
+        with patch("ai_controller.roll_cpu_personality", return_value="crazy"):
+            self.game.prep_ai_count = 2
+            infos = [p for p in self.game.get_all_players_info() if p["type"] == "ai"]
+        self.assertEqual([p["personality"] for p in infos], ["normal", "crazy"])
+        self.game.prep_ai_count = 1
+        kept = [p for p in self.game.get_all_players_info() if p["type"] == "ai"]
+        self.assertEqual(kept[0]["personality"], "normal")
+        self.game.create_players()
+        cpu = next(p for p in self.game.players if getattr(p, "is_ai", False))
+        self.assertEqual(cpu.ai_personality, "normal")
 
     def test_result_prompt_offers_reset(self):
         human = next(p for p in self.game.players if not getattr(p, "is_ai", False))
@@ -648,7 +734,7 @@ class GameStateTests(unittest.TestCase):
         self.game.init_game()
         self.assertEqual(len(self.game.players), 8)
         self.assertEqual(self.game.grid_width, get_grid_size(8))
-        self.assertEqual(self.game.grid_width, 23)
+        self.assertEqual(self.game.grid_width, 21)
         cells = [(p.start_grid_x, p.start_grid_y) for p in self.game.players]
         self.assertEqual(len(set(cells)), 8)
 
@@ -658,24 +744,24 @@ class GameStateTests(unittest.TestCase):
         self.game._cached_status = None
         self.game.init_game()
         self.assertEqual(len(self.game.players), 5)
-        self.assertEqual(self.game.grid_width, 21)
+        self.assertEqual(self.game.grid_width, 19)
         self.game.prep_ai_count = 3
         self.game.init_game()
         self.assertEqual(len(self.game.players), 4)
-        self.assertEqual(self.game.grid_width, 19)
+        self.assertEqual(self.game.grid_width, 17)
 
-    def test_boss_fight_uses_17_after_large_ffa(self):
+    def test_boss_fight_uses_small_grid_after_large_ffa(self):
         self.game.prep_num_players = 1
         self.game.prep_ai_count = 7
         self.game._cached_status = None
         self.game.init_game()
-        self.assertEqual(self.game.grid_width, 23)
+        self.assertEqual(self.game.grid_width, 21)
         champion = self.game.players[0]
         self.game.init_boss_fight(champion)
-        self.assertEqual(self.game.grid_width, 17)
-        self.assertEqual(self.game.grid_height, 17)
-        self.assertEqual(len(self.game.board), 17)
-        self.assertEqual(len(self.game.board[0]), 17)
+        self.assertEqual(self.game.grid_width, 15)
+        self.assertEqual(self.game.grid_height, 15)
+        self.assertEqual(len(self.game.board), 15)
+        self.assertEqual(len(self.game.board[0]), 15)
         self.assertEqual(len(self.game.players), 2)
 
     def test_local_eight_clamps_ai_to_zero(self):
@@ -729,6 +815,28 @@ class GameStateTests(unittest.TestCase):
         self.assertIs(args[1], champ)
         self.assertEqual(list(args[2]), list(self.game.players))
         self.assertIn("Champion", kwargs.get("heading") or "")
+
+    def test_champion_boss_card_is_top_right(self):
+        from bm_drawing import champion_boss_card_rect
+        rect = champion_boss_card_rect(1280, 720)
+        self.assertGreater(rect.x, 1280 * 0.7)
+        self.assertLess(rect.y, 40)
+        self.assertLess(rect.width, 280)
+        self.assertGreaterEqual(rect.height, 140)
+        self.assertLessEqual(rect.right, 1280)
+
+    def test_get_ready_banner_stays_off_corner_spawns(self):
+        from bm_drawing import get_ready_banner_rect
+        banner = get_ready_banner_rect(1900, 1900)
+        self.assertGreater(banner.y, 200)
+        self.assertLess(banner.bottom, 1700)
+        self.assertEqual(banner.width, 1900)
+
+    def test_player_name_font_stays_smaller_than_a_cell(self):
+        from bm_drawing import player_label_font_size
+        size = player_label_font_size(42)
+        self.assertGreaterEqual(size, 13)
+        self.assertLessEqual(size, 26)
 
 
 class GameSimulateTests(unittest.TestCase):

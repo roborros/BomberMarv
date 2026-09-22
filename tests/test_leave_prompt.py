@@ -12,9 +12,12 @@ from bm_params import (
     AI_NAME_LEFT,
     AI_NAME_RIGHT,
     CELL_SIZE,
+    EXPLOSION_COLLISION_SCALE,
+    EXPLOSION_PLAYER_HIT_SCALE,
 )
 from bm_classes import Bomb, Explosion, Game
 from event_abstraction import EventType, GameCommand, GameCommandHandler, GameEvent
+from explosions import explosion_cell_rect, explosion_player_radius
 
 
 class LeavePromptTests(unittest.TestCase):
@@ -124,7 +127,9 @@ class ExplosionPeekTests(unittest.TestCase):
 
     def test_slight_peek_into_flame_is_safe(self):
         player = self.game.players[0]
-        player.pos[0] = 3 * CELL_SIZE + CELL_SIZE - 5
+        rx, ry, rw, rh = explosion_cell_rect(3, 3, CELL_SIZE, EXPLOSION_COLLISION_SCALE)
+        hit_r = explosion_player_radius(CELL_SIZE, EXPLOSION_PLAYER_HIT_SCALE)
+        player.pos[0] = rx + rw + hit_r + 1
         player.pos[1] = 3 * CELL_SIZE + CELL_SIZE // 2
         self.game.explosions = [Explosion([(3, 3)], self.game.current_time - 80)]
         self.game.handle_explosions()

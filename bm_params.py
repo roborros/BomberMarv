@@ -42,60 +42,117 @@ BOSS_START_BOMB_CAPACITY = 2
 BOSS_NAME = "BomberMarv"
 BOSS_COLOR = (56, 56, 62)
 BOSS_QUOTE = "Finally a worthy challenger, come and fight me!"
-BOSS_CRUSHING_WALLS_DELAY = 60       # Delay before crushing walls in boss fight (seconds)
-BOSS_CRUSHING_WALLS_GROWTH_INTERVAL_MS = 900  # 50% slower than the FFA growth interval
+BOSS_CRUSHING_WALLS_DELAY = 120      # Delay before crushing walls in boss fight (seconds)
+BOSS_CRUSHING_WALLS_GROWTH_INTERVAL_MS = 1800  # 2x slower than the previous FFA interval
 
 QUAD_DAMAGE_PROBABILITY = 0.0005 # Chance to spawn a Quad Damage powerup
 QUAD_DAMAGE_TIME = 20 # Duration of Quad Damage effect (s)
 QUAD_DAMAGE_POWER = 10    # Powerup bonus to bomb capacity and fire power
-QUAD_DAMAGE_DELAY = 40  # Delay before Quad Damage powerup spawns (s)
+QUAD_DAMAGE_DELAY = 60  # Earliest Quad Damage can appear (s); probability is unchanged
 QUAD_DAMAGE_SPEEDUP = 1.5  # Speedup
 
 # Crushing walls feature (endgame walls)
-CRUSHING_WALLS_DELAY = 3                # Delay before crushing walls activate (seconds)
+CRUSHING_WALLS_MIN_START_S = 120        # Never start sooner than this after game_start_time
+CRUSHING_WALLS_DELAY = 120              # Delay before crushing walls activate (seconds)
 CRUSHING_WALLS_2P_DELAY = 180           # Soonest start when the round began with 2 players
 CRUSHING_WALLS_MIN_DESTROYABLE = 500      # Minimum destroyable cells before activation
 CRUSHING_WALLS_MAX_ALIVE = 2              # Max alive players to allow activation (<= triggers)
-CRUSHING_WALLS_GROWTH_INTERVAL_MS = 600  # Interval between new walls once active (ms)
+CRUSHING_WALLS_GROWTH_INTERVAL_MS = 1200  # Interval between new walls once active (ms)
 
-# Grid size (odd) - unified constants
-GRID_SIZE_DEFAULT = 19      # 3-4 players
-GRID_SIZE_2_PLAYERS = 17    # 2 players starting
-GRID_SIZE_5_6 = 21          # 5-6 players
-GRID_SIZE_7_8 = 23          # 7-8 players
-GRID_SIZE_BOSS = 17         # Boss fight (1v1, smaller area)
+# Lobby rows (local players section)
+PREP_ROW_LOCAL = 0
+PREP_ROW_AI = 1
+PREP_ROW_TROPHY = 2
+PREP_ROW_ARENA = 3
+PREP_ROW_PLAYERS = 4
+
+# Grid size (odd). Lobby can shift the default by ±2/4/6 tiles.
+GRID_SIZE_1_2 = 15          # 1-2 players
+GRID_SIZE_2_PLAYERS = GRID_SIZE_1_2
+GRID_SIZE_3_4 = 17          # 3-4 players
+GRID_SIZE_DEFAULT = GRID_SIZE_1_2
+GRID_SIZE_5_6 = 19          # 5-6 players
+GRID_SIZE_7_8 = 21          # 7-8 players
+GRID_SIZE_BOSS = 15         # Boss fight (1v1, same as a small match)
+GRID_SIZE_OFFSETS = (-6, -4, -2, 0, 2, 4, 6)
+GRID_SIZE_MIN = 9
+GRID_SIZE_MAX = 27
 
 
-def get_grid_size(player_count=None, is_boss_fight=False):
+def _as_int(value, fallback=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(fallback)
+
+
+def clamp_odd_grid(size):
+    """Keep arenas odd and inside the playable tile range."""
+    size = _as_int(size, GRID_SIZE_DEFAULT)
+    if size % 2 == 0:
+        size += 1
+    return max(GRID_SIZE_MIN, min(GRID_SIZE_MAX, size))
+
+
+def default_grid_size(player_count=None, is_boss_fight=False):
+    """Default odd tile count for a roster size. Boss fights stay on 15."""
+    if is_boss_fight:
+        return GRID_SIZE_BOSS
+    if player_count is None:
+        return GRID_SIZE_DEFAULT
+    count = _as_int(player_count, 0)
+    if count <= 2:
+        return GRID_SIZE_1_2
+    if count <= 4:
+        return GRID_SIZE_3_4
+    if count <= 6:
+        return GRID_SIZE_5_6
+    return GRID_SIZE_7_8
+
+
+def clamp_grid_offset(offset=0):
+    off = _as_int(offset, 0)
+    if off % 2:
+        off -= 1 if off > 0 else -1
+    return max(GRID_SIZE_OFFSETS[0], min(GRID_SIZE_OFFSETS[-1], off))
+
+
+def grid_offset_index(offset=0):
+    off = clamp_grid_offset(offset)
+    if off in GRID_SIZE_OFFSETS:
+        return GRID_SIZE_OFFSETS.index(off)
+    return GRID_SIZE_OFFSETS.index(0)
+
+
+def grid_size_choices(player_count=None):
+    base = default_grid_size(player_count)
+    return [clamp_odd_grid(base + off) for off in GRID_SIZE_OFFSETS]
+
+
+def get_grid_size(player_count=None, is_boss_fight=False, offset=0):
     """Return grid size (odd) for the given context.
 
-    Boss fights are always 1v1 on the 17-tile arena, regardless of how
-    many players were in the preceding free-for-all.
+    Boss fights are always 1v1 on the 15-tile arena, regardless of how
+    many players were in the preceding free-for-all. FFA size is the
+    roster default plus an optional even lobby offset (±2/4/6).
     """
     if is_boss_fight:
         return GRID_SIZE_BOSS
-    if player_count == 2:
-        return GRID_SIZE_2_PLAYERS
-    if player_count is not None and player_count >= 7:
-        return GRID_SIZE_7_8
-    if player_count is not None and player_count >= 5:
-        return GRID_SIZE_5_6
-    return GRID_SIZE_DEFAULT
+    return clamp_odd_grid(default_grid_size(player_count) + clamp_grid_offset(offset))
 
 
 BOMB_TIMER = 3000
 EXPLOSION_DURATION = 400
 BOSS_SHIELD_DURATION_MS = EXPLOSION_DURATION + 200  # i-frames after spending an extra life
 
-# Play mocny_stral.mp3 when unique explosion tiles in this window exceed the threshold
-BIG_EXPLOSION_TILE_THRESHOLD = 40
-BIG_EXPLOSION_WINDOW_MS = 500
+# Play mocny_stral.mp3 once unique explosion tiles in this window reach the threshold.
+BIG_EXPLOSION_TILE_THRESHOLD = 25
+BIG_EXPLOSION_WINDOW_MS = 700
 BIG_EXPLOSION_SOUND_DELAY_MS = 300
 
-# Explosion collision: only the inner portion of a flaming cell can kill.
-# 0.5 => 50% of the cell (25px margin on each side at CELL_SIZE=100).
-# Player uses a smaller radius for blast hits so a slight peek is safe.
-EXPLOSION_COLLISION_SCALE = 0.5
+# Explosion collision: inner 70% of a flaming cell. Flame art stops at the
+# last cell's center; the hit rect is that same inner 70% square.
+EXPLOSION_COLLISION_SCALE = 0.7
 EXPLOSION_PLAYER_HIT_SCALE = 0.30  # radius = 30% of half-cell (~15px)
 SCARED_BLAST_MAX_CELLS = 5
 

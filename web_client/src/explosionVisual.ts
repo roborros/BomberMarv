@@ -3,6 +3,11 @@ import type { BombState, ExplosionState, PlayerState } from './types'
 export const EXPLOSION_DURATION_MS = 400
 export const CELL_SIZE = 100
 
+export function explosionArmPixelLength(armFactor: number, cellReach: number, cellSize = CELL_SIZE): number {
+  if (cellReach <= 0 || armFactor <= 0) return 0
+  return armFactor * Math.floor(cellReach) * cellSize
+}
+
 export function explosionArmFactor(startTime: number, currentTimeMs: number, durationMs = EXPLOSION_DURATION_MS): number {
   const norm = Math.min(1, Math.max(0, (currentTimeMs - startTime) / durationMs))
   if (norm < 0.2) return norm / 0.2

@@ -6,7 +6,8 @@
   Host process, authoritative game loop, pygame rendering, input queue drain, state queue publish.
 
 - `ws_stream_server.py`  
-  WebSocket server for remote input + state broadcast and HTTP diagnostics endpoints.
+  WebSocket server for remote input + state broadcast and HTTP diagnostics.
+  Packaged Windows builds also serve the built web client from HTTP port 8080.
 
 - `web_client/`  
   Browser client: slot selection, resilient WS connection, send-on-change input, adaptive rendering.

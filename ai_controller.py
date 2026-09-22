@@ -3,6 +3,9 @@ AI controller for regular CPU opponents and the champion boss fight.
 
 Grid BFS with a timed danger map. Think at ~12.5 Hz; steering (center-then-turn)
 runs every sim tick via compute_ai_input.
+
+CPU personalities are cautious, normal, or crazy. The champion boss uses the
+boss script: attack, spend spare bombs, and trust his speed on escapes.
 """
 
 from collections import deque
@@ -17,19 +20,31 @@ DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 DANGER_LEAD_MS = 700
 BOSS_DANGER_LEAD_MS = 1100
 
-BOMB_COOLDOWN_MS = 250
+BOMB_COOLDOWN_MS = 180
+CAUTIOUS_BOMB_COOLDOWN_MS = 420
+BOSS_BOMB_COOLDOWN_MS = 90
+CRAZY_BOMB_COOLDOWN_MS = 60
 POWERUP_HUNT_LIMIT = 14
-BOSS_POWERUP_HUNT_LIMIT = 8
+BOSS_POWERUP_HUNT_LIMIT = 22
+CAUTIOUS_POWERUP_HUNT_LIMIT = 18
+CRAZY_POWERUP_HUNT_LIMIT = 28
 AI_CENTER_LOCK_PX = 12
 AI_BOMB_CENTER_PX = 18
 AI_THINK_INTERVAL_MS = 80
 AI_STICKY_MS = 220
 CPU_SAFETY_MARGIN_MS = 80
-BOSS_SAFETY_MARGIN_MS = 200
+BOSS_SAFETY_MARGIN_MS = 40
+CAUTIOUS_SAFETY_MARGIN_MS = 160
+CRAZY_SAFETY_MARGIN_MS = 40
 CLOSE_COMBAT_MANHATTAN = 4
+CAUTIOUS_NEAR_CELLS = 4
 HEAD_START_CELLS = 1
 TRAP_SAFE_NEIGHBORS = 2
 BOSS_TRAP_SAFE_NEIGHBORS = 3
+FARM_SEARCH_LIMIT = 10
+AI_PERSONALITIES = ("cautious", "normal", "crazy")
+# Extra cells of travel required before planting, so a barely-possible exit is refused.
+ESCAPE_RESERVE_CELLS = 1
 
 _INF = 10**12
 
@@ -46,16 +61,72 @@ def _is_boss(player) -> bool:
     return bool(getattr(player, "boss_lives_remaining", 0) or getattr(player, "ai_role", "") == "boss")
 
 
+def ai_personality(player) -> str:
+    """boss, or a random CPU style: cautious, normal, crazy."""
+    if _is_boss(player):
+        return "boss"
+    name = getattr(player, "ai_personality", None)
+    if name in AI_PERSONALITIES:
+        return name
+    return "normal"
+
+
+def roll_cpu_personality() -> str:
+    return random.choice(AI_PERSONALITIES)
+
+
+def assign_random_personality(player) -> str:
+    """Roll a CPU style. The champion boss keeps the boss script."""
+    if _is_boss(player):
+        player.ai_personality = "boss"
+        return "boss"
+    player.ai_personality = roll_cpu_personality()
+    return player.ai_personality
+
+
 def _danger_lead_ms(player) -> int:
     return BOSS_DANGER_LEAD_MS if _is_boss(player) else DANGER_LEAD_MS
 
 
 def _safety_margin_ms(player) -> int:
-    return BOSS_SAFETY_MARGIN_MS if _is_boss(player) else CPU_SAFETY_MARGIN_MS
+    persona = ai_personality(player)
+    if persona == "boss":
+        return BOSS_SAFETY_MARGIN_MS
+    if persona == "cautious":
+        return CAUTIOUS_SAFETY_MARGIN_MS
+    if persona == "crazy":
+        return CRAZY_SAFETY_MARGIN_MS
+    return CPU_SAFETY_MARGIN_MS
 
 
-def _powerup_limit(player) -> int:
-    return BOSS_POWERUP_HUNT_LIMIT if _is_boss(player) else POWERUP_HUNT_LIMIT
+def _powerup_limit(player, quad: bool = False) -> int:
+    persona = ai_personality(player)
+    if persona == "crazy" and quad:
+        return CRAZY_POWERUP_HUNT_LIMIT
+    if persona == "boss":
+        return BOSS_POWERUP_HUNT_LIMIT
+    if persona == "cautious":
+        return CAUTIOUS_POWERUP_HUNT_LIMIT
+    return POWERUP_HUNT_LIMIT
+
+
+def _bomb_cooldown_ms(player) -> int:
+    persona = ai_personality(player)
+    if persona == "cautious":
+        return CAUTIOUS_BOMB_COOLDOWN_MS
+    if persona == "boss":
+        return BOSS_BOMB_COOLDOWN_MS
+    if persona == "crazy":
+        return CRAZY_BOMB_COOLDOWN_MS
+    return BOMB_COOLDOWN_MS
+
+
+def _max_live_bombs(player) -> int:
+    raw = getattr(player, "bomb_capacity", 1)
+    cap = 1 if raw is None else max(0, int(raw))
+    if ai_personality(player) == "cautious":
+        return min(1, cap)
+    return cap
 
 
 def _trap_neighbor_limit(player) -> int:
@@ -129,10 +200,26 @@ def _danger_times(game) -> Dict[Coord, int]:
         for cell in exp.cells:
             mark(tuple(cell), start)
 
+    pending = []
     for bomb in getattr(game, "bombs", None) or []:
-        boom = int(bomb.start_time) + timer
-        for cell in _explosion_cells_for_bomb(bomb, game):
-            mark(tuple(cell), boom)
+        cells = [tuple(cell) for cell in _explosion_cells_for_bomb(bomb, game)]
+        pending.append(((int(bomb.x), int(bomb.y)), int(bomb.start_time) + timer, cells))
+    booms = [item[1] for item in pending]
+    # A blast that reaches another bomb detonates it at that earlier time.
+    for _ in range(max(1, len(pending))):
+        changed = False
+        for i, (origin, _boom, _cells) in enumerate(pending):
+            for j, (_other, _other_boom, other_cells) in enumerate(pending):
+                if i == j:
+                    continue
+                if origin in other_cells and booms[j] < booms[i]:
+                    booms[i] = booms[j]
+                    changed = True
+        if not changed:
+            break
+    for i, (_origin, _boom, cells) in enumerate(pending):
+        for cell in cells:
+            mark(cell, booms[i])
     return times
 
 
@@ -271,7 +358,20 @@ def _leave_pocket(
 
 
 def _idle_step(player, board, start, bomb_cells, occupied, danger_times=None, now=0) -> Coord:
-    """Center for a bomb; wait out our fuse in a safe cell; otherwise leave a pocket."""
+    """Leave a lit cell immediately. Otherwise center, wait out a safe fuse, or leave a pocket."""
+    duration = _explosion_duration()
+    now_i = int(now)
+    if danger_times is not None and not _safe_to_stay(start, now_i, danger_times, duration):
+        travel = _cell_travel_ms(player)
+        margin = _safety_margin_ms(player)
+        plan = _timed_escape_step(
+            board, start, danger_times, bomb_cells, now_i, travel, margin, occupied=None,
+        )
+        if plan is not None and plan[0] != (0, 0):
+            return plan[0]
+        return _leave_pocket(
+            board, start, bomb_cells, occupied, danger_times, now_i, travel, margin,
+        )
     centering = _center_dir(player)
     if centering != (0, 0):
         return centering
@@ -446,19 +546,15 @@ def _must_flee(
     bomb_cells: Set[Coord], occupied: Set[Coord],
     travel_ms: int, margin_ms: int,
 ) -> bool:
+    """Leave as soon as this cell is in a pending or live blast.
+
+    Waiting until the path is already too slow is what left bots standing on
+    their own bomb: the last centering step then used up the safety margin.
+    """
+    del bomb_cells, occupied, travel_ms, margin_ms
     now = int(getattr(game, "current_time", 0))
-    duration = _explosion_duration()
     start = player.get_grid_pos()
-    if _safe_to_stay(start, now, danger_times, duration):
-        return False
-    boom = danger_times.get(start, _INF)
-    plan = _timed_escape_step(
-        game.board, start, danger_times, bomb_cells, now, travel_ms, margin_ms, occupied=None,
-    )
-    if plan is None:
-        return True
-    _step, dist, _goal = plan
-    return now + dist * travel_ms + margin_ms >= boom
+    return not _safe_to_stay(start, now, danger_times, _explosion_duration())
 
 
 def _can_escape_after_bomb(player, game, danger: set = None) -> bool:
@@ -483,7 +579,10 @@ def _can_escape_after_bomb(player, game, danger: set = None) -> bool:
     if plan is None:
         return False
     _step, dist, _goal = plan
-    return dist * travel + margin < timer
+    reserve = ESCAPE_RESERVE_CELLS
+    if not _is_cell_centered(player):
+        reserve += 1
+    return (dist + reserve) * travel + margin < timer
 
 
 def _alive_opponents(player, game) -> list:
@@ -652,12 +751,171 @@ def _los_kill_ok(
     ) <= cap
 
 
+def _soft_walls_hit(board, x: int, y: int, fire_power: int) -> int:
+    """How many soft bricks a bomb on this cell would break."""
+    EMPTY, DESTRUCTIBLE, INDESTRUCTIBLE = _get_params()[:3]
+    gw, gh = len(board[0]), len(board)
+    hits = 0
+    reach = max(0, int(fire_power))
+    for dx, dy in DIRS:
+        for step in range(1, reach + 1):
+            nx, ny = x + dx * step, y + dy * step
+            if nx < 0 or nx >= gw or ny < 0 or ny >= gh:
+                break
+            tile = board[ny][nx]
+            if tile == INDESTRUCTIBLE:
+                break
+            if tile == DESTRUCTIBLE:
+                hits += 1
+                break
+    return hits
+
+
+def _reachable_wall_cells(
+    board, start: Coord, fire_power: int, bomb_cells: Set[Coord],
+    danger_times: Dict[Coord, int], now: int, travel_ms: int, margin_ms: int,
+    limit: int = FARM_SEARCH_LIMIT,
+) -> List[Tuple[int, int, Coord]]:
+    """(soft bricks, steps, cell) for reachable floors whose blast breaks a brick."""
+    duration = _explosion_duration()
+    found: List[Tuple[int, int, Coord]] = []
+    q = deque([(start, 0)])
+    seen = {start}
+    w, h = len(board[0]), len(board)
+    while q:
+        (cx, cy), dist = q.popleft()
+        score = _soft_walls_hit(board, cx, cy, fire_power)
+        if score > 0:
+            found.append((score, dist, (cx, cy)))
+        if dist >= limit:
+            continue
+        for dx, dy in DIRS:
+            nx, ny = cx + dx, cy + dy
+            nxt = (nx, ny)
+            if nxt in seen or not (0 <= nx < w and 0 <= ny < h):
+                continue
+            if not _in_bounds_empty(board, nx, ny) or nxt in bomb_cells:
+                continue
+            arrival = now + (dist + 1) * travel_ms
+            if not _can_occupy(nxt, arrival, travel_ms, danger_times, duration, margin_ms, now):
+                continue
+            seen.add(nxt)
+            q.append((nxt, dist + 1))
+    return found
+
+
+def _nearest_opponent_dist(player, game) -> int:
+    start = player.get_grid_pos()
+    opps = _alive_opponents(player, game)
+    if not opps:
+        return 99
+    return min(_manhattan(start, opp.get_grid_pos()) for opp in opps)
+
+
+def _opponents_nearby(player, game, dist: int = CLOSE_COMBAT_MANHATTAN) -> list:
+    start = player.get_grid_pos()
+    return [
+        opp for opp in _alive_opponents(player, game)
+        if _manhattan(start, opp.get_grid_pos()) <= dist
+    ]
+
+
+def _can_block_opponent(
+    player, opponent, game, danger_times, bomb_cells, now, travel_ms, margin_ms, blast: set,
+) -> bool:
+    """True when a bomb here hits them or the brick between you, and they are nearby."""
+    start = player.get_grid_pos()
+    og = opponent.get_grid_pos()
+    if _manhattan(start, og) > CLOSE_COMBAT_MANHATTAN and not _opponent_has_line_of_sight(player, opponent, game):
+        return False
+    if og in blast:
+        return _los_kill_ok(player, opponent, game, danger_times, bomb_cells, now, travel_ms, margin_ms) or _manhattan(start, og) <= CLOSE_COMBAT_MANHATTAN
+    wall = _wall_between(game.board, start, og)
+    if wall in blast and _manhattan(start, og) <= CLOSE_COMBAT_MANHATTAN + player.fire_power:
+        return True
+    blocking = _first_destructible_on_path(game.board, start, og)
+    return blocking in blast and _manhattan(start, og) <= CLOSE_COMBAT_MANHATTAN + 2
+
+
+def _attack_available(
+    player, game, danger_times, bomb_cells, now, travel_ms, margin_ms, nearby_only: bool,
+) -> bool:
+    start = player.get_grid_pos()
+    blast = set(_blast_cells(game.board, start[0], start[1], player.fire_power))
+    for opp in _alive_opponents(player, game):
+        og = opp.get_grid_pos()
+        close = _manhattan(start, og) <= CLOSE_COMBAT_MANHATTAN
+        los = _opponent_has_line_of_sight(player, opp, game)
+        if nearby_only and not close:
+            continue
+        if og in blast or los:
+            if nearby_only:
+                if _can_block_opponent(player, opp, game, danger_times, bomb_cells, now, travel_ms, margin_ms, blast):
+                    return True
+            elif _los_kill_ok(player, opp, game, danger_times, bomb_cells, now, travel_ms, margin_ms) or og in blast:
+                return True
+        if not nearby_only:
+            wall = _wall_between(game.board, start, og)
+            blocking = _first_destructible_on_path(game.board, start, og)
+            if wall in blast or blocking in blast:
+                return True
+    return False
+
+
+def _retreat_plan(
+    player, game, danger_times, bomb_cells, occupied, now, travel_ms, margin_ms,
+) -> Optional[Tuple[Coord, Coord]]:
+    """Step toward the reachable floor farthest from nearby players."""
+    start = player.get_grid_pos()
+    threats = [opp.get_grid_pos() for opp in _alive_opponents(player, game)]
+    if not threats:
+        return None
+    duration = _explosion_duration()
+    best_cell = start
+    best_key = (min(_manhattan(start, cell) for cell in threats), 0)
+    q = deque([(start, 0)])
+    seen = {start}
+    w, h = len(game.board[0]), len(game.board)
+    while q:
+        cell, dist = q.popleft()
+        gap = min(_manhattan(cell, threat) for threat in threats)
+        key = (gap, -dist)
+        if key > best_key:
+            best_key = key
+            best_cell = cell
+        if dist >= FARM_SEARCH_LIMIT:
+            continue
+        cx, cy = cell
+        for dx, dy in DIRS:
+            nx, ny = cx + dx, cy + dy
+            nxt = (nx, ny)
+            if nxt in seen or not (0 <= nx < w and 0 <= ny < h):
+                continue
+            if not _in_bounds_empty(game.board, nx, ny) or nxt in bomb_cells or nxt in occupied:
+                continue
+            arrival = now + (dist + 1) * travel_ms
+            if not _can_occupy(nxt, arrival, travel_ms, danger_times, duration, margin_ms, now):
+                continue
+            seen.add(nxt)
+            q.append((nxt, dist + 1))
+    if best_cell == start:
+        return (0, 0), start
+    plan = _timed_first_step(
+        game.board, start, lambda x, y, goal=best_cell: (x, y) == goal,
+        danger_times, bomb_cells, now, travel_ms, margin_ms,
+        occupied=occupied, stay_goal=True,
+    )
+    if plan is None:
+        return None
+    return plan[0], plan[2]
+
+
 def _should_place_bomb(
     player, game, danger_times: Dict[Coord, int],
     bomb_cells: Set[Coord], occupied: Set[Coord],
     travel_ms: int, margin_ms: int,
 ) -> bool:
-    if player.active_bombs >= player.bomb_capacity:
+    if int(getattr(player, "active_bombs", 0) or 0) >= _max_live_bombs(player):
         return False
     px, py = player.get_grid_pos()
     now = int(getattr(game, "current_time", 0))
@@ -665,31 +923,31 @@ def _should_place_bomb(
     if not _safe_to_stay((px, py), now, danger_times, duration):
         return False
     last = getattr(player, "_ai_last_bomb_ms", -10_000)
-    if now - last < BOMB_COOLDOWN_MS:
+    if now - last < _bomb_cooldown_ms(player):
         return False
     if not _is_cell_centered(player, max_off=AI_BOMB_CENTER_PX):
         return False
     if not _can_escape_after_bomb(player, game):
         return False
 
-    targets = _alive_opponents(player, game)
-    blast = set(_blast_cells(game.board, px, py, player.fire_power))
-    for opp in targets:
-        if _los_kill_ok(player, opp, game, danger_times, bomb_cells, now, travel_ms, margin_ms):
-            return True
-        if opp.get_grid_pos() in blast:
-            return True
+    persona = ai_personality(player)
+    if persona == "cautious" and _nearest_opponent_dist(player, game) <= CAUTIOUS_NEAR_CELLS:
+        return False
+    if persona != "cautious" and _attack_available(
+        player, game, danger_times, bomb_cells, now, travel_ms, margin_ms,
+        nearby_only=(persona == "normal"),
+    ):
+        return True
 
-    if targets:
-        opp = min(targets, key=lambda p: _manhattan(p.get_grid_pos(), (px, py)))
-        og = opp.get_grid_pos()
-        wall = _wall_between(game.board, (px, py), og)
-        if wall in blast:
-            return True
-        blocking = _first_destructible_on_path(game.board, (px, py), og)
-        if blocking in blast:
-            return True
-    return False
+    here = _soft_walls_hit(game.board, px, py, int(getattr(player, "fire_power", 1) or 1))
+    if here <= 0:
+        return False
+    options = _reachable_wall_cells(
+        game.board, (px, py), int(player.fire_power), bomb_cells,
+        danger_times, now, travel_ms, margin_ms,
+    )
+    best = max((score for score, _dist, _cell in options), default=0)
+    return here >= best
 
 
 def _random_safe_direction(
@@ -771,49 +1029,46 @@ def _hunt_plan(
 def _farm_plan(
     player, game, danger_times, bomb_cells, occupied, now, travel_ms, margin_ms,
 ) -> Optional[Tuple[Coord, Coord]]:
-    targets = _alive_opponents(player, game)
+    """Walk to the reachable cell whose bomb breaks the most soft bricks."""
     start = player.get_grid_pos()
-    walls: List[Coord] = []
-    if targets:
-        opp = min(targets, key=lambda p: _manhattan(p.get_grid_pos(), start))
-        blocking = _first_destructible_on_path(game.board, start, opp.get_grid_pos())
-        if blocking:
-            walls.append(blocking)
-        around = _adjacent_destructible(game.board, *opp.get_grid_pos())
-        walls.extend(around)
-    goals: Set[Coord] = set()
-    for wx, wy in walls:
-        for dx, dy in DIRS:
-            cell = (wx + dx, wy + dy)
-            if _in_bounds_empty(game.board, cell[0], cell[1]) and cell not in bomb_cells:
-                goals.add(cell)
-    if not goals:
+    options = _reachable_wall_cells(
+        game.board, start, int(getattr(player, "fire_power", 1) or 1), bomb_cells,
+        danger_times, now, travel_ms, margin_ms,
+    )
+    if not options:
         return None
+    best_score = max(score for score, _dist, _cell in options)
+    contenders = [(dist, cell) for score, dist, cell in options if score == best_score]
+    _dist, goal = min(contenders, key=lambda item: item[0])
+    if goal == start:
+        if not _safe_to_stay(start, now, danger_times, _explosion_duration()):
+            return None
+        return (0, 0), start
     plan = _timed_first_step(
-        game.board, start, lambda x, y: (x, y) in goals,
+        game.board, start, lambda x, y, goal=goal: (x, y) == goal,
         danger_times, bomb_cells, now, travel_ms, margin_ms,
         occupied=occupied, stay_goal=True,
     )
     if plan is None:
         return None
-    step, _dist, goal = plan
-    return step, goal
+    return plan[0], plan[2]
 
 
 def _powerup_plan(
     player, game, danger_times, bomb_cells, occupied, now, travel_ms, margin_ms,
-    only_qd: bool,
+    mode: str = "other",
 ) -> Optional[Tuple[Coord, Coord]]:
     powerups = list(getattr(game, "powerups", None) or [])
     if not powerups:
         return None
     start = player.get_grid_pos()
-    limit = _powerup_limit(player)
+    limit = _powerup_limit(player, quad=(mode == "qd"))
     picked = []
     for pu in powerups:
-        if only_qd and getattr(pu, "type", "") != "quad_damage":
+        kind = getattr(pu, "type", "")
+        if mode == "qd" and kind != "quad_damage":
             continue
-        if not only_qd and getattr(pu, "type", "") == "quad_damage":
+        if mode == "other" and kind == "quad_damage":
             continue
         cell = (pu.x, pu.y)
         if _manhattan(start, cell) > limit:
@@ -1003,53 +1258,85 @@ def think_ai(player, game) -> Tuple[Coord, bool]:
             bombs_m.add(start)
             player._ai_last_bomb_ms = now
         plan = _timed_escape_step(board, start, times_m, bombs_m, now, travel, margin, occupied=None)
-        if plan is None:
+        duration = _explosion_duration()
+        still_lit = not _safe_to_stay(start, now, times_m, duration)
+        if plan is None or (still_lit and plan[0] == (0, 0)):
             _commit_goal(player, "flee", None, now)
-            return _random_timed(
+            step = _random_timed(
                 board, start, times_m, bombs_m, set(), now, travel, margin, preferred, require_stay=False
-            ), place
+            )
+            if step == (0, 0):
+                step = _leave_pocket(
+                    board, start, bombs_m, set(), times_m, now, travel, margin,
+                )
+            return step, place
         _commit_goal(player, "wait", plan[2], now)
         return plan[0], place
 
-    sticky = _follow_sticky(player, board, times, bombs, occupied, now, travel, margin)
+    sticky = None
+    persona = ai_personality(player)
+    threatened = persona == "cautious" and _nearest_opponent_dist(player, game) <= CAUTIOUS_NEAR_CELLS
+    if not threatened:
+        sticky = _follow_sticky(player, board, times, bombs, occupied, now, travel, margin)
     if sticky is not None:
         return sticky, False
 
-    combat = _close_combat(player, game)
-
-    if not combat:
-        qd = _powerup_plan(player, game, times, bombs, occupied, now, travel, margin, only_qd=True)
-        if qd is not None:
-            step, goal = qd
-            _commit_goal(player, "powerup", goal, now)
-            if step == (0, 0):
-                step = _idle_step(player, board, start, bombs, occupied, times, now)
-            return step, False
-
-    hunt = _hunt_plan(player, game, times, bombs, occupied, now, travel, margin)
-    if hunt is not None:
-        step, goal = hunt
-        _commit_goal(player, "hunt", goal, now)
+    def _finish(kind: str, plan: Tuple[Coord, Coord]):
+        step, goal = plan
+        _commit_goal(player, kind, goal, now)
         if step == (0, 0):
             step = _idle_step(player, board, start, bombs, occupied, times, now)
         return step, False
 
-    if not combat:
-        pu = _powerup_plan(player, game, times, bombs, occupied, now, travel, margin, only_qd=False)
-        if pu is not None:
-            step, goal = pu
-            _commit_goal(player, "powerup", goal, now)
-            if step == (0, 0):
-                step = _idle_step(player, board, start, bombs, occupied, times, now)
-            return step, False
+    if threatened:
+        retreat = _retreat_plan(player, game, times, bombs, occupied, now, travel, margin)
+        if retreat is not None and retreat[0] != (0, 0):
+            return _finish("retreat", retreat)
+
+    if persona == "crazy":
+        qd = _powerup_plan(player, game, times, bombs, occupied, now, travel, margin, mode="qd")
+        if qd is not None:
+            return _finish("powerup", qd)
+        hunt = _hunt_plan(player, game, times, bombs, occupied, now, travel, margin)
+        if hunt is not None:
+            return _finish("hunt", hunt)
+        bonus = _powerup_plan(player, game, times, bombs, occupied, now, travel, margin, mode="other")
+        if bonus is not None:
+            return _finish("powerup", bonus)
+    elif persona == "boss":
+        bonus = None
+        if not _opponent_in_blast_range_with_los(player, game):
+            bonus = _powerup_plan(player, game, times, bombs, occupied, now, travel, margin, mode="any")
+        if bonus is not None and _manhattan(start, bonus[1]) <= _nearest_opponent_dist(player, game):
+            return _finish("powerup", bonus)
+        hunt = _hunt_plan(player, game, times, bombs, occupied, now, travel, margin)
+        if hunt is not None:
+            return _finish("hunt", hunt)
+    elif persona == "cautious":
+        bonus = _powerup_plan(player, game, times, bombs, occupied, now, travel, margin, mode="any")
+        if bonus is not None:
+            return _finish("powerup", bonus)
+    else:
+        if _opponents_nearby(player, game):
+            hunt = _hunt_plan(player, game, times, bombs, occupied, now, travel, margin)
+            if hunt is not None:
+                return _finish("hunt", hunt)
+        else:
+            qd = _powerup_plan(player, game, times, bombs, occupied, now, travel, margin, mode="qd")
+            if qd is not None:
+                return _finish("powerup", qd)
+            bonus = _powerup_plan(player, game, times, bombs, occupied, now, travel, margin, mode="other")
+            if bonus is not None:
+                return _finish("powerup", bonus)
 
     farm = _farm_plan(player, game, times, bombs, occupied, now, travel, margin)
     if farm is not None:
-        step, goal = farm
-        _commit_goal(player, "farm", goal, now)
-        if step == (0, 0):
-            step = _idle_step(player, board, start, bombs, occupied, times, now)
-        return step, False
+        return _finish("farm", farm)
+
+    if persona in ("normal", "boss", "crazy"):
+        hunt = _hunt_plan(player, game, times, bombs, occupied, now, travel, margin)
+        if hunt is not None:
+            return _finish("hunt", hunt)
 
     _commit_goal(player, "wander", None, now)
     wander = _random_timed(board, start, times, bombs, occupied, now, travel, margin, preferred)
@@ -1099,7 +1386,8 @@ def compute_ai_input(player, game) -> Tuple[np.ndarray, bool]:
     else:
         wanted = intent or (0, 0)
 
-    steered = _align_then_turn(player, wanted)
+    # Centering before a turn spends the exit. While the cell is already lit, step out now.
+    steered = wanted if flee else _align_then_turn(player, wanted)
     player._ai_last_dir = steered
     return _as_dir_array(steered), place_bomb
 

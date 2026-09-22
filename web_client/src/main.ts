@@ -394,14 +394,14 @@ function processAudioEvents(previous: GameState | null, current: GameState) {
   const cutoff = current.time - BIG_EXPLOSION_WINDOW_MS
   recentExplosionEvents = recentExplosionEvents.filter((ev) => ev.startTime >= cutoff)
   const agedCount = uniqueTilesInWindow(recentExplosionEvents, current.time)
-  bigExplosionOverThreshold = agedCount > BIG_EXPLOSION_TILE_THRESHOLD
+  bigExplosionOverThreshold = agedCount >= BIG_EXPLOSION_TILE_THRESHOLD
   if (newlySeen.length) {
     recentExplosionEvents.push(...newlySeen)
     const tileCount = uniqueTilesInWindow(recentExplosionEvents, current.time)
     if (crossedBigExplosionThreshold(bigExplosionOverThreshold, tileCount)) {
       scheduleBigExplosionSound()
     }
-    bigExplosionOverThreshold = tileCount > BIG_EXPLOSION_TILE_THRESHOLD
+    bigExplosionOverThreshold = tileCount >= BIG_EXPLOSION_TILE_THRESHOLD
   }
 
   if (!previous) return

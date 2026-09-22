@@ -6,15 +6,16 @@ import os
 import types
 import bm_params as bmp
 from bm_params import *
-from input_abstraction import get_key_name
 from timing_abstraction import get_ticks
 from lib_collisions import circle_rect_collision
 from explosions import (
+    explosion_arm_pixel_length,
     explosion_cell_rect,
     explosion_player_radius,
+    explosion_tip_clip,
     is_player_in_planned_blast,
 )
-from replay import frame_at_time, hydrate_replay_snapshot, letterbox_dest, pick_kill_cam
+from replay import frame_at_time, hydrate_replay_snapshot, letterbox_dest, pick_kill_cam, replay_view_rect
 
 _AVATAR_CACHE = {}
 _ASSETS_READY = False
@@ -23,6 +24,7 @@ _BOARD_LAYER_CACHE = {"signature": None, "surface": None}
 _BLAST_ARM_CACHE = {}
 _TEXT_CACHE = {}
 _UI_FONT_CACHE = {}
+_NAME_FONT_CACHE = {}
 _LOBBY_BG_CACHE = {"key": None, "surf": None}
 
 _WIN_STAT_COLUMNS = (
@@ -356,6 +358,22 @@ def _format_controls(controls):
     
     return f"{up}{down}{left}{right} + {bomb}"
 
+def player_label_font_size(draw_radius):
+    """Name labels scale with the avatar so they do not cover neighboring tiles."""
+    return max(13, min(26, int(max(8, draw_radius) * 0.52)))
+
+
+def _player_label_font(draw_radius, bold=False):
+    size = player_label_font_size(draw_radius)
+    key = (size, bool(bold))
+    cached = _NAME_FONT_CACHE.get(key)
+    if cached is not None:
+        return cached
+    font = pygame.font.SysFont("arial", size, bold=bold)
+    _NAME_FONT_CACHE[key] = font
+    return font
+
+
 def _ensure_fonts_initialized():
     """Ensure fonts are initialized before use"""
     global arcade_font, font_small
@@ -380,7 +398,7 @@ def draw_brick_pattern(rect, surface):
             x += brick_width  # <-- increment x to avoid infinite loop
             
             
-def draw_title_page(surface, alpha=255, show_game_name=True):
+def draw_title_page(surface, alpha=255, show_game_name=True, players=None, show_start_hint=False):
     # Ensure fonts are initialized
     _ensure_fonts_initialized()
     
@@ -389,42 +407,39 @@ def draw_title_page(surface, alpha=255, show_game_name=True):
     surface.fill(COLOR_BG) 
     
     logo_image = _get_image_asset("logo_image")
-    if logo_image is None:
-        if show_game_name:
-            game_name_text = arcade_font.render("BomberMarv", True, (255, 255, 255))
-            game_name_rect = game_name_text.get_rect(center=(sw // 2, sh // 2))
-            surface.blit(game_name_text, game_name_rect)
-        return
-    # Get the original dimensions of the logo
-    logo_width, logo_height = logo_image.get_size()
-    
-    # Calculate the scaling factor to fit the logo within the desired width and height
-    max_width = sw // 2
-    max_height = sh // 4
-    scale_factor = min(max_width / logo_width, max_height / logo_height)
-    
-    # Calculate the new dimensions while maintaining the aspect ratio
-    new_width = int(logo_width * scale_factor)
-    new_height = int(logo_height * scale_factor)
-    
-    # Scale the logo image to the new dimensions
-    logo_scaled = pygame.transform.smoothscale(logo_image, (new_width, new_height))
-    logo_scaled.set_alpha(alpha)
-    
-    # Get the rectangle for the scaled logo and center it
-    rect = logo_scaled.get_rect(center=(sw // 2, sh // 4))
-    
-    # Blit the scaled logo onto the surface
-    surface.blit(logo_scaled, rect)
-    
-    # Render the game name in big arcade font
-    if show_game_name:
+    if logo_image is not None:
+        logo_width, logo_height = logo_image.get_size()
+        max_width = sw // 2
+        max_height = sh // 5 if show_start_hint else sh // 4
+        scale_factor = min(max_width / logo_width, max_height / logo_height)
+        new_width = int(logo_width * scale_factor)
+        new_height = int(logo_height * scale_factor)
+        logo_scaled = pygame.transform.smoothscale(logo_image, (new_width, new_height))
+        logo_scaled.set_alpha(alpha)
+        rect = logo_scaled.get_rect(center=(sw // 2, max(new_height // 2 + 16, sh // 5)))
+        surface.blit(logo_scaled, rect)
+    elif show_game_name:
         game_name_text = arcade_font.render("BomberMarv", True, (255, 255, 255))
         game_name_rect = game_name_text.get_rect(center=(sw // 2, sh // 2))
         surface.blit(game_name_text, game_name_rect)
     
-    # Render the version tag
-    version_font = pygame.font.SysFont("arial", 48)
+    if show_game_name and logo_image is not None:
+        name_size = max(42, min(140, sh // 8)) if show_start_hint else min(180, max(48, sh // 6))
+        name_font = pygame.font.SysFont("Comic Sans MS", name_size)
+        game_name_text = name_font.render("BomberMarv", True, (255, 255, 255))
+        name_y = sh // 2 - (sh // 14 if show_start_hint else 0)
+        game_name_rect = game_name_text.get_rect(center=(sw // 2, name_y))
+        surface.blit(game_name_text, game_name_rect)
+
+    if show_start_hint:
+        draw_controls(surface, players)
+        hint_size = max(20, min(36, sh // 24))
+        hint_font = pygame.font.SysFont("arial", hint_size)
+        start_text = hint_font.render("Press Enter to start the game", True, (255, 255, 255))
+        start_rect = start_text.get_rect(center=(sw // 2, sh - max(28, hint_size + 10)))
+        surface.blit(start_text, start_rect)
+    
+    version_font = pygame.font.SysFont("arial", max(18, min(48, sh // 20)))
     version_text = version_font.render(VERSION, True, (255, 255, 255))
     version_rect = version_text.get_rect(bottomright=(sw - 10, sh - 10))
     surface.blit(version_text, version_rect)
@@ -641,15 +656,16 @@ def draw_players(surface, players, explosions=None, current_time=None, bombs=Non
                 pygame.draw.circle(surface, (210, 230, 255), pos, shield_r, 4)
                 pygame.draw.circle(surface, (130, 180, 255), pos, max(1, shield_r - 6), 2)
             
-            # Draw player name
-            name_text = _get_cached_text(font_small, player.name, (255, 255, 255))
-            name_rect = name_text.get_rect(center=(pos[0], pos[1] - r - 20))
-            surface.blit(name_text, name_rect)
-            # Draw pickup message if active
+            if player.name:
+                name_font = _player_label_font(r)
+                name_text = _get_cached_text(name_font, player.name, (255, 255, 255))
+                name_rect = name_text.get_rect(center=(pos[0], pos[1] - r - max(8, name_font.get_height() // 2)))
+                surface.blit(name_text, name_rect)
             clock = current_time if current_time is not None else get_ticks()
             if getattr(player, 'pickup_message_end_time', 0) and clock < player.pickup_message_end_time:
-                msg_text = font_small.render(player.pickup_message, True, (255, 255, 0))
-                msg_rect = msg_text.get_rect(center=(pos[0], pos[1] - r - 80))
+                msg_font = _player_label_font(r + 8, bold=True)
+                msg_text = msg_font.render(player.pickup_message, True, (255, 255, 0))
+                msg_rect = msg_text.get_rect(center=(pos[0], pos[1] - r - msg_font.get_height() - 18))
                 # Draw a semi-transparent dark background for readability
                 bg_rect = msg_rect.inflate(10, 6)
                 bg_surface = pygame.Surface((bg_rect[2], bg_rect[3]), pygame.SRCALPHA)
@@ -696,10 +712,10 @@ def draw_explosions(surface, current_time, explosions):
         left_max = max([cx - cell[0] for cell in explosion.cells if cell[1] == cy and cell[0] < cx] or [0])
         right_max = max([cell[0] - cx for cell in explosion.cells if cell[1] == cy and cell[0] > cx] or [0])
         
-        up_length = arm_factor * up_max * CELL_SIZE
-        down_length = arm_factor * down_max * CELL_SIZE
-        left_length = arm_factor * left_max * CELL_SIZE
-        right_length = arm_factor * right_max * CELL_SIZE
+        up_length = explosion_arm_pixel_length(arm_factor, up_max, CELL_SIZE)
+        down_length = explosion_arm_pixel_length(arm_factor, down_max, CELL_SIZE)
+        left_length = explosion_arm_pixel_length(arm_factor, left_max, CELL_SIZE)
+        right_length = explosion_arm_pixel_length(arm_factor, right_max, CELL_SIZE)
         
         if explosion.quad_damage:
             img = _get_image_asset("blast_image_qd")
@@ -782,19 +798,16 @@ def draw_explosion_collision_debug(surface, current_time, explosions, players=No
             hit_radius = explosion_player_radius(CELL_SIZE, EXPLOSION_PLAYER_HIT_SCALE)
             for cell in active_cells:
                 x, y = cell
-                collision_rect = np.array(
-                    explosion_cell_rect(x, y, CELL_SIZE, EXPLOSION_COLLISION_SCALE),
-                    dtype=np.float64,
+                rx, ry, rw, rh = explosion_cell_rect(
+                    x, y, CELL_SIZE, EXPLOSION_COLLISION_SCALE,
+                    clip_outward=explosion_tip_clip(cx, cy, x, y, active_cells),
                 )
-                hitbox_size = collision_rect[2]
-                
-                # Draw filled semi-transparent rect and border for clarity
                 border_width = max(2, int(4 * arm_factor))
                 border_color = (255, 60, 60) if arm_factor > 0.5 else (200, 80, 80)
-                fill_surface = pygame.Surface((int(hitbox_size), int(hitbox_size)), pygame.SRCALPHA)
+                fill_surface = pygame.Surface((max(1, int(rw)), max(1, int(rh))), pygame.SRCALPHA)
                 fill_surface.fill((255, 0, 0, 60))
-                surface.blit(fill_surface, (collision_rect[0], collision_rect[1]))
-                pygame.draw.rect(surface, border_color, (collision_rect[0], collision_rect[1], hitbox_size, hitbox_size), border_width)
+                surface.blit(fill_surface, (rx, ry))
+                pygame.draw.rect(surface, border_color, (rx, ry, rw, rh), border_width)
                 
                 # Draw cell coordinates for debugging
                 if arm_factor > 0.5:
@@ -808,7 +821,7 @@ def draw_explosion_collision_debug(surface, current_time, explosions, players=No
                 if players and arm_factor > 0.5:
                     for player in players:
                         if player.alive:
-                            if circle_rect_collision((player.pos[0], player.pos[1]), hit_radius, collision_rect):
+                            if circle_rect_collision((player.pos[0], player.pos[1]), hit_radius, (rx, ry, rw, rh)):
                                 pygame.draw.circle(surface, (255, 255, 0), (int(player.pos[0]), int(player.pos[1])), int(hit_radius), 2)
 
 def draw_blast_arm(surface, start_pos, end_offset, image):
@@ -835,36 +848,46 @@ def draw_blast_arm(surface, start_pos, end_offset, image):
     surface.blit(arm_surface, image_rect)
 
 def draw_controls(surface, players):
+    """Compact keyboard cheat-sheet for the title screen."""
     sw, sh = surface.get_size()
-    font = pygame.font.SysFont("arial", 80)
-    y_offset = sh - sh // 3
-    control_text = "Controls: Up -  Down - Left - Right - Bomb"
-    text = font.render(control_text, True, (255, 255, 255))
-    rect = text.get_rect(center=(sw // 2, y_offset))
-    surface.blit(text, rect)
-    y_offset += 50
-    for i, player in enumerate(players):
-        controls = player.controls
-        control_text = f"{player.name}: {get_key_name(controls['up'])} - {get_key_name(controls['down'])} - {get_key_name(controls['left'])} - {get_key_name(controls['right'])} - {get_key_name(controls['bomb'])}"
-        text = font.render(control_text, True, player.color)
-        rect = text.get_rect(center=(sw // 2, y_offset))
-        surface.blit(text, rect)
-        y_offset += 50
+    roster = [p for p in (players or []) if getattr(p, "controls", None)]
+    title_size = max(16, min(28, sh // 36))
+    row_size = max(14, min(22, sh // 42))
+    title_font = pygame.font.SysFont("arial", title_size, bold=True)
+    row_font = pygame.font.SysFont("arial", row_size)
+    y = int(sh * 0.62)
+    header = title_font.render("Controls  ·  Move  +  Bomb", True, (220, 226, 236))
+    surface.blit(header, header.get_rect(center=(sw // 2, y)))
+    y += title_font.get_height() + 8
+    if not roster:
+        line = row_font.render("P1  WASD  +  Space", True, (200, 210, 224))
+        surface.blit(line, line.get_rect(center=(sw // 2, y)))
+        return
+    gap = row_font.get_height() + 6
+    for player in roster[:6]:
+        label = f"{player.name}:  {_format_controls(player.controls)}"
+        text = row_font.render(label, True, getattr(player, "color", (255, 255, 255)))
+        surface.blit(text, text.get_rect(center=(sw // 2, y)))
+        y += gap
+        if y > sh - 56:
+            break
+
 
 def _win_screen_regions(sw, sh, has_replay):
-    """Stats use the full width; replay is a larger panel under the table."""
+    """Stats on top; replay is a near-square panel under the table when present."""
     padding = max(16, int(sw * 0.012))
     gap = 14
-    table_top_min = int(sh * 0.36)
+    table_top_min = int(sh * 0.34)
     table_w = sw - 2 * padding
     replay_w = 0
     replay_h = 0
     if has_replay:
-        replay_w = int(sw * REPLAY_PANEL_WIDTH_RATIO)
         replay_h = int(sh * REPLAY_PANEL_HEIGHT_RATIO)
-        max_replay_h = max(160, sh - table_top_min - 150 - padding)
+        max_replay_h = max(160, sh - table_top_min - 160 - padding)
         replay_h = min(replay_h, max_replay_h)
-        replay_h = max(int(sh * 0.34), replay_h)
+        replay_h = max(int(sh * 0.32), replay_h)
+        replay_w = min(int(sw * REPLAY_PANEL_WIDTH_RATIO), int(replay_h * 1.25), sw - 2 * padding)
+        replay_w = max(replay_w, min(sw - 2 * padding, int(replay_h * 0.92)))
     available_h = max(120, sh - table_top_min - padding - (replay_h + gap if has_replay else 0))
     return {
         "padding": padding,
@@ -955,8 +978,7 @@ def draw_stat_screen(surface, winner, players, game=None, heading=None):
 
     has_kill_cams = game is not None and bool(getattr(game, "kill_cam_clips", None))
     has_replay_segment = game is not None and hasattr(game, 'replay_segment') and bool(game.replay_segment)
-    has_replay_buffer = game is not None and hasattr(game, 'replay_buffer') and bool(game.replay_buffer)
-    has_replay = game is not None and (has_kill_cams or has_replay_segment or has_replay_buffer)
+    has_replay = has_kill_cams or has_replay_segment
     regions = _win_screen_regions(sw, sh, has_replay)
     padding = regions["padding"]
     gap = regions["gap"]
@@ -1132,17 +1154,17 @@ def draw_stat_screen(surface, winner, players, game=None, heading=None):
                     if ps['name'] == focus_name:
                         cam_x_px, cam_y_px = int(ps['pos'][0]), int(ps['pos'][1])
                         break
-            # Compute viewport in pixels based on cell radius
-            cells_radius = REPLAY_CAMERA_RADIUS_CELLS
-            view_w = (2 * cells_radius + 1) * CELL_SIZE
-            view_h = (2 * cells_radius + 1) * CELL_SIZE
-            view_rect = pygame.Rect(cam_x_px - view_w // 2, cam_y_px - view_h // 2, view_w, view_h)
-
             frame = hydrate_replay_snapshot(chosen_frame)
             board = frame["board"] if frame["board"] is not None else game.board
             gw = int(frame["grid_width"] or getattr(game, "grid_width", len(board[0])))
             gh = int(frame["grid_height"] or getattr(game, "grid_height", len(board)))
-            world_surface = pygame.Surface((gw * CELL_SIZE, gh * CELL_SIZE))
+            world_w = gw * CELL_SIZE
+            world_h = gh * CELL_SIZE
+            vx, vy, view_w, view_h = replay_view_rect(
+                cam_x_px, cam_y_px, world_w, world_h, CELL_SIZE, REPLAY_CAMERA_RADIUS_CELLS
+            )
+            view_rect = pygame.Rect(vx, vy, view_w, view_h)
+            world_surface = pygame.Surface((world_w, world_h))
             world_game = types.SimpleNamespace(
                 board=board,
                 grid_width=gw,
@@ -1182,58 +1204,48 @@ def draw_stat_screen(surface, winner, players, game=None, heading=None):
         
     #draw_controls(surface)
 
+def champion_boss_card_rect(sw, sh):
+    """Top-right card for the BomberMarv challenge portrait."""
+    margin = max(14, int(min(sw, sh) * 0.02))
+    card_w = min(236, max(156, int(sw * 0.18)))
+    card_h = min(220, max(140, int(sh * 0.26)))
+    return pygame.Rect(sw - margin - card_w, margin, card_w, card_h)
+
+
 def draw_champion_screen(surface, champion, players=None, game=None):
-    """Stats, kill-cams, and a compact BomberMarv challenge banner until Enter."""
+    """Stats, kill-cams, and a compact BomberMarv card in the top-right corner."""
     champ_name = champion.name if champion is not None else "Champion"
     roster = players if players is not None else ([champion] if champion else [])
     draw_stat_screen(surface, champion, roster, game, heading=f"Champion: {champ_name}")
-    _draw_champion_challenge_banner(surface, champion, game)
+    _draw_champion_boss_card(surface, game)
 
 
-def _draw_champion_challenge_banner(surface, champion, game=None):
-    """Compact boss challenge art in the leftover space above the stats table."""
+def _draw_champion_boss_card(surface, game=None):
+    """Small BomberMarv portrait + quote, kept off the title and stats."""
     _ensure_fonts_initialized()
     sw, sh = surface.get_size()
-    banner_h = int(sh * 0.34)
-    banner_w = int(sw * 0.56)
-    if banner_h < 90 or banner_w < 220:
+    card = champion_boss_card_rect(sw, sh)
+    if card.width < 120 or card.height < 100:
         return
 
-    champ_name = champion.name if champion is not None else "Champion"
-    champ_color = getattr(champion, "color", (240, 214, 130)) if champion is not None else (240, 214, 130)
-    quote_font = _ui_font(min(26, max(16, sh // 40)), bold=True)
-    stat_font = _ui_font(min(18, max(13, sh // 52)))
-    pulse = 0.5 + 0.5 * math.sin(time.time() * 3.0)
-    champ_r = max(22, int(min(banner_w, banner_h) * 0.16))
-    boss_r = max(28, int(min(banner_w, banner_h) * 0.22))
-    cy = int(banner_h * 0.58)
-    champ_pos = (int(banner_w * 0.22), cy)
-    boss_pos = (int(banner_w * 0.72), cy)
-    now = getattr(game, "current_time", 0) if game is not None else int(time.time() * 1000)
+    pygame.draw.rect(surface, (24, 28, 38), card, border_radius=14)
+    pygame.draw.rect(surface, (196, 209, 228), card, 2, border_radius=14)
 
-    champ_portrait = types.SimpleNamespace(
-        name=champ_name,
-        color=champ_color,
-        pos=champ_pos,
-        alive=True,
-        draw_radius=champ_r,
-        direction=(1.0, 0.0),
-        animation_time=float(now),
-        quad_damage=False,
-        quad_damage_start_time=0,
-        death_animation_time=0,
-        pickup_message="",
-        pickup_message_end_time=0,
-        global_id="champion-portrait",
-        get_grid_pos=lambda: (0, 0),
-    )
+    pulse = 0.5 + 0.5 * math.sin(time.time() * 3.0)
+    boss_r = max(16, int(min(card.width, card.height) * 0.16))
+    boss_pos = (card.centerx, card.y + 12 + boss_r)
+    now = getattr(game, "current_time", 0) if game is not None else int(time.time() * 1000)
+    glow_r = int(boss_r * (1.18 + 0.06 * pulse))
+    pygame.draw.circle(surface, (28, 28, 34), boss_pos, glow_r)
+    pygame.draw.circle(surface, (90, 90, 104), boss_pos, glow_r, 2)
+
     boss_portrait = types.SimpleNamespace(
-        name=BOSS_NAME,
+        name="",
         color=BOSS_COLOR,
         pos=boss_pos,
         alive=True,
         draw_radius=boss_r,
-        direction=(-1.0, 0.0),
+        direction=(0.0, 1.0),
         animation_time=float(now),
         quad_damage=False,
         quad_damage_start_time=0,
@@ -1243,30 +1255,29 @@ def _draw_champion_challenge_banner(surface, champion, game=None):
         global_id="boss-portrait",
         get_grid_pos=lambda: (0, 0),
     )
-    glow_r = int(boss_r * (1.28 + 0.08 * pulse))
-    pygame.draw.circle(surface, (28, 28, 34), boss_pos, glow_r)
-    pygame.draw.circle(surface, (90, 90, 104), boss_pos, glow_r, 3)
-    draw_players(surface, [champ_portrait, boss_portrait])
+    draw_players(surface, [boss_portrait])
 
-    stats = [
-        f"Speed x{BOSS_SPEED_MULTIPLIER:g}",
-        f"Fire {BOSS_START_FIRE_POWER}",
-        f"Bombs {BOSS_START_BOMB_CAPACITY}",
-        f"+{BOSS_EXTRA_LIVES} life",
-    ]
-    stats_surf = stat_font.render("   ·   ".join(stats), True, (186, 196, 210))
-    surface.blit(stats_surf, stats_surf.get_rect(midtop=(boss_pos[0], min(banner_h - 8, boss_pos[1] + boss_r + 10))))
-
-    quote = f'"{BOSS_QUOTE}"'
-    bubble_w = min(banner_w - 24, max(240, quote_font.size(quote)[0] + 28))
-    bubble_h = quote_font.get_height() + 16
-    bubble = pygame.Rect(0, 0, bubble_w, bubble_h)
-    bubble.centerx = boss_pos[0]
-    bubble.bottom = max(bubble_h + 8, boss_pos[1] - boss_r - 12)
-    pygame.draw.rect(surface, (24, 26, 32), bubble, border_radius=12)
-    pygame.draw.rect(surface, (210, 214, 230), bubble, 2, border_radius=12)
-    quote_surf = quote_font.render(_fit_text_to_width(quote_font, quote, bubble_w - 16), True, (236, 240, 248))
-    surface.blit(quote_surf, quote_surf.get_rect(center=bubble.center))
+    name_font = _ui_font(min(22, max(14, card.height // 10)), bold=True)
+    quote_font = _ui_font(min(15, max(11, card.height // 14)))
+    stat_font = _ui_font(min(13, max(10, card.height // 16)))
+    inset = 10
+    text_w = card.width - inset * 2
+    name_y = boss_pos[1] + boss_r + 6
+    _blit_label(surface, name_font, BOSS_NAME, (236, 240, 248), card.x + inset, name_y, text_w, name_font.get_height() + 2)
+    quote_y = name_y + name_font.get_height() + 4
+    quote_parts = BOSS_QUOTE.split(", ", 1)
+    quote_lines = (f'"{quote_parts[0]},', f'{quote_parts[1]}"') if len(quote_parts) == 2 else (f'"{BOSS_QUOTE}"',)
+    line_h = quote_font.get_height() + 2
+    for i, line in enumerate(quote_lines):
+        _blit_label(
+            surface, quote_font, line, (210, 214, 230),
+            card.x + inset, quote_y + i * line_h, text_w, line_h, vcenter=False,
+        )
+    stats = f"x{BOSS_SPEED_MULTIPLIER:g}  ·  Fire {BOSS_START_FIRE_POWER}  ·  Bombs {BOSS_START_BOMB_CAPACITY}  ·  +{BOSS_EXTRA_LIVES} life"
+    _blit_label(
+        surface, stat_font, stats, (186, 196, 210),
+        card.x + inset, card.bottom - stat_font.get_height() - 10, text_w, stat_font.get_height() + 2,
+    )
 
 
 def draw_boss_result_screen(surface, winner, players=None, game=None):
@@ -1346,10 +1357,25 @@ def draw_adjust_screen_size(screen):
     screen.window.blit(scaled_surface, (x_offset, y_offset))
     pygame.display.flip()
     
+def get_ready_banner_rect(sw, sh):
+    """Centered banner that stays off corner spawns."""
+    banner_h = max(56, min(120, int(sh * 0.10)))
+    return pygame.Rect(0, (sh - banner_h) // 2, sw, banner_h)
+
+
 def draw_get_ready(surface):
     _ensure_fonts_initialized()
-    start_text = arcade_font.render("Get Ready!", True, (180, 60, 120))
-    start_rect = start_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT- 500))
+    sw, sh = surface.get_size()
+    banner = get_ready_banner_rect(sw, sh)
+    overlay = pygame.Surface((banner.width, banner.height), pygame.SRCALPHA)
+    overlay.fill((12, 10, 18, 210))
+    surface.blit(overlay, banner.topleft)
+    pygame.draw.line(surface, (212, 175, 55), (0, banner.top), (sw, banner.top), 2)
+    pygame.draw.line(surface, (212, 175, 55), (0, banner.bottom - 1), (sw, banner.bottom - 1), 2)
+    size = max(28, min(64, int(banner.height * 0.48)))
+    font = pygame.font.SysFont("Comic Sans MS", size, bold=True)
+    start_text = font.render("Get Ready!", True, (236, 120, 168))
+    start_rect = start_text.get_rect(center=banner.center)
     surface.blit(start_text, start_rect)
 
 
@@ -1499,7 +1525,7 @@ def draw_game_prep(surface, Game):
     button_gap = 8
     button_w = min(52, max(32, (left_panel.width - inset * 2 - button_gap * (MAX_PLAYERS - 1)) // MAX_PLAYERS))
     button_font = _ui_font(min(26, button_h - 8), bold=True)
-    local_selected = Game.prep_section == 'local_players' and Game.prep_cursor_row == 0
+    local_selected = Game.prep_section == 'local_players' and Game.prep_cursor_row == PREP_ROW_LOCAL
     _draw_option_pills(
         surface, button_font, list(range(1, MAX_PLAYERS + 1)),
         left_panel.x + inset, button_y, button_w, button_h, button_gap,
@@ -1511,7 +1537,7 @@ def draw_game_prep(surface, Game):
     ai_label_y = button_y + button_h + 10
     _blit_label(surface, label_font, "AI opponents", (180, 200, 220), left_panel.x + inset, ai_label_y, 420, label_font.get_height() + 2, vcenter=False)
     ai_button_y = ai_label_y + label_font.get_height() + 6
-    ai_selected = Game.prep_section == 'local_players' and Game.prep_cursor_row == 1
+    ai_selected = Game.prep_section == 'local_players' and Game.prep_cursor_row == PREP_ROW_AI
     _draw_option_pills(
         surface, button_font, list(range(MAX_PLAYERS)),
         left_panel.x + inset, ai_button_y, button_w, button_h, button_gap,
@@ -1523,7 +1549,7 @@ def draw_game_prep(surface, Game):
     trophy_label_y = ai_button_y + button_h + 10
     _blit_label(surface, label_font, "Trophies to win (boss fight)", (212, 190, 140), left_panel.x + inset, trophy_label_y, 520, label_font.get_height() + 2, vcenter=False)
     trophy_button_y = trophy_label_y + label_font.get_height() + 6
-    trophy_selected = Game.prep_section == 'local_players' and Game.prep_cursor_row == 2
+    trophy_selected = Game.prep_section == 'local_players' and Game.prep_cursor_row == PREP_ROW_TROPHY
     _draw_option_pills(
         surface, button_font, list(range(MIN_TROPHY_WIN, MAX_TROPHY_WIN + 1)),
         left_panel.x + inset, trophy_button_y, button_w, button_h, button_gap,
@@ -1532,7 +1558,30 @@ def draw_game_prep(surface, Game):
         pulse,
     )
 
-    row_y = trophy_button_y + button_h + 14
+    roster_count = max(1, len(all_players))
+    arena_choices = grid_size_choices(roster_count)
+    arena_default = default_grid_size(roster_count)
+    arena_offset = clamp_grid_offset(getattr(Game, "prep_grid_offset", 0))
+    arena_current = clamp_odd_grid(arena_default + arena_offset)
+    arena_label_y = trophy_button_y + button_h + 10
+    _blit_label(
+        surface, label_font,
+        f"Arena size  ·  default {arena_default}  ·  ±2/4/6",
+        (180, 210, 230), left_panel.x + inset, arena_label_y, 620, label_font.get_height() + 2, vcenter=False,
+    )
+    arena_button_y = arena_label_y + label_font.get_height() + 6
+    arena_n = max(1, len(arena_choices))
+    arena_w = min(56, max(32, (left_panel.width - inset * 2 - button_gap * (arena_n - 1)) // arena_n))
+    arena_selected = Game.prep_section == 'local_players' and Game.prep_cursor_row == PREP_ROW_ARENA
+    _draw_option_pills(
+        surface, button_font, arena_choices,
+        left_panel.x + inset, arena_button_y, arena_w, button_h, button_gap,
+        Game.prep_cursor_col if arena_selected else -1,
+        grid_offset_index(arena_offset),
+        pulse,
+    )
+
+    row_y = arena_button_y + button_h + 14
     available_rows = max(1, left_panel.bottom - row_y - 16)
     n_show = max(1, len(all_players))
     row_h = min(88, max(64, available_rows // min(n_show, 8)))
@@ -1548,7 +1597,7 @@ def draw_game_prep(surface, Game):
 
     for i, p in enumerate(shown_players):
         rect = pygame.Rect(left_panel.x + 14, row_y + i * row_h, left_panel.width - 28, row_h - 8)
-        selected = (Game.prep_section == 'local_players' and Game.prep_cursor_row == i + 3)
+        selected = (Game.prep_section == 'local_players' and Game.prep_cursor_row == i + PREP_ROW_PLAYERS)
         editing = (Game.prep_editing_name and Game.prep_name_edit_index == i)
         if selected:
             glow = int(70 + 36 * pulse)
@@ -1583,12 +1632,27 @@ def draw_game_prep(surface, Game):
         role_rect = pygame.Rect(rect.right - 12 - role_w, block_y + max(0, (name_h - 24) // 2), role_w, 24)
         _draw_pill(surface, meta_font, role, role_fill, (220, 236, 230), role_rect.x, role_rect.y, role_rect.width, role_rect.height)
 
+        style_fill = {
+            "cautious": ((64, 104, 148), "Cautious"),
+            "normal": ((58, 112, 82), "Normal"),
+            "crazy": ((148, 74, 56), "Crazy"),
+        }.get(p.get("personality") if p.get("type") == "ai" else None)
+        name_limit = role_rect.x
+        if style_fill:
+            style_w = 96
+            style_rect = pygame.Rect(role_rect.x - 8 - style_w, role_rect.y, style_w, role_rect.height)
+            _draw_pill(
+                surface, meta_font, style_fill[1], style_fill[0], (236, 242, 248),
+                style_rect.x, style_rect.y, style_rect.width, style_rect.height,
+            )
+            name_limit = style_rect.x
+
         name = p['name'] + "_" if editing else p['name']
         prefix = f"L{p['id']}" if p['type'] == 'local' else (f"AI{p['id']}" if p['type'] == 'ai' else f"R{p['id']}")
         name = f"{prefix}  {name}"
         name_color = (250, 234, 130) if (selected or editing) else (234, 242, 255)
         name_x = team_rect.right + 10
-        name_w = max(40, role_rect.x - 10 - name_x)
+        name_w = max(40, name_limit - 10 - name_x)
         _blit_label(surface, name_font, name, name_color, name_x, block_y, name_w, name_h, vcenter=False)
 
         status_text = p['status']
@@ -1630,15 +1694,26 @@ def draw_game_prep(surface, Game):
             _blit_label(surface, card_sub, line2, (188, 204, 224), text_x, card.y + 10 + card_font.get_height(), text_w, card_sub.get_height() + 2, vcenter=False)
             client_card_y += card_h
     else:
-        empty = pygame.Rect(right_panel.x + 16, right_panel.y + 64, right_panel.width - 32, 72)
+        empty = pygame.Rect(right_panel.x + 16, client_card_y, right_panel.width - 32, min(168, max(110, right_panel.bottom - client_card_y - 16)))
         pygame.draw.rect(surface, (36, 44, 56), empty, border_radius=12)
         pygame.draw.rect(surface, (70, 88, 112), empty, 1, border_radius=12)
-        _blit_label(surface, card_sub, "No remote clients connected.", (172, 184, 204), empty.x + 16, empty.y, empty.width - 32, empty.height)
+        _blit_label(
+            surface, card_font, "Waiting for browsers", (210, 220, 236),
+            empty.x + 16, empty.y + 16, empty.width - 32, card_font.get_height() + 4, vcenter=False,
+        )
+        _blit_label(
+            surface, card_sub, "Share this PC's address. Guests open port 8080 or 5173 on the same Wi-Fi.",
+            (172, 184, 204), empty.x + 16, empty.y + 20 + card_font.get_height(), empty.width - 32, empty.height - card_font.get_height() - 28, vcenter=False,
+        )
 
     footer_font = _ui_font(min(26, max(18, footer_h // 5)), bold=True)
     help_font = _ui_font(min(20, max(15, footer_h // 6)))
     total_players = len(all_players)
-    totals_text = f"{total_players} players   ·   {Game.prep_num_players} local   ·   {int(getattr(Game, 'prep_ai_count', 0) or 0)} AI   ·   first to {trophy_goal}"
+    totals_text = (
+        f"{total_players} players   ·   {Game.prep_num_players} local   ·   "
+        f"{int(getattr(Game, 'prep_ai_count', 0) or 0)} AI   ·   "
+        f"{arena_current}×{arena_current}   ·   first to {trophy_goal}"
+    )
     start_w = min(280, max(188, int(footer.width * 0.20)))
     start_h = min(58, footer.height - 24)
     start_rect = pygame.Rect(footer.right - 16 - start_w, footer.y + (footer.height - start_h) // 2, start_w, start_h)
@@ -1657,7 +1732,7 @@ def draw_game_prep(surface, Game):
     pygame.draw.rect(surface, (210, 235, 214), start_rect, 1, border_radius=12)
     _blit_label(surface, footer_font, "START GAME", start_text_col, start_rect.x + 8, start_rect.y, start_rect.width - 16, start_rect.height)
 
-    help_text = "Arrows navigate  ·  Enter select/edit  ·  Local 1-8  ·  AI 0-7  ·  Trophies 1-5  ·  Left/Right color  ·  T team  ·  Tab start  ·  Esc back"
+    help_text = "Arrows navigate  ·  Enter select/edit  ·  Local 1-8  ·  AI 0-7  ·  Trophies 1-5  ·  Arena ±2/4/6  ·  Left/Right color  ·  T team  ·  Tab start  ·  Esc back"
     _blit_label(surface, help_font, help_text, (160, 176, 198), footer.x + 22, footer.y + 20 + footer_font.get_height(), text_w, help_font.get_height() + 6, vcenter=False)
 
 

@@ -291,7 +291,7 @@ class TestAIController(unittest.TestCase):
         _, place_bomb = compute_ai_input(ai, game)
         self.assertFalse(place_bomb)
 
-    def test_ai_does_not_auto_bomb_first_corner_wall(self):
+    def test_centered_bot_bombs_a_brick_it_can_escape(self):
         board = [
             [INDESTRUCTIBLE] * 7,
             [INDESTRUCTIBLE, EMPTY, EMPTY, DESTRUCTIBLE, EMPTY, EMPTY, INDESTRUCTIBLE],
@@ -303,13 +303,12 @@ class TestAIController(unittest.TestCase):
         ]
         ai = _make_mock_player(2, 1)
         ai.fire_power = 1
-        ai.cells_walked = 1
-        opponent = _make_mock_player(5, 5)
         ai.is_ai = True
+        ai.ai_personality = "normal"
+        opponent = _make_mock_player(5, 5)
         game = _make_mock_game(board, players=[ai, opponent])
-        for _ in range(12):
-            _, place_bomb = compute_ai_input(ai, game)
-            self.assertFalse(place_bomb)
+        _, place_bomb = compute_ai_input(ai, game)
+        self.assertTrue(place_bomb)
 
     def test_adjacent_los_bombs_when_escape_exists(self):
         """Any safe LOS, including adjacent, is an attack."""
@@ -467,15 +466,108 @@ class TestAIController(unittest.TestCase):
         self.assertFalse(place_bomb)
         self.assertGreater(direction[0], 0)
 
-    def test_boss_is_less_powerup_greedy(self):
+    def test_boss_collects_bonuses_and_spends_extra_bombs(self):
         from ai_controller import _powerup_limit, BOSS_POWERUP_HUNT_LIMIT, POWERUP_HUNT_LIMIT
         cpu = _make_mock_player(1, 1)
         cpu.ai_role = "cpu"
+        cpu.ai_personality = "normal"
         boss = _make_mock_player(1, 1)
         boss.ai_role = "boss"
-        self.assertEqual(_powerup_limit(cpu), POWERUP_HUNT_LIMIT)
+        boss.speed = 400
+        self.assertGreaterEqual(_powerup_limit(boss), _powerup_limit(cpu))
         self.assertEqual(_powerup_limit(boss), BOSS_POWERUP_HUNT_LIMIT)
-        self.assertLess(BOSS_POWERUP_HUNT_LIMIT, POWERUP_HUNT_LIMIT)
+        self.assertGreater(BOSS_POWERUP_HUNT_LIMIT, POWERUP_HUNT_LIMIT)
+        board = [
+            [INDESTRUCTIBLE] * 5,
+            [INDESTRUCTIBLE, EMPTY, EMPTY, DESTRUCTIBLE, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE, EMPTY, EMPTY, EMPTY, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE] * 5,
+        ]
+        boss.pos = [2 * CELL_SIZE + CELL_SIZE // 2, 1 * CELL_SIZE + CELL_SIZE // 2]
+        boss.fire_power = 1
+        boss.bomb_capacity = 2
+        boss.active_bombs = 1
+        boss.is_ai = True
+        game = _make_mock_game(board, players=[boss])
+        _, place_bomb = compute_ai_input(boss, game)
+        self.assertTrue(place_bomb)
+
+    def test_personalities_change_bombing_and_goals(self):
+        from ai_controller import _soft_walls_hit
+        board = [
+            [INDESTRUCTIBLE] * 9,
+            [INDESTRUCTIBLE, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE, EMPTY, DESTRUCTIBLE, EMPTY, EMPTY, DESTRUCTIBLE, EMPTY, EMPTY, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE, EMPTY, EMPTY, EMPTY, EMPTY, DESTRUCTIBLE, EMPTY, EMPTY, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE] * 9,
+        ]
+        ai = _make_mock_player(1, 1)
+        ai.fire_power = 1
+        ai.is_ai = True
+        ai.ai_personality = "normal"
+        far = _make_mock_player(7, 5)
+        game = _make_mock_game(board, players=[ai, far])
+        think_ai(ai, game)
+        self.assertEqual(ai._ai_goal_kind, "farm")
+        self.assertEqual(ai._ai_goal_cell, (5, 3))
+        self.assertEqual(_soft_walls_hit(board, 5, 3, 1), 2)
+        self.assertEqual(_soft_walls_hit(board, 1, 2, 1), 1)
+
+        cautious = _make_mock_player(1, 1)
+        cautious.fire_power = 1
+        cautious.bomb_capacity = 3
+        cautious.active_bombs = 1
+        cautious.is_ai = True
+        cautious.ai_personality = "cautious"
+        _, second = think_ai(cautious, _make_mock_game(board, players=[cautious]))
+        self.assertFalse(second)
+
+        threatened = _make_mock_player(2, 3)
+        threatened.fire_power = 3
+        threatened.is_ai = True
+        threatened.ai_personality = "cautious"
+        hunter = _make_mock_player(4, 3)
+        step, place = think_ai(threatened, _make_mock_game(board, players=[threatened, hunter]))
+        self.assertFalse(place)
+        self.assertEqual(threatened._ai_goal_kind, "retreat")
+        self.assertIsNotNone(threatened._ai_goal_cell)
+        self.assertGreater(
+            abs(threatened._ai_goal_cell[0] - 4) + abs(threatened._ai_goal_cell[1] - 3),
+            abs(2 - 4) + abs(3 - 3),
+        )
+        self.assertNotEqual(step, (1, 0))
+
+        crazy = _make_mock_player(1, 3)
+        crazy.fire_power = 1
+        crazy.is_ai = True
+        crazy.ai_personality = "crazy"
+        opp = _make_mock_player(3, 3)
+        qd = type("PU", (), {"x": 7, "y": 1, "type": "quad_damage"})()
+        bomb_pu = type("PU", (), {"x": 1, "y": 5, "type": "bomb"})()
+        think_ai(crazy, _make_mock_game(board, players=[crazy, opp], powerups=[qd, bomb_pu]))
+        self.assertEqual(crazy._ai_goal_kind, "powerup")
+        self.assertEqual(crazy._ai_goal_cell, (7, 1))
+
+    def test_normal_does_not_bomb_a_far_line_of_sight(self):
+        board = [
+            [INDESTRUCTIBLE] * 9,
+            [INDESTRUCTIBLE, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE] * 9,
+        ]
+        ai = _make_mock_player(1, 1)
+        ai.fire_power = 6
+        ai.is_ai = True
+        ai.ai_personality = "normal"
+        opp = _make_mock_player(7, 1)
+        game = _make_mock_game(board, players=[ai, opp])
+        _, place = think_ai(ai, game)
+        self.assertFalse(place)
+        ai.ai_personality = "crazy"
+        _, place = think_ai(ai, game)
+        self.assertTrue(place)
 
     def test_quad_damage_preferred_over_closer_bomb_powerup(self):
         board = [
@@ -510,7 +602,7 @@ class TestAIController(unittest.TestCase):
         step = _nearest_powerup(board, 1, 1, bombs + qds, set(), set())
         self.assertEqual(step, (1, 0))
 
-    def test_no_rng_farm_bomb_next_to_unrelated_crate(self):
+    def test_farm_bomb_on_a_cell_that_clears_a_brick(self):
         board = [
             [INDESTRUCTIBLE] * 7,
             [INDESTRUCTIBLE, EMPTY, EMPTY, DESTRUCTIBLE, EMPTY, EMPTY, INDESTRUCTIBLE],
@@ -520,14 +612,12 @@ class TestAIController(unittest.TestCase):
         ]
         ai = _make_mock_player(2, 1)
         ai.fire_power = 1
-        ai.cells_walked = 20
-        opponent = _make_mock_player(5, 3)
         ai.is_ai = True
+        ai.ai_personality = "normal"
+        opponent = _make_mock_player(5, 3)
         game = _make_mock_game(board, players=[ai, opponent])
-        for t in range(0, 400, 20):
-            game.current_time = t
-            _, place_bomb = compute_ai_input(ai, game)
-            self.assertFalse(place_bomb)
+        _, place_bomb = compute_ai_input(ai, game)
+        self.assertTrue(place_bomb)
 
     def test_does_not_step_into_live_explosion(self):
         """A bot in a safe pocket must not walk into a cell that is already exploding."""
@@ -642,6 +732,64 @@ class TestAIController(unittest.TestCase):
 
         self.assertEqual(board[1][3], E)
         self.assertTrue(visited_after_blast & {(2, 1), (3, 1), (4, 1)})
+
+    def test_leaves_own_bomb_while_the_fuse_is_still_long(self):
+        """A fast bot used to wait on the lit cell until the exit was already late."""
+        board = [
+            [INDESTRUCTIBLE] * 9,
+            *[[INDESTRUCTIBLE, *([EMPTY] * 7), INDESTRUCTIBLE] for _ in range(7)],
+            [INDESTRUCTIBLE] * 9,
+        ]
+        ai = _make_mock_player(4, 4)
+        ai.is_ai = True
+        ai.speed = 287
+        ai.ai_personality = "normal"
+        opponent = _make_mock_player(7, 7)
+        bomb = _make_mock_bomb(4, 4, start_time=0, fire_power=1, owner=ai)
+        game = _make_mock_game(
+            board, bombs=[bomb], players=[ai, opponent], current_time=BOMB_TIMER - 2500,
+        )
+        step, place = think_ai(ai, game)
+        self.assertFalse(place)
+        self.assertNotEqual(step, (0, 0))
+        self.assertIn(ai._ai_goal_kind, ("wait", "flee"))
+
+    def test_flee_steps_out_instead_of_centering_first(self):
+        board = [
+            [INDESTRUCTIBLE] * 5,
+            [INDESTRUCTIBLE, INDESTRUCTIBLE, EMPTY, INDESTRUCTIBLE, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE, INDESTRUCTIBLE, EMPTY, INDESTRUCTIBLE, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE, INDESTRUCTIBLE, EMPTY, INDESTRUCTIBLE, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE, INDESTRUCTIBLE, EMPTY, INDESTRUCTIBLE, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE] * 5,
+        ]
+        ai = _make_mock_player(2, 2)
+        ai.pos[0] += 40
+        ai.is_ai = True
+        ai.speed = 287
+        bomb = _make_mock_bomb(2, 2, start_time=0, fire_power=1, owner=ai)
+        game = _make_mock_game(board, bombs=[bomb], players=[ai], current_time=BOMB_TIMER - 2000)
+        step, _ = think_ai(ai, game)
+        direction, _ = compute_ai_input(ai, game)
+        self.assertEqual(step, (0, 1))
+        self.assertEqual((int(direction[0]), int(direction[1])), (0, 1))
+
+    def test_chained_bomb_is_lethal_at_the_earlier_fuse(self):
+        board = [
+            [INDESTRUCTIBLE] * 7,
+            [INDESTRUCTIBLE, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE] * 7,
+        ]
+        ai = _make_mock_player(1, 1)
+        ai.is_ai = True
+        ai.speed = 287
+        near = _make_mock_bomb(3, 2, start_time=200 - BOMB_TIMER, fire_power=1)
+        chained = _make_mock_bomb(3, 1, start_time=0, fire_power=2)
+        game = _make_mock_game(board, bombs=[chained, near], players=[ai], current_time=0)
+        self.assertEqual(_danger_times(game)[(1, 1)], 200)
+        step, _ = think_ai(ai, game)
+        self.assertNotEqual(step, (0, 0))
 
 
 if __name__ == "__main__":

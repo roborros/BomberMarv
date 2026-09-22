@@ -13,7 +13,6 @@ from frontend import FrontendManager
 from bm_drawing import (
     draw_boss_result_screen,
     draw_champion_screen,
-    draw_controls,
     draw_game_prep,
     draw_game_screen,
     draw_get_ready,
@@ -42,19 +41,9 @@ import ws_stream_server
 
 
 ## TODO
-# rework explosion animation
-# store all necessary params to bomb class, do not access player later
-# trophy - make a nicer image
-# rework champion page
-# add player menu (number, names, colors, controls)
-# add param menu
-# exe compilation
-# add unit tests
-# add developer mode with simple ui and collision box visualization, direction of movement, etc.
-# game class to store all game state instead of global variables and add methods to it?
-# abstract pyge away from the game logic to not be locked in
-# ingame ECS key to pause the game
-# port to browser https://pygame-web.github.io/
+# trophy artwork
+# developer overlay (collision boxes, facing, tick HUD)
+# keep extracting Game into focused modules
 
 
 
@@ -411,12 +400,13 @@ if __name__ == "__main__":
                 alpha = max(0, int(255 * (2800 - elapsed) / 800))
             else:
                 alpha = 0
-            draw_title_page(game_surface, alpha)
-            if int(elapsed) >= 2200:
-                draw_controls(game_surface, theGame.players)
-                start_text = get_ui_font().render("Press Enter to start the game", True, (255, 255, 255))
-                start_rect = start_text.get_rect(center=(BASE_WIDTH // 2, BASE_HEIGHT - 50))
-                game_surface.blit(start_text, start_rect)
+            draw_title_page(
+                game_surface,
+                alpha,
+                show_game_name=True,
+                players=theGame.players,
+                show_start_hint=int(elapsed) >= 2200,
+            )
         elif theGame.game_state == "game_prep":
             draw_game_prep(game_surface, theGame)
         elif theGame.game_state == "get_ready":
@@ -433,8 +423,11 @@ if __name__ == "__main__":
             alive_players = [p for p in theGame.players if p.alive]
             draw_stat_screen(game_surface, alive_players[0] if alive_players else None, theGame.players, theGame)
         elif theGame.game_state == "champion":
-            alive_players = [p for p in theGame.players if p.alive]
-            draw_champion_screen(game_surface, alive_players[0] if alive_players else None, theGame.players, theGame)
+            champ = theGame.champion_player() if hasattr(theGame, "champion_player") else None
+            if champ is None:
+                alive_players = [p for p in theGame.players if p.alive]
+                champ = alive_players[0] if alive_players else None
+            draw_champion_screen(game_surface, champ, theGame.players, theGame)
         elif theGame.game_state == "boss_result":
             winner = getattr(theGame, 'boss_fight_winner', None)
             draw_boss_result_screen(game_surface, winner, theGame.players, theGame)

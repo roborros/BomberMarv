@@ -55,7 +55,7 @@ class GridTests(unittest.TestCase):
         self.assertEqual(len(board[0]), 7)
 
     def test_spawn_slots_eight_unique_walkable(self):
-        for size in (17, 19, 21, 23):
+        for size in (9, 15, 17, 19, 21, 23, 27):
             slots = spawn_slots(size, size, 8)
             self.assertEqual(len(slots), 8)
             cells = [(x, y) for x, y, _ in slots]

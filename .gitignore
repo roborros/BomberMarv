@@ -172,3 +172,12 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# BomberMarv
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+web_client/node_modules/
+web_client/.vite/
+tools/.frames/

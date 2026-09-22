@@ -7,6 +7,13 @@ export function championAnnouncement(name: string): string {
   return `${name} is the Champion!`
 }
 
+export function championBossCardRect(width: number, height: number): { x: number; y: number; w: number; h: number } {
+  const margin = Math.max(14, Math.floor(Math.min(width, height) * 0.02))
+  const w = Math.min(236, Math.max(156, Math.floor(width * 0.18)))
+  const h = Math.min(220, Math.max(140, Math.floor(height * 0.26)))
+  return { x: width - margin - w, y: margin, w, h }
+}
+
 export function bossWinsLabel(winnerIsAi: boolean, winnerName?: string | null): string {
   if (winnerIsAi) return `${BOSS_NAME} wins!`
   if (winnerName) return `${winnerName} wins!`

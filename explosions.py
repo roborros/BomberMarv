@@ -72,8 +72,8 @@ def count_unique_explosion_tiles(
 
 
 def crossed_big_explosion_threshold(was_over: bool, tile_count: int, threshold: int) -> bool:
-    """True once unique tiles go from <= threshold to > threshold."""
-    return (not was_over) and tile_count > threshold
+    """True once unique tiles reach the threshold from below."""
+    return (not was_over) and tile_count >= threshold
 
 
 def planned_blast_cells(
@@ -132,10 +132,60 @@ def is_player_in_planned_blast(
     return False
 
 
-def explosion_cell_rect(cell_x: int, cell_y: int, cell_size: int, scale: float) -> Tuple[float, float, float, float]:
+def explosion_cell_rect(
+    cell_x: int,
+    cell_y: int,
+    cell_size: int,
+    scale: float,
+    clip_outward: str | None = None,
+) -> Tuple[float, float, float, float]:
     margin = cell_size * (1.0 - float(scale)) / 2.0
     hit = cell_size * float(scale)
-    return (cell_x * cell_size + margin, cell_y * cell_size + margin, hit, hit)
+    x = cell_x * cell_size + margin
+    y = cell_y * cell_size + margin
+    w = hit
+    h = hit
+    mid_x = cell_x * cell_size + cell_size / 2.0
+    mid_y = cell_y * cell_size + cell_size / 2.0
+    if clip_outward == "right":
+        w = max(0.0, mid_x - x)
+    elif clip_outward == "left":
+        new_x = mid_x
+        w = max(0.0, (x + w) - new_x)
+        x = new_x
+    elif clip_outward == "down":
+        h = max(0.0, mid_y - y)
+    elif clip_outward == "up":
+        new_y = mid_y
+        h = max(0.0, (y + h) - new_y)
+        y = new_y
+    return (x, y, w, h)
+
+
+def explosion_tip_clip(
+    cx: int, cy: int, cell_x: int, cell_y: int, active_cells: Sequence[Cell]
+) -> str | None:
+    """Last cell on an arm clips at the cell center, where the flame tip stops."""
+    on_row = [x for x, y in active_cells if y == cy]
+    on_col = [y for x, y in active_cells if x == cx]
+    if cell_y == cy and on_row:
+        if cell_x == max(on_row) and cell_x != cx:
+            return "right"
+        if cell_x == min(on_row) and cell_x != cx:
+            return "left"
+    if cell_x == cx and on_col:
+        if cell_y == max(on_col) and cell_y != cy:
+            return "down"
+        if cell_y == min(on_col) and cell_y != cy:
+            return "up"
+    return None
+
+
+def explosion_arm_pixel_length(arm_factor: float, cell_reach: int, cell_size: int) -> float:
+    """Painted flame stops at the center of the last reached cell."""
+    if cell_reach <= 0 or arm_factor <= 0:
+        return 0.0
+    return float(arm_factor) * int(cell_reach) * float(cell_size)
 
 
 def explosion_player_radius(cell_size: int, player_hit_scale: float) -> float:

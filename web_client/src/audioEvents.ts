@@ -1,7 +1,7 @@
 import type { ExplosionState, GameState, PlayerState } from './types'
 
-export const BIG_EXPLOSION_TILE_THRESHOLD = 40
-export const BIG_EXPLOSION_WINDOW_MS = 500
+export const BIG_EXPLOSION_TILE_THRESHOLD = 25
+export const BIG_EXPLOSION_WINDOW_MS = 700
 
 export type AudioCue = 'explosion' | 'explosion_qd' | 'death' | 'qd' | 'bonus' | 'big_explosion'
 
@@ -43,7 +43,7 @@ export function uniqueTilesInWindow(
 }
 
 export function crossedBigExplosionThreshold(wasOver: boolean, tileCount: number, threshold = BIG_EXPLOSION_TILE_THRESHOLD): boolean {
-  return (!wasOver) && tileCount > threshold
+  return (!wasOver) && tileCount >= threshold
 }
 
 export function collectPlayerAudioCues(previous: PlayerState, current: PlayerState): AudioCue[] {

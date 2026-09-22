@@ -29,21 +29,16 @@ from bm_params import (
 
 
 class TestBigExplosionWindow(unittest.TestCase):
-    def test_defaults_are_forty_tiles_in_500ms(self):
-        self.assertEqual(BIG_EXPLOSION_TILE_THRESHOLD, 40)
-        self.assertEqual(BIG_EXPLOSION_WINDOW_MS, 500)
-    def test_single_large_explosion_crosses_threshold(self):
-        over = BIG_EXPLOSION_TILE_THRESHOLD + 1
-        cells = [(i, 0) for i in range(over)]
-        events = [(1000, cells)]
-        self.assertEqual(count_unique_explosion_tiles(events, 1000, 1000), over)
-        self.assertTrue(crossed_big_explosion_threshold(False, over, BIG_EXPLOSION_TILE_THRESHOLD))
+    def test_defaults_are_25_tiles_in_700ms(self):
+        self.assertEqual(BIG_EXPLOSION_TILE_THRESHOLD, 25)
+        self.assertEqual(BIG_EXPLOSION_WINDOW_MS, 700)
 
-    def test_exactly_threshold_does_not_trigger(self):
+    def test_single_large_explosion_crosses_threshold(self):
         cells = [(i, 0) for i in range(BIG_EXPLOSION_TILE_THRESHOLD)]
         events = [(1000, cells)]
         self.assertEqual(count_unique_explosion_tiles(events, 1000, 1000), BIG_EXPLOSION_TILE_THRESHOLD)
-        self.assertFalse(crossed_big_explosion_threshold(False, BIG_EXPLOSION_TILE_THRESHOLD, BIG_EXPLOSION_TILE_THRESHOLD))
+        self.assertTrue(crossed_big_explosion_threshold(False, BIG_EXPLOSION_TILE_THRESHOLD, BIG_EXPLOSION_TILE_THRESHOLD))
+        self.assertFalse(crossed_big_explosion_threshold(False, BIG_EXPLOSION_TILE_THRESHOLD - 1, BIG_EXPLOSION_TILE_THRESHOLD))
 
     def test_tiles_outside_window_are_ignored(self):
         events = [
@@ -76,7 +71,7 @@ class TestBigExplosionWindow(unittest.TestCase):
         self.assertEqual(pruned, [])
         aged = count_unique_explosion_tiles(pruned, 2000, 1000)
         self.assertEqual(aged, 0)
-        was_over = aged > BIG_EXPLOSION_TILE_THRESHOLD
+        was_over = aged >= BIG_EXPLOSION_TILE_THRESHOLD
         fresh = [(2000, [(x, 1) for x in range(BIG_EXPLOSION_TILE_THRESHOLD + 1)])]
         count = count_unique_explosion_tiles(fresh, 2000, 1000)
         self.assertTrue(crossed_big_explosion_threshold(was_over, count, BIG_EXPLOSION_TILE_THRESHOLD))
@@ -141,14 +136,31 @@ class PlannedBlastAndHitboxTests(unittest.TestCase):
         self.assertTrue(is_player_in_planned_blast(5, 3, [Bomb()], board, 9, 9))
         self.assertFalse(is_player_in_planned_blast(4, 4, [Bomb()], board, 9, 9))
 
-    def test_explosion_hitbox_is_inner_half_cell(self):
+    def test_explosion_hitbox_is_inner_70_percent(self):
         x, y, w, h = explosion_cell_rect(3, 2, CELL_SIZE, EXPLOSION_COLLISION_SCALE)
-        self.assertEqual(EXPLOSION_COLLISION_SCALE, 0.5)
-        self.assertEqual(w, 50)
-        self.assertEqual(h, 50)
-        self.assertEqual(x, 325)
-        self.assertEqual(y, 225)
+        self.assertEqual(EXPLOSION_COLLISION_SCALE, 0.7)
+        self.assertAlmostEqual(w, 70)
+        self.assertAlmostEqual(h, 70)
+        self.assertAlmostEqual(x, 315)
+        self.assertAlmostEqual(y, 215)
         self.assertAlmostEqual(explosion_player_radius(CELL_SIZE, EXPLOSION_PLAYER_HIT_SCALE), 15.0)
+
+    def test_flame_arm_stops_at_last_cell_center(self):
+        from explosions import explosion_arm_pixel_length
+        reach = 3
+        flame = explosion_arm_pixel_length(1.0, reach, CELL_SIZE)
+        self.assertAlmostEqual(flame, reach * CELL_SIZE)
+        self.assertEqual(explosion_arm_pixel_length(1.0, 0, CELL_SIZE), 0.0)
+
+    def test_last_cell_kill_box_stops_at_center(self):
+        from explosions import explosion_cell_rect, explosion_tip_clip
+        cells = [(3, 3), (4, 3), (5, 3)]
+        clip = explosion_tip_clip(3, 3, 5, 3, cells)
+        self.assertEqual(clip, "right")
+        x, y, w, h = explosion_cell_rect(5, 3, CELL_SIZE, EXPLOSION_COLLISION_SCALE, clip_outward=clip)
+        self.assertAlmostEqual(x + w, 5 * CELL_SIZE + CELL_SIZE / 2.0)
+        cx, cy, cw, ch = explosion_cell_rect(3, 3, CELL_SIZE, EXPLOSION_COLLISION_SCALE)
+        self.assertAlmostEqual(cw, 70)
 
 
 if __name__ == "__main__":

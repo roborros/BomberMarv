@@ -164,9 +164,18 @@ def main():
         # Start logging thread for frontend
         threading.Thread(target=stream_reader, args=(frontend_process, "FRONTEND"), daemon=True).start()
 
-        lan_ip = detect_lan_ip()
         print("All services started. Press Ctrl+C to stop.")
-        print(f"Client URL (LAN): http://{lan_ip}:5173")
+        try:
+            from bm_paths import list_lan_ips
+            lan_ips = list_lan_ips()
+        except Exception:
+            lan_ips = [detect_lan_ip()]
+        print(f"Client URL (this PC): http://127.0.0.1:5173")
+        if lan_ips:
+            for ip in lan_ips:
+                print(f"Client URL (LAN): http://{ip}:5173")
+        else:
+            print("Client URL (LAN): not detected")
         
         # Keep main thread alive
         while True:

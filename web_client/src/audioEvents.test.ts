@@ -41,9 +41,9 @@ describe('audioEvents', () => {
   })
 
   it('crosses the big-explosion threshold once', () => {
-    expect(crossedBigExplosionThreshold(false, BIG_EXPLOSION_TILE_THRESHOLD + 1)).toBe(true)
+    expect(crossedBigExplosionThreshold(false, BIG_EXPLOSION_TILE_THRESHOLD)).toBe(true)
+    expect(crossedBigExplosionThreshold(false, BIG_EXPLOSION_TILE_THRESHOLD - 1)).toBe(false)
     expect(crossedBigExplosionThreshold(true, BIG_EXPLOSION_TILE_THRESHOLD + 10)).toBe(false)
-    expect(crossedBigExplosionThreshold(false, BIG_EXPLOSION_TILE_THRESHOLD)).toBe(false)
   })
 
   it('emits player audio cues for death, QD, and pickups', () => {

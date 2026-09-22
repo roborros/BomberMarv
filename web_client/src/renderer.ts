@@ -1,9 +1,9 @@
 import type { GameState, PlayerState, BombState, ExplosionState, PowerUpState } from './types';
 import { computeBoardSignature } from './boardHash';
-import { isPlayerInPlannedBlast } from './explosionVisual';
+import { isPlayerInPlannedBlast, explosionArmPixelLength } from './explosionVisual';
 import { buildWinStatRows } from './winStats';
 import { computeCanvasBackingStore } from './canvasScale';
-import { BOSS_COLOR, BOSS_NAME, BOSS_QUOTE, bossWinsLabel, championAnnouncement } from './championChallenge';
+import { BOSS_COLOR, BOSS_NAME, bossWinsLabel, championBossCardRect } from './championChallenge';
 
 // Constants matching Python host rendering
 const CELL_SIZE = 100;
@@ -95,6 +95,9 @@ export class Renderer {
         state.bombs.forEach(b => this.drawBomb(b, state.time));
         state.players.forEach(player => this.drawPlayer(player, state));
         state.explosions.forEach(e => this.drawExplosion(e, state.time));
+        if (state.state === 'get_ready') {
+            this.drawGetReady();
+        }
         if (state.state === 'champion') {
             this.drawChampionChallenge(state);
             this.drawWinStats(state);
@@ -339,11 +342,13 @@ export class Renderer {
             this.ctx.stroke();
         }
 
-        // Determine name
-        this.ctx.fillStyle = 'white';
-        this.ctx.font = `${Math.max(28, Math.floor(size * 0.48))}px Arial`;
-        this.ctx.textAlign = 'center';
-        this.ctx.fillText(player.name || `P${player.id}`, px, py - size / 2 - 5);
+        if (player.name) {
+            this.ctx.fillStyle = 'white';
+            const nameSize = Math.max(13, Math.min(26, Math.floor(size * 0.26)));
+            this.ctx.font = `${nameSize}px Arial`;
+            this.ctx.textAlign = 'center';
+            this.ctx.fillText(player.name, px, py - size / 2 - 5);
+        }
     }
 
     private drawBomb(bomb: BombState, currentTimeMs: number) {
@@ -408,10 +413,10 @@ export class Renderer {
             else if (y === cy && x > cx) rightMax = Math.max(rightMax, x - cx);
         }
 
-        const upLength = armFactor * upMax * CELL_SIZE;
-        const downLength = armFactor * downMax * CELL_SIZE;
-        const leftLength = armFactor * leftMax * CELL_SIZE;
-        const rightLength = armFactor * rightMax * CELL_SIZE;
+        const upLength = explosionArmPixelLength(armFactor, upMax, CELL_SIZE);
+        const downLength = explosionArmPixelLength(armFactor, downMax, CELL_SIZE);
+        const leftLength = explosionArmPixelLength(armFactor, leftMax, CELL_SIZE);
+        const rightLength = explosionArmPixelLength(armFactor, rightMax, CELL_SIZE);
 
         const centerSprite = explosion.quad_damage ? this.blastCenterQd : this.blastCenter;
         const armSprite = explosion.quad_damage ? this.blastArmQd : this.blastArm;
@@ -612,73 +617,50 @@ export class Renderer {
     private drawChampionChallenge(state: GameState) {
         const w = this.width;
         const h = this.height;
-        const bannerH = Math.floor(h * 0.38);
-        this.ctx.fillStyle = 'rgba(8, 10, 16, 0.55)';
-        this.ctx.fillRect(0, 0, w, bannerH);
+        const card = championBossCardRect(w, h);
+        this.ctx.fillStyle = 'rgb(24, 28, 38)';
+        this.roundRect(card.x, card.y, card.w, card.h, 14);
+        this.ctx.fill();
+        this.ctx.strokeStyle = 'rgb(196, 209, 228)';
+        this.ctx.lineWidth = 2;
+        this.roundRect(card.x, card.y, card.w, card.h, 14);
+        this.ctx.stroke();
 
-        const champion = state.players.find((p) => p.alive) || state.players[0];
-        const champName = champion?.name || 'Champion';
-        const champColor = champion?.color || [240, 214, 130];
-
-        this.ctx.textAlign = 'center';
-        this.ctx.textBaseline = 'top';
-        this.setUiFont(Math.max(22, Math.floor(h * 0.032)), true);
-        this.ctx.fillStyle = 'rgb(240, 214, 130)';
-        this.ctx.fillText('A champion emerges', w / 2, h * 0.02);
-
-        this.setUiFont(Math.max(18, Math.floor(h * 0.024)), true);
-        this.ctx.fillStyle = `rgb(${champColor[0]}, ${champColor[1]}, ${champColor[2]})`;
-        this.ctx.fillText(championAnnouncement(champName), w / 2, h * 0.055);
-
-        const champX = w * 0.28;
-        const bossX = w * 0.72;
-        const cy = bannerH * 0.58;
+        const bossR = Math.max(16, Math.floor(Math.min(card.w, card.h) * 0.16));
+        const bossX = card.x + card.w / 2;
+        const bossY = card.y + 12 + bossR;
         const portraitState: GameState = { ...state, bombs: [], explosions: [] };
-        const portraitScale = Math.max(1.4, Math.min(2.4, h / 720));
         this.ctx.save();
-        this.ctx.translate(champX, cy);
+        this.ctx.translate(bossX, bossY);
+        const portraitScale = Math.max(0.55, Math.min(0.85, bossR / 28));
         this.ctx.scale(portraitScale, portraitScale);
-        if (champion) {
-            this.drawPlayer({ ...champion, x: 0, y: 0, alive: true, direction: [1, 0], quad_damage: false }, portraitState);
-        }
-        this.ctx.restore();
-        this.ctx.save();
-        this.ctx.translate(bossX, cy);
-        this.ctx.scale(portraitScale * 1.2, portraitScale * 1.2);
         this.drawPlayer({
             id: 999,
-            name: BOSS_NAME,
+            name: '',
             x: 0,
             y: 0,
             color: BOSS_COLOR,
             alive: true,
-            direction: [-1, 0],
+            direction: [0, 1],
             quad_damage: false,
             death_anim_time: null,
         }, portraitState);
         this.ctx.restore();
 
-        const quote = `"${BOSS_QUOTE}"`;
-        this.setUiFont(Math.max(14, Math.floor(h * 0.016)), true);
-        const quoteW = Math.min(w * 0.42, this.ctx.measureText(quote).width + 36);
-        const quoteH = Math.max(32, Math.floor(h * 0.045));
-        const bubbleX = bossX - quoteW / 2;
-        const bubbleY = Math.max(8, cy - quoteH - 36);
-        this.ctx.fillStyle = 'rgb(24, 26, 32)';
-        this.roundRect(bubbleX, bubbleY, quoteW, quoteH, 12);
-        this.ctx.fill();
-        this.ctx.strokeStyle = 'rgb(210, 214, 230)';
-        this.ctx.lineWidth = 2;
-        this.roundRect(bubbleX, bubbleY, quoteW, quoteH, 12);
-        this.ctx.stroke();
-        this.ctx.fillStyle = 'rgb(236, 240, 248)';
-        this.ctx.textBaseline = 'middle';
-        this.ctx.fillText(quote, bossX, bubbleY + quoteH / 2, quoteW - 20);
-
+        this.ctx.textAlign = 'center';
         this.ctx.textBaseline = 'top';
-        this.setUiFont(Math.max(13, Math.floor(h * 0.014)));
+        this.setUiFont(Math.max(13, Math.floor(card.h * 0.1)), true);
+        this.ctx.fillStyle = 'rgb(236, 240, 248)';
+        this.ctx.fillText(BOSS_NAME, bossX, bossY + bossR + 6, card.w - 16);
+
+        this.setUiFont(Math.max(11, Math.floor(card.h * 0.07)), true);
+        this.ctx.fillStyle = 'rgb(210, 214, 230)';
+        this.ctx.fillText('Finally a worthy challenger,', bossX, bossY + bossR + 26, card.w - 18);
+        this.ctx.fillText('come and fight me!', bossX, bossY + bossR + 42, card.w - 18);
+
+        this.setUiFont(Math.max(10, Math.floor(card.h * 0.065)));
         this.ctx.fillStyle = 'rgb(186, 196, 210)';
-        this.ctx.fillText('Speed x1.4   ·   Fire 2   ·   Bombs 2   ·   +1 life', bossX, Math.min(bannerH - 18, cy + 42));
+        this.ctx.fillText('x1.4  ·  Fire 2  ·  Bombs 2  ·  +1 life', bossX, card.y + card.h - 22, card.w - 16);
         this.ctx.textAlign = 'left';
         this.ctx.textBaseline = 'alphabetic';
     }
@@ -921,6 +903,24 @@ export class Renderer {
                 this.fillClippedText(value, x, textY, col.width, rowH);
             }
         }
+    }
+
+    private drawGetReady() {
+        const bannerH = Math.max(56, Math.min(120, Math.floor(this.height * 0.10)));
+        const y = Math.floor((this.height - bannerH) / 2);
+        this.ctx.save();
+        this.ctx.fillStyle = 'rgba(12, 10, 18, 0.82)';
+        this.ctx.fillRect(0, y, this.width, bannerH);
+        this.ctx.fillStyle = 'rgb(212, 175, 55)';
+        this.ctx.fillRect(0, y, this.width, 2);
+        this.ctx.fillRect(0, y + bannerH - 2, this.width, 2);
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'middle';
+        const size = Math.max(28, Math.min(64, Math.floor(bannerH * 0.48)));
+        this.ctx.font = `bold ${size}px "Comic Sans MS", "Comic Sans", cursive`;
+        this.ctx.fillStyle = 'rgb(236, 120, 168)';
+        this.ctx.fillText('Get Ready!', this.width / 2, y + bannerH / 2);
+        this.ctx.restore();
     }
 
     private drawLeavePrompt(state: GameState) {

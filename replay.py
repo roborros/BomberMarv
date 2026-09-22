@@ -108,6 +108,25 @@ def hydrate_replay_snapshot(snap: dict) -> dict:
     }
 
 
+def replay_view_rect(
+    cam_x: int,
+    cam_y: int,
+    world_w: int,
+    world_h: int,
+    cell_size: int,
+    radius_cells: int,
+) -> Tuple[int, int, int, int]:
+    """Axis-aligned camera crop, clamped so edge deaths are not mostly empty."""
+    desired = max(cell_size, (2 * int(radius_cells) + 1) * int(cell_size))
+    view_w = min(desired, max(1, int(world_w)))
+    view_h = min(desired, max(1, int(world_h)))
+    x = int(cam_x) - view_w // 2
+    y = int(cam_y) - view_h // 2
+    x = max(0, min(x, int(world_w) - view_w))
+    y = max(0, min(y, int(world_h) - view_h))
+    return x, y, view_w, view_h
+
+
 def letterbox_dest(src_w: int, src_h: int, avail_w: int, avail_h: int) -> Tuple[int, int, int, int]:
     """Fit src into avail with uniform scale. Returns (dest_w, dest_h, offset_x, offset_y)."""
     if src_w <= 0 or src_h <= 0 or avail_w <= 0 or avail_h <= 0:
