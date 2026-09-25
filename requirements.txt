@@ -1,0 +1,11 @@
+pygame>=2.5
+numpy>=1.24
+psutil>=5.9
+websockets>=12
+aiohttp>=3.9
+Pillow>=10
+msgpack>=1.0
+
+# Optional LAN extras (the host still works without them):
+# aiortc>=1.9          # WebRTC data channels
+# PyInstaller>=6.0     # Windows folder build via compile_windows.py
