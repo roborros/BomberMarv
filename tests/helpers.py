@@ -30,6 +30,7 @@ def silence_sounds() -> None:
         "death_sound",
         "qd_sound",
         "mocny_stral_sound",
+        "fresh_meat_sound",
     )
     try:
         import bm_sounds

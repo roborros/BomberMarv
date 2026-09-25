@@ -1,7 +1,8 @@
 import type { ExplosionState, GameState, PlayerState } from './types'
 
-export const BIG_EXPLOSION_TILE_THRESHOLD = 25
+export const BIG_EXPLOSION_TILE_THRESHOLD = 50
 export const BIG_EXPLOSION_WINDOW_MS = 700
+export const BIG_EXPLOSION_VOLUME = 1
 
 export type AudioCue = 'explosion' | 'explosion_qd' | 'death' | 'qd' | 'bonus' | 'big_explosion'
 

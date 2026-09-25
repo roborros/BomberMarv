@@ -136,7 +136,8 @@ def automate_player(player, dt, board, bombs):
         player.automation_direction = random.choice(possible_directions)
     
     # Simulate the movement using the automation direction.
-    spd = player.speed if not player.quad_damage else int(player.speed * QUAD_DAMAGE_SPEEDUP)
+    import bm_settings
+    spd = player.speed if not player.quad_damage else int(player.speed * bm_settings.quad_speedup())
     original_pos = player.pos.copy()
     # Compute the change in position (dt is in ms)
     delta_move = player.automation_direction * spd * (dt / 1000.0)

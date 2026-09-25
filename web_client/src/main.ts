@@ -48,6 +48,7 @@ import { decodeIncomingWsData, encodeWsFrame, preferredWsCodec, type WsCodec } f
 import { samplePresentAgeMs, sampleRttMs } from './latency'
 import {
   BIG_EXPLOSION_TILE_THRESHOLD,
+  BIG_EXPLOSION_VOLUME,
   BIG_EXPLOSION_WINDOW_MS,
   collectNewExplosionKeys,
   collectPlayerAudioCues,
@@ -185,6 +186,7 @@ const SOUND_BONUS = '/sounds/pick-bonus.wav'
 const SOUND_DEATH = '/sounds/death.wav'
 const SOUND_QD = '/sounds/quad_damage.mp3'
 const SOUND_BIG_EXPLOSION = '/sounds/mocny_stral.mp3'
+const SOUND_FRESH_MEAT = '/sounds/fresh_meat.wav'
 
 const audioCache = new Map<string, HTMLAudioElement>()
 
@@ -335,7 +337,7 @@ function ensureAudioUnlocked() {
   if (audioUnlocked) return
   audioUnlocked = true
   // Prime audio elements after first user gesture.
-  ;[SOUND_EXPLOSION, SOUND_EXPLOSION_QD, SOUND_BONUS, SOUND_DEATH, SOUND_QD, SOUND_BIG_EXPLOSION].forEach((src) => {
+  ;[SOUND_EXPLOSION, SOUND_EXPLOSION_QD, SOUND_BONUS, SOUND_DEATH, SOUND_QD, SOUND_BIG_EXPLOSION, SOUND_FRESH_MEAT].forEach((src) => {
     if (!audioCache.has(src)) {
       const a = new Audio(src)
       a.preload = 'auto'
@@ -368,11 +370,21 @@ function resetBigExplosionTracking() {
   bigExplosionSoundTimers = []
 }
 
-function scheduleBigExplosionSound() {
+function loudHit(state: GameState) {
+  const hit = state.big_blast
+  return {
+    tiles: hit?.tiles ?? BIG_EXPLOSION_TILE_THRESHOLD,
+    windowMs: hit?.window_ms ?? BIG_EXPLOSION_WINDOW_MS,
+    delayMs: hit?.delay_ms ?? BIG_EXPLOSION_SOUND_DELAY_MS,
+    volume: hit?.volume ?? BIG_EXPLOSION_VOLUME,
+  }
+}
+
+function scheduleBigExplosionSound(delayMs: number, volume: number) {
   const id = window.setTimeout(() => {
     bigExplosionSoundTimers = bigExplosionSoundTimers.filter((timerId) => timerId !== id)
-    playSound(SOUND_BIG_EXPLOSION, 0.4)
-  }, BIG_EXPLOSION_SOUND_DELAY_MS)
+    playSound(SOUND_BIG_EXPLOSION, volume)
+  }, delayMs)
   bigExplosionSoundTimers.push(id)
 }
 
@@ -391,17 +403,18 @@ function processAudioEvents(previous: GameState | null, current: GameState) {
   }
   knownExplosionKeys = newExplosionKeys
 
-  const cutoff = current.time - BIG_EXPLOSION_WINDOW_MS
+  const hit = loudHit(current)
+  const cutoff = current.time - hit.windowMs
   recentExplosionEvents = recentExplosionEvents.filter((ev) => ev.startTime >= cutoff)
-  const agedCount = uniqueTilesInWindow(recentExplosionEvents, current.time)
-  bigExplosionOverThreshold = agedCount >= BIG_EXPLOSION_TILE_THRESHOLD
+  const agedCount = uniqueTilesInWindow(recentExplosionEvents, current.time, hit.windowMs)
+  bigExplosionOverThreshold = agedCount >= hit.tiles
   if (newlySeen.length) {
     recentExplosionEvents.push(...newlySeen)
-    const tileCount = uniqueTilesInWindow(recentExplosionEvents, current.time)
-    if (crossedBigExplosionThreshold(bigExplosionOverThreshold, tileCount)) {
-      scheduleBigExplosionSound()
+    const tileCount = uniqueTilesInWindow(recentExplosionEvents, current.time, hit.windowMs)
+    if (crossedBigExplosionThreshold(bigExplosionOverThreshold, tileCount, hit.tiles)) {
+      scheduleBigExplosionSound(hit.delayMs, hit.volume)
     }
-    bigExplosionOverThreshold = tileCount >= BIG_EXPLOSION_TILE_THRESHOLD
+    bigExplosionOverThreshold = tileCount >= hit.tiles
   }
 
   if (!previous) return
@@ -414,6 +427,9 @@ function processAudioEvents(previous: GameState | null, current: GameState) {
       else if (cue === 'qd') playSound(SOUND_QD, 0.12)
       else if (cue === 'bonus') playSound(SOUND_BONUS, 0.1)
     }
+    const voiceUntil = p.voice_until ?? 0
+    const prevVoice = prev.voice_until ?? 0
+    if (voiceUntil > current.time && voiceUntil !== prevVoice) playSound(SOUND_FRESH_MEAT, 0.9)
   }
 }
 

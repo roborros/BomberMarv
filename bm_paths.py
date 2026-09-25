@@ -21,11 +21,22 @@ def resource_path(*parts: str) -> str:
     return os.path.join(app_root(), *parts)
 
 
-def user_log_path(name: str = "ws_server.log") -> str:
-    """Rotating WS logs for the packaged exe; script runs still use the cwd file."""
+def user_data_dir() -> str:
     folder = os.path.join(os.environ.get("LOCALAPPDATA") or app_root(), "BomberMarv")
     os.makedirs(folder, exist_ok=True)
-    return os.path.join(folder, name)
+    return folder
+
+
+def user_log_path(name: str = "ws_server.log") -> str:
+    """Rotating WS logs for the packaged exe; script runs still use the cwd file."""
+    return os.path.join(user_data_dir(), name)
+
+
+def user_settings_path() -> str:
+    override = os.environ.get("BOMBERMARV_SETTINGS")
+    if override:
+        return override
+    return os.path.join(user_data_dir(), "settings.json")
 
 
 def find_client_static_dir() -> str | None:

@@ -319,6 +319,8 @@ if __name__ == "__main__":
     last_hud_metrics_ms = [-1]
 
     def simulate_step(step_ms):
+        # Pump keys before the sim step so Alt+K+L is visible in the same frame.
+        theGame.handle_window_events()
         step_started = time.perf_counter()
         runtime_metrics["sim_tick"] += 1
         current_tick = int(runtime_metrics["sim_tick"])

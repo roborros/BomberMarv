@@ -569,6 +569,63 @@ class TestAIController(unittest.TestCase):
         _, place = think_ai(ai, game)
         self.assertTrue(place)
 
+    def test_late_game_normal_bombs_a_far_line_and_walks_to_a_block(self):
+        board = [
+            [INDESTRUCTIBLE] * 9,
+            [INDESTRUCTIBLE, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE] * 9,
+        ]
+        ai = _make_mock_player(1, 1)
+        ai.fire_power = 6
+        ai.is_ai = True
+        ai.ai_personality = "normal"
+        opp = _make_mock_player(7, 1)
+        game = _make_mock_game(board, players=[ai, opp])
+        game.destructible_at_round_start = 40
+        _, place = think_ai(ai, game)
+        self.assertTrue(place)
+
+        walker = _make_mock_player(1, 1)
+        walker.fire_power = 1
+        walker.is_ai = True
+        walker.ai_personality = "normal"
+        game = _make_mock_game(board, players=[walker, opp])
+        game.destructible_at_round_start = 40
+        step, place = think_ai(walker, game)
+        self.assertFalse(place)
+        self.assertEqual(walker._ai_goal_kind, "block")
+        self.assertEqual(walker._ai_goal_cell, (6, 1))
+        self.assertEqual(step, (1, 0))
+
+    def test_late_game_cautious_blocks_from_range_and_still_runs_when_close(self):
+        board = [
+            [INDESTRUCTIBLE] * 9,
+            [INDESTRUCTIBLE, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE] * 9,
+        ]
+        ai = _make_mock_player(1, 1)
+        ai.fire_power = 6
+        ai.is_ai = True
+        ai.ai_personality = "cautious"
+        opp = _make_mock_player(7, 1)
+        game = _make_mock_game(board, players=[ai, opp])
+        game.destructible_at_round_start = 40
+        _, place = think_ai(ai, game)
+        self.assertTrue(place)
+
+        ai = _make_mock_player(1, 1)
+        ai.fire_power = 2
+        ai.is_ai = True
+        ai.ai_personality = "cautious"
+        opp = _make_mock_player(4, 1)
+        game = _make_mock_game(board, players=[ai, opp])
+        game.destructible_at_round_start = 40
+        step, place = think_ai(ai, game)
+        self.assertFalse(place)
+        self.assertNotEqual(step, (1, 0))
+
     def test_quad_damage_preferred_over_closer_bomb_powerup(self):
         board = [
             [INDESTRUCTIBLE] * 7,

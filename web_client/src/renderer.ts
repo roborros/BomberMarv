@@ -3,7 +3,7 @@ import { computeBoardSignature } from './boardHash';
 import { isPlayerInPlannedBlast, explosionArmPixelLength } from './explosionVisual';
 import { buildWinStatRows } from './winStats';
 import { computeCanvasBackingStore } from './canvasScale';
-import { BOSS_COLOR, BOSS_NAME, bossWinsLabel, championBossCardRect } from './championChallenge';
+import { BOSS_COLOR, BOSS_NAME, BOMBER_TOM_COLOR, BOMBER_TOM_NAME, BOMBER_TOM_QUOTE, MARV_KILLER_TITLE, bossResultTitle, championBossCardRect, inviteQuoteLines, isMarvKillerWin, showsBomberTomInvite } from './championChallenge';
 
 // Constants matching Python host rendering
 const CELL_SIZE = 100;
@@ -103,6 +103,11 @@ export class Renderer {
             this.drawWinStats(state);
         } else if (state.state === 'win' || state.state === 'boss_result') {
             this.drawWinStats(state);
+            if (state.state === 'boss_result' && isMarvKillerWin(state.boss_fight_winner?.title)) {
+                this.drawMarvKillerBanner(state);
+            } else if (state.state === 'boss_result' && showsBomberTomInvite(state.result_prompt)) {
+                this.drawBrabiInvite(state);
+            }
         }
         this.drawLeavePrompt(state);
         const renderDurationMs = performance.now() - renderStart;
@@ -213,8 +218,13 @@ export class Renderer {
         let px = player.x * SCALE;
         let py = player.y * SCALE;
 
-        const size = (PYTHON_CELL_SIZE * 0.85) * SCALE; // PLAYER_DRAW_SCALE = 0.85
+        const drawScale = player.draw_scale && player.draw_scale > 0 ? player.draw_scale : 1;
+        const size = (PYTHON_CELL_SIZE * 0.85) * SCALE * drawScale; // PLAYER_DRAW_SCALE = 0.85
         const [dx, dy] = player.direction;
+
+        if (player.sprite === 'brabi') {
+            this.drawBrabiGlow(px, py, size / 2, currentTimeMs);
+        }
 
         const scared = isPlayerInPlannedBlast(player, state.bombs || [], state.board || [])
 
@@ -319,6 +329,11 @@ export class Renderer {
             this.ctx.fillRect(px - mouthW, mouthY - 1, mouthW * 2, 2);
         }
 
+        if (player.sprite === 'cleaver') {
+            const chopping = (player.cleaver_swing_until ?? 0) > currentTimeMs;
+            this.drawCleaver(px, py, size / 2, currentTimeMs, isMoving || chopping);
+        }
+
         if (player.quad_damage) {
             const pulse = 1 + 0.1 * Math.sin(2 * Math.PI * (currentTimeMs / 500));
             const rectSize = (size + 10) * pulse;
@@ -348,6 +363,122 @@ export class Renderer {
             this.ctx.font = `${nameSize}px Arial`;
             this.ctx.textAlign = 'center';
             this.ctx.fillText(player.name, px, py - size / 2 - 5);
+        }
+        const voiceUntil = player.voice_until ?? 0;
+        if (voiceUntil > currentTimeMs) {
+            this.ctx.fillStyle = 'rgb(255, 230, 160)';
+            this.ctx.font = `bold ${Math.max(16, Math.floor(size * 0.28))}px Arial`;
+            this.ctx.textAlign = 'center';
+            this.ctx.fillText('Fresh meat!', px, py - size / 2 - 28);
+        }
+    }
+
+    private drawBrabiGlow(px: number, py: number, radius: number, now: number) {
+        const period = 1400;
+        const phase = (now % period) / period;
+        if (phase > 0.42) return;
+        const strength = Math.sin((phase / 0.42) * Math.PI);
+        const glowR = radius * (1.2 + 0.9 * strength);
+        this.ctx.save();
+        this.ctx.fillStyle = `rgba(40, 255, 110, ${0.18 + 0.45 * strength})`;
+        this.ctx.beginPath();
+        this.ctx.arc(px, py, glowR, 0, Math.PI * 2);
+        this.ctx.fill();
+        this.ctx.strokeStyle = `rgba(210, 255, 220, ${0.35 + 0.5 * strength})`;
+        this.ctx.lineWidth = 3;
+        this.ctx.beginPath();
+        this.ctx.arc(px, py, Math.max(2, glowR * 0.55), 0, Math.PI * 2);
+        this.ctx.stroke();
+        this.ctx.restore();
+    }
+
+    private drawCleaver(px: number, py: number, radius: number, now: number, moving: boolean) {
+        const base = 0.18;
+        const swing = moving ? Math.sin(now / 80) * 0.38 : (Math.floor(now / 3200) % 2 === 0 && (now % 3200) < 460 ? Math.sin(now / 70) * 0.5 : 0.16);
+        const angle = base + swing;
+        const handX = px + radius * 0.88;
+        const handY = py + radius * 0.02;
+        const rot = (x: number, y: number) => ({
+            x: handX + x * Math.cos(angle) - y * Math.sin(angle),
+            y: handY + x * Math.sin(angle) + y * Math.cos(angle),
+        });
+        const poly = (pts: { x: number; y: number }[], fill: string, stroke?: string, width = 2) => {
+            this.ctx.beginPath();
+            this.ctx.moveTo(pts[0].x, pts[0].y);
+            for (const p of pts.slice(1)) this.ctx.lineTo(p.x, p.y);
+            this.ctx.closePath();
+            this.ctx.fillStyle = fill;
+            this.ctx.fill();
+            if (stroke) {
+                this.ctx.strokeStyle = stroke;
+                this.ctx.lineWidth = width;
+                this.ctx.stroke();
+            }
+        };
+        const fistR = Math.max(3, radius * 0.18);
+        this.ctx.fillStyle = 'rgb(48, 48, 54)';
+        this.ctx.beginPath();
+        this.ctx.arc(handX, handY, fistR, 0, Math.PI * 2);
+        this.ctx.fill();
+        this.ctx.strokeStyle = 'rgb(24, 24, 28)';
+        this.ctx.lineWidth = 1;
+        this.ctx.stroke();
+        const handleLen = radius * 0.42;
+        const bladeW = radius * 1.28;
+        const bladeH = radius * 0.86;
+        const grip = Math.max(2.2, radius * 0.07);
+        poly([
+            rot(0, -grip * 0.42), rot(handleLen, -grip * 0.42), rot(handleLen, grip * 0.42), rot(0, grip * 0.42),
+        ], 'rgb(110, 68, 36)', 'rgb(62, 36, 18)', 1);
+        const bx0 = handleLen * 0.78;
+        poly([
+            rot(bx0, -bladeH * 0.26),
+            rot(bx0 + bladeW * 0.18, -bladeH * 0.58),
+            rot(bx0 + bladeW, -bladeH * 0.46),
+            rot(bx0 + bladeW, bladeH * 0.36),
+            rot(bx0 + bladeW * 0.08, bladeH * 0.16),
+        ], 'rgb(176, 184, 192)', 'rgb(52, 56, 64)', Math.max(1, radius * 0.045));
+        this.ctx.strokeStyle = 'rgb(226, 230, 236)';
+        this.ctx.lineWidth = Math.max(1, radius * 0.04);
+        this.ctx.beginPath();
+        const shineA = rot(bx0 + bladeW * 0.16, -bladeH * 0.34);
+        const shineB = rot(bx0 + bladeW * 0.78, -bladeH * 0.42);
+        this.ctx.moveTo(shineA.x, shineA.y);
+        this.ctx.lineTo(shineB.x, shineB.y);
+        this.ctx.stroke();
+        poly([
+            rot(bx0 + bladeW * 0.22, -bladeH * 0.08),
+            rot(bx0 + bladeW * 0.58, -bladeH * 0.30),
+            rot(bx0 + bladeW * 0.84, -bladeH * 0.06),
+            rot(bx0 + bladeW * 0.70, bladeH * 0.18),
+            rot(bx0 + bladeW * 0.34, bladeH * 0.10),
+        ], 'rgb(132, 16, 20)');
+        poly([
+            rot(bx0 + bladeW * 0.48, -bladeH * 0.02),
+            rot(bx0 + bladeW * 0.76, bladeH * 0.08),
+            rot(bx0 + bladeW * 0.62, bladeH * 0.22),
+            rot(bx0 + bladeW * 0.40, bladeH * 0.06),
+        ], 'rgb(78, 8, 12)');
+        this.ctx.fillStyle = 'rgb(132, 16, 20)';
+        for (const [ox, oy, scale] of [
+            [bx0 + bladeW * 0.70, bladeH * 0.42, 0.11],
+            [bx0 + bladeW * 0.92, bladeH * 0.34, 0.08],
+            [bx0 + bladeW * 0.48, bladeH * 0.30, 0.07],
+        ] as Array<[number, number, number]>) {
+            const drop = rot(ox, oy);
+            const tail = rot(ox - bladeW * 0.02, oy - bladeH * 0.16);
+            const sideA = rot(ox - radius * 0.06, oy);
+            const sideB = rot(ox + radius * 0.05, oy - bladeH * 0.02);
+            this.ctx.beginPath();
+            this.ctx.moveTo(tail.x, tail.y);
+            this.ctx.lineTo(sideA.x, sideA.y);
+            this.ctx.lineTo(drop.x, drop.y);
+            this.ctx.lineTo(sideB.x, sideB.y);
+            this.ctx.closePath();
+            this.ctx.fill();
+            this.ctx.beginPath();
+            this.ctx.arc(drop.x, drop.y, Math.max(2, radius * scale), 0, Math.PI * 2);
+            this.ctx.fill();
         }
     }
 
@@ -615,6 +746,44 @@ export class Renderer {
     }
 
     private drawChampionChallenge(state: GameState) {
+        this.drawBossInvite(state, {
+            name: BOSS_NAME,
+            color: BOSS_COLOR,
+            quoteLines: inviteQuoteLines('Finally a worthy challenger, come and fight me!'),
+            stats: 'x1.4  ·  Fire 2  ·  Bombs 2  ·  +1 life',
+            sprite: 'cleaver',
+            drawScale: 1,
+            backdrop: 'rgb(28, 28, 34)',
+            ring: 'rgb(90, 90, 104)',
+            radiusScale: 1,
+        });
+    }
+
+    private drawBrabiInvite(state: GameState) {
+        this.drawBossInvite(state, {
+            name: BOMBER_TOM_NAME,
+            color: BOMBER_TOM_COLOR,
+            quoteLines: inviteQuoteLines(BOMBER_TOM_QUOTE),
+            stats: 'x2  ·  Fire 5  ·  Bombs 5  ·  +2 lives',
+            sprite: 'brabi',
+            drawScale: 1.5,
+            backdrop: 'rgb(16, 42, 28)',
+            ring: 'rgb(36, 200, 84)',
+            radiusScale: 1,
+        });
+    }
+
+    private drawBossInvite(state: GameState, invite: {
+        name: string
+        color: [number, number, number]
+        quoteLines: string[]
+        stats: string
+        sprite: string
+        drawScale: number
+        backdrop: string
+        ring: string
+        radiusScale: number
+    }) {
         const w = this.width;
         const h = this.height;
         const card = championBossCardRect(w, h);
@@ -626,41 +795,92 @@ export class Renderer {
         this.roundRect(card.x, card.y, card.w, card.h, 14);
         this.ctx.stroke();
 
-        const bossR = Math.max(16, Math.floor(Math.min(card.w, card.h) * 0.16));
+        const bossR = Math.max(16, Math.floor(Math.min(card.w, card.h) * 0.16 * invite.radiusScale));
         const bossX = card.x + card.w / 2;
         const bossY = card.y + 12 + bossR;
+        this.ctx.fillStyle = invite.backdrop;
+        this.ctx.beginPath();
+        this.ctx.arc(bossX, bossY, bossR * 1.18, 0, Math.PI * 2);
+        this.ctx.fill();
+        this.ctx.strokeStyle = invite.ring;
+        this.ctx.lineWidth = 2;
+        this.ctx.stroke();
         const portraitState: GameState = { ...state, bombs: [], explosions: [] };
         this.ctx.save();
         this.ctx.translate(bossX, bossY);
         const portraitScale = Math.max(0.55, Math.min(0.85, bossR / 28));
         this.ctx.scale(portraitScale, portraitScale);
         this.drawPlayer({
-            id: 999,
+            id: 998,
             name: '',
             x: 0,
             y: 0,
-            color: BOSS_COLOR,
+            color: invite.color,
             alive: true,
             direction: [0, 1],
             quad_damage: false,
             death_anim_time: null,
+            sprite: invite.sprite,
+            draw_scale: invite.drawScale,
         }, portraitState);
         this.ctx.restore();
 
         this.ctx.textAlign = 'center';
         this.ctx.textBaseline = 'top';
-        this.setUiFont(Math.max(13, Math.floor(card.h * 0.1)), true);
+        const nameSize = Math.max(28, Math.floor(card.h * 0.1));
+        const quoteSize = Math.max(22, Math.floor(card.h * 0.07));
+        const statSize = Math.max(20, Math.floor(card.h * 0.065));
+        this.setUiFont(nameSize, true);
         this.ctx.fillStyle = 'rgb(236, 240, 248)';
-        this.ctx.fillText(BOSS_NAME, bossX, bossY + bossR + 6, card.w - 16);
+        this.ctx.fillText(invite.name, bossX, bossY + bossR + 8, card.w - 24);
 
-        this.setUiFont(Math.max(11, Math.floor(card.h * 0.07)), true);
+        this.setUiFont(quoteSize, true);
         this.ctx.fillStyle = 'rgb(210, 214, 230)';
-        this.ctx.fillText('Finally a worthy challenger,', bossX, bossY + bossR + 26, card.w - 18);
-        this.ctx.fillText('come and fight me!', bossX, bossY + bossR + 42, card.w - 18);
+        let quoteY = bossY + bossR + nameSize + 10;
+        for (const line of invite.quoteLines) {
+            this.ctx.fillText(line, bossX, quoteY, card.w - 28);
+            quoteY += quoteSize + 6;
+        }
 
-        this.setUiFont(Math.max(10, Math.floor(card.h * 0.065)));
+        this.setUiFont(statSize);
         this.ctx.fillStyle = 'rgb(186, 196, 210)';
-        this.ctx.fillText('x1.4  ·  Fire 2  ·  Bombs 2  ·  +1 life', bossX, card.y + card.h - 22, card.w - 16);
+        this.ctx.fillText(invite.stats, bossX, card.y + card.h - statSize - 16, card.w - 24);
+        this.ctx.textAlign = 'left';
+        this.ctx.textBaseline = 'alphabetic';
+    }
+
+    private drawMarvKillerBanner(state: GameState) {
+        const w = this.width;
+        const h = this.height;
+        const cardW = Math.min(920, Math.max(480, Math.floor(w * 0.62)));
+        const cardH = Math.min(250, Math.max(168, Math.floor(h * 0.26)));
+        const x = Math.floor((w - cardW) / 2);
+        const y = Math.max(14, Math.floor(h * 0.03));
+        this.ctx.fillStyle = 'rgb(28, 20, 8)';
+        this.roundRect(x, y, cardW, cardH, 18);
+        this.ctx.fill();
+        this.ctx.strokeStyle = 'rgb(232, 196, 74)';
+        this.ctx.lineWidth = 3;
+        this.roundRect(x, y, cardW, cardH, 18);
+        this.ctx.stroke();
+        const trophy = Math.max(26, Math.min(44, Math.floor(cardH / 6)));
+        this.drawTrophyIcon(x + cardW / 2 - trophy / 2, y + 14, trophy);
+
+        const name = state.boss_fight_winner?.name || 'Champion';
+        const titleSize = Math.max(36, Math.min(64, Math.floor(cardH / 4)));
+        const nameSize = Math.max(22, Math.min(34, Math.floor(cardH / 8)));
+        const lineSize = Math.max(18, Math.min(26, Math.floor(cardH / 10)));
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'top';
+        this.setUiFont(titleSize, true);
+        this.ctx.fillStyle = 'rgb(255, 214, 90)';
+        this.ctx.fillText(MARV_KILLER_TITLE, x + cardW / 2, y + 18 + trophy, cardW - 32);
+        this.setUiFont(nameSize, true);
+        this.ctx.fillStyle = 'rgb(248, 244, 230)';
+        this.ctx.fillText(name, x + cardW / 2, y + 24 + trophy + titleSize, cardW - 32);
+        this.setUiFont(lineSize);
+        this.ctx.fillStyle = 'rgb(232, 214, 170)';
+        this.ctx.fillText(`defeated ${BOSS_NAME} and ${BOMBER_TOM_NAME}.`, x + cardW / 2, y + cardH - lineSize - 16, cardW - 32);
         this.ctx.textAlign = 'left';
         this.ctx.textBaseline = 'alphabetic';
     }
@@ -782,8 +1002,9 @@ export class Renderer {
         let winnerLabel = 'No one wins!'
         if (state.state === 'boss_result') {
             const bossWinner = state.boss_fight_winner
-            if (!bossWinner) winnerLabel = 'Draw!'
-            else winnerLabel = bossWinsLabel(!!bossWinner.is_ai, bossWinner.name)
+            winnerLabel = isMarvKillerWin(bossWinner?.title)
+                ? 'You win'
+                : bossResultTitle(!!bossWinner, !!bossWinner?.is_ai)
         } else if (state.state === 'champion' && winnerPlayer) {
             winnerLabel = `Champion: ${winnerPlayer.name}`
         } else if (winnerPlayer) {
@@ -841,15 +1062,26 @@ export class Renderer {
         this.ctx.textBaseline = 'top';
 
         this.setUiFont(winnerSize, true);
-        this.ctx.fillStyle = winnerPlayer && winnerPlayer.color.length >= 3
-            ? `rgb(${winnerPlayer.color[0]}, ${winnerPlayer.color[1]}, ${winnerPlayer.color[2]})`
-            : 'white';
+        const threshold = state.trophy_win_threshold ?? 3
+        const prompt = state.result_prompt ? `   ·   ${state.result_prompt}` : ''
+        const killerWin = state.state === 'boss_result' && isMarvKillerWin(state.boss_fight_winner?.title)
+        const killerName = state.boss_fight_winner?.name || 'Champion'
+        const caption = killerWin
+            ? `${killerName} earns the title ${MARV_KILLER_TITLE}.   ·   ${state.result_prompt || 'Enter: back to the lobby'}`
+            : state.state === 'boss_result'
+            ? (state.result_prompt || 'Enter: back to the lobby')
+            : `Match totals until ${threshold} trophies${prompt}`
+        this.ctx.fillStyle = killerWin
+            ? 'rgb(255, 214, 90)'
+            : state.state === 'boss_result'
+            ? (state.boss_fight_winner?.is_ai ? 'rgb(255, 96, 88)' : state.boss_fight_winner ? 'rgb(88, 220, 120)' : 'rgb(220, 224, 232)')
+            : (winnerPlayer && winnerPlayer.color.length >= 3
+                ? `rgb(${winnerPlayer.color[0]}, ${winnerPlayer.color[1]}, ${winnerPlayer.color[2]})`
+                : 'white')
         this.fillClippedText(fittedWinner, panelX + pad, panelY + pad, tableWidth, winnerH);
         this.setUiFont(captionSize);
         this.ctx.fillStyle = 'rgb(186, 196, 210)';
-        const threshold = state.trophy_win_threshold ?? 3
-        const prompt = state.result_prompt ? `   ·   ${state.result_prompt}` : ''
-        this.fillClippedText(`Match totals until ${threshold} trophies${prompt}`, panelX + pad, panelY + pad + winnerH, tableWidth, captionH)
+        this.fillClippedText(caption, panelX + pad, panelY + pad + winnerH, tableWidth, captionH)
 
         const tableTop = panelY + pad + winnerH + captionH;
         const lineH = Math.floor(fontSize * 1.12);

@@ -7,7 +7,8 @@ import {
   explosionEventKey,
   shouldResetBigExplosionTracking,
   uniqueTilesInWindow,
-  BIG_EXPLOSION_TILE_THRESHOLD
+  BIG_EXPLOSION_TILE_THRESHOLD,
+  BIG_EXPLOSION_VOLUME
 } from './audioEvents'
 import { samplePlayer, sampleState } from './testFixtures'
 
@@ -41,6 +42,8 @@ describe('audioEvents', () => {
   })
 
   it('crosses the big-explosion threshold once', () => {
+    expect(BIG_EXPLOSION_TILE_THRESHOLD).toBe(50)
+    expect(BIG_EXPLOSION_VOLUME).toBe(1)
     expect(crossedBigExplosionThreshold(false, BIG_EXPLOSION_TILE_THRESHOLD)).toBe(true)
     expect(crossedBigExplosionThreshold(false, BIG_EXPLOSION_TILE_THRESHOLD - 1)).toBe(false)
     expect(crossedBigExplosionThreshold(true, BIG_EXPLOSION_TILE_THRESHOLD + 10)).toBe(false)

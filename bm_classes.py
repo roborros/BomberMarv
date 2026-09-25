@@ -5,7 +5,7 @@ from lib_collisions import *
 from lib_grid import *
 from bm_sounds import *
 from bm_drawing import *
-from input_abstraction import get_pressed_keys, is_key_pressed, Keys
+from input_abstraction import get_pressed_keys, is_key_pressed, noted_alt_down, noted_key_down, Keys
 from timing_abstraction import get_ticks, Clock
 from frontend import FrontendManager
 from backend_game_logic import BackendGameLogic
@@ -21,6 +21,7 @@ from explosions import (
 )
 from powerups import choose_death_bonus_effect
 from replay import build_replay_snapshot, freeze_kill_cam_clip
+import bm_settings
 
 
 
@@ -32,11 +33,11 @@ class Player:
                                         grid_y * CELL_SIZE + CELL_SIZE // 2], dtype=np.float64)
         self.color = color
         self.controls = controls
-        self.bomb_capacity = 1
-        self.fire_power = 1
+        self.bomb_capacity = int(bm_settings.get("start_bombs"))
+        self.fire_power = int(bm_settings.get("start_fire"))
         self.active_bombs = 0
         self.alive = True
-        self.speed = PLAYER_SPEED
+        self.speed = bm_settings.player_speed()
         self.trophies = 0
         self.draw_radius = int(CELL_SIZE * PLAYER_DRAW_SCALE / 2)
         self.collision_radius = int(CELL_SIZE * PLAYER_COLLISION_SCALE / 2)
@@ -168,13 +169,13 @@ class Player:
                 
                 if is_cardinal:
                     # Try a test move in the desired direction
-                    spd = self.speed if not self.quad_damage else int(self.speed * QUAD_DAMAGE_SPEEDUP)
+                    spd = self.speed if not self.quad_damage else int(self.speed * bm_settings.quad_speedup())
                     test_pos = self.pos + original_direction * spd * (dt / 1000.0)
                     
                     # Temporarily set position to test for collisions
                     original_actual_pos = self.pos.copy()
                     self.pos = test_pos
-                    would_collide = self.collides_with_walls(board) or self.collides_with_bombs(bombs, original_actual_pos)
+                    would_collide = self._movement_blocked(board, bombs, original_actual_pos, game)
                     self.pos = original_actual_pos  # Restore position
                     
                     # If the direct movement would be blocked, apply corner sliding
@@ -214,7 +215,7 @@ class Player:
             self._bomb_key_held = bomb_down
 
         original_pos = self.pos.copy()
-        spd = self.speed if not self.quad_damage else int(self.speed * QUAD_DAMAGE_SPEEDUP)
+        spd = self.speed if not self.quad_damage else int(self.speed * bm_settings.quad_speedup())
         self.pos = self.pos + direction * spd * (dt / 1000.0)
 
         # Update bomb ownership if the player has left their bomb cell.
@@ -224,15 +225,15 @@ class Player:
                     bomb.owner_left = True
 
         # Use our new collision check.
-        if self.collides_with_walls(board) or self.collides_with_bombs(bombs, original_pos):
+        if self._movement_blocked(board, bombs, original_pos, game):
             # Try moving only along x
             self.pos = original_pos + np.array([direction[0] * spd * (dt / 1000.0), 0], dtype=np.float64)
-            if not (self.collides_with_walls(board) or self.collides_with_bombs(bombs, original_pos)):
+            if not self._movement_blocked(board, bombs, original_pos, game):
                 pass  # x-only succeeded
             else:
                 # Try moving only along y
                 self.pos = original_pos + np.array([0, direction[1] * spd * (dt / 1000.0)], dtype=np.float64)
-                if not (self.collides_with_walls(board) or self.collides_with_bombs(bombs, original_pos)):
+                if not self._movement_blocked(board, bombs, original_pos, game):
                     pass  # y-only succeeded
                 else:
                     # Both attempts failed, revert.
@@ -250,24 +251,52 @@ class Player:
             self.drop_bomb(bombs, current_time, game=game)
 
         # Handle quad damage duration.
-        if self.quad_damage and current_time - self.quad_damage_start_time > QUAD_DAMAGE_TIME * 1000:
+        if self.quad_damage and current_time - self.quad_damage_start_time > bm_settings.get("quad_time_s") * 1000:
             self.quad_damage = False
-            self.bomb_capacity -= QUAD_DAMAGE_POWER
-            self.fire_power -= QUAD_DAMAGE_POWER
+            bonus = int(bm_settings.get("quad_power"))
+            self.bomb_capacity -= bonus
+            self.fire_power -= bonus
             
-    def collides_with_walls(self, board):
+    def _movement_blocked(self, board, bombs, original_pos, game=None):
+        players = getattr(game, "players", None) if game is not None else None
+        flame_cells = getattr(game, "flame_blocked_cells", None) if game is not None else None
+        block_players = True if game is None else bool(getattr(game, "players_block", True))
+        return (
+            self.collides_with_walls(board, flame_cells)
+            or self.collides_with_bombs(bombs, original_pos)
+            or (block_players and self.collides_with_players(players))
+        )
+
+    def collides_with_walls(self, board, flame_cells=None):
         center_x = int(self.pos[0] // CELL_SIZE)
         center_y = int(self.pos[1] // CELL_SIZE)
         bw, bh = len(board[0]), len(board)
+        blocked = flame_cells or ()
         for dy in range(-1, 2):
             for dx in range(-1, 2):
                 x = center_x + dx
                 y = center_y + dy
                 if 0 <= x < bw and 0 <= y < bh:
-                    if board[y][x] in (INDESTRUCTIBLE, DESTRUCTIBLE):
+                    if board[y][x] in (INDESTRUCTIBLE, DESTRUCTIBLE) or (x, y) in blocked:
                         wall_rect = (x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
                         if circle_rect_collision((self.pos[0], self.pos[1]), self.collision_radius, wall_rect):
                             return True
+        return False
+
+    def collides_with_players(self, players):
+        """Other players use the same circle that stops this body against a wall."""
+        if not players:
+            return False
+        radius = self.collision_radius
+        for other in players:
+            if other is self or not getattr(other, "alive", True):
+                continue
+            other_radius = getattr(other, "collision_radius", radius)
+            reach = radius + other_radius
+            dx = float(self.pos[0] - other.pos[0])
+            dy = float(self.pos[1] - other.pos[1])
+            if dx * dx + dy * dy < reach * reach:
+                return True
         return False
 
     def collides_with_bombs(self, bombs, original_pos):
@@ -332,8 +361,8 @@ class Player:
         self.pos = np.array([self.start_grid_x * CELL_SIZE + CELL_SIZE // 2,
                                         self.start_grid_y * CELL_SIZE + CELL_SIZE // 2], dtype=np.float64)
         self.alive = True
-        self.bomb_capacity = 1
-        self.fire_power = 1
+        self.bomb_capacity = int(bm_settings.get("start_bombs"))
+        self.fire_power = int(bm_settings.get("start_fire"))
         self.active_bombs = 0
         self.animation_time = 0
         self.quad_damage = False  # Add this line
@@ -389,6 +418,10 @@ class Player:
             'is_ai': getattr(self, 'is_ai', False),
             'shield_until': int(getattr(self, 'boss_shield_until', 0) or 0),
             'boss_lives_remaining': int(getattr(self, 'boss_lives_remaining', 0) or 0),
+            'sprite': getattr(self, 'sprite', '') or '',
+            'draw_scale': float(getattr(self, 'draw_scale', 1.0) or 1.0),
+            'voice_until': int(getattr(self, 'voice_until', 0) or 0),
+            'cleaver_swing_until': int(getattr(self, 'cleaver_swing_until', 0) or 0),
         }
 
 class Bomb:
@@ -403,9 +436,10 @@ class Bomb:
         self.quad_damage = False
         
     def update(self, current_time):
-        if current_time - self.start_time >= BOMB_TIMER:
+        fuse = bm_settings.bomb_timer_ms()
+        if current_time - self.start_time >= fuse:
             self.exploded = True
-        return current_time - self.start_time >= BOMB_TIMER
+        return current_time - self.start_time >= fuse
 
     def to_dict(self):
         return {
@@ -424,7 +458,7 @@ class Explosion:
         self.owner = owner
 
     def is_active(self, current_time):
-        return current_time - self.start_time < EXPLOSION_DURATION
+        return current_time - self.start_time < bm_settings.explosion_duration_ms()
 
     def to_dict(self):
         return {
@@ -457,6 +491,7 @@ class Game:
         self.grid_height = len(self.board)
         self.bombs = []
         self.explosions = []
+        self.flame_blocked_cells = set()
         self.recent_explosion_events = []
         self.big_explosion_over_threshold = False
         self.big_explosion_sound_at = []
@@ -477,12 +512,21 @@ class Game:
         self.frontend = None  # Will be set after frontend is available
         self.backend_logic = BackendGameLogic(self)
         self.friendly_fire = False
+        self.players_block = True
+        self.settings_cursor = 0
+        bm_settings.load()
+        self.apply_match_rules()
         # Team rules are opt-in; default gameplay remains free-for-all.
         self.team_mode_enabled = False
         self._cached_status = None
         self._status_queue = None  # Optional: for draining web client status before init_game
         
         self.starting_player_count = 0
+        self.destructible_at_round_start = 0
+        self.boss_stage = "bombermarv"
+        self.boss_advance = "lobby"
+        self.marv_killer_names = set()
+        self._kill_cheat_held = False
 
         # Crushing walls feature variables
         self.crushing_walls_active = False
@@ -549,6 +593,31 @@ class Game:
         while len(self.prep_player_teams) < MAX_PLAYERS:
             self.prep_player_teams.append(len(self.prep_player_teams) % 2)
 
+    def apply_match_rules(self):
+        """Copy saved rules onto this match. Called at startup and after each settings change."""
+        self.players_block = bool(bm_settings.get("players_block"))
+        self.friendly_fire = bool(bm_settings.get("friendly_fire"))
+        speed = bm_settings.player_speed()
+        bombs = int(bm_settings.get("start_bombs"))
+        fire = int(bm_settings.get("start_fire"))
+        for player in getattr(self, "players", []) or []:
+            if getattr(player, "ai_role", "") in ("boss", "uber"):
+                continue
+            player.speed = speed
+            player.bomb_capacity = bombs
+            player.fire_power = fire
+
+    def change_setting(self, direction):
+        key = bm_settings.RULES[self.settings_cursor][0]
+        bm_settings.step_value(key, direction)
+        bm_settings.save()
+        self.apply_match_rules()
+
+    def reset_match_rules(self):
+        bm_settings.reset_defaults()
+        bm_settings.save()
+        self.apply_match_rules()
+
     def trophy_threshold(self):
         raw = getattr(self, "prep_trophy_threshold", TROPHY_WIN_THRESHOLD)
         try:
@@ -603,6 +672,7 @@ class Game:
             all_players.append({
                 'id': global_player_id,
                 'name': player_name,
+                'title': self._roster_title(player_name),
                 'color': color_idx,
                 'team': self.prep_player_teams[i % len(self.prep_player_teams)],
                 'type': 'local',
@@ -634,6 +704,7 @@ class Game:
                         all_players.append({
                             'id': global_player_id,
                             'name': stored_name,
+                            'title': self._roster_title(stored_name),
                             'color': stored_color,
                             'team': (global_player_id - 1) % 2,
                             'type': 'client',
@@ -651,6 +722,7 @@ class Game:
             all_players.append({
                 'id': global_player_id,
                 'name': ai_names[slot],
+                'title': self._roster_title(ai_names[slot]),
                 'color': (human_count + slot) % len(colors),
                 'team': (human_count + slot) % 2,
                 'type': 'ai',
@@ -816,6 +888,7 @@ class Game:
         self._set_arena_size(grid_size)
         self.bombs = []
         self.explosions = []
+        self.flame_blocked_cells = set()
         self.recent_explosion_events = []
         self.big_explosion_over_threshold = False
         self.big_explosion_sound_at = []
@@ -850,9 +923,10 @@ class Game:
             clear_safe_zone(self.board, player.start_grid_x, player.start_grid_y, offsets)
             player.reset()
             # Apply initial gameplay params (use defaults)
-            player.bomb_capacity = 1
-            player.fire_power = 1
-            player.speed = PLAYER_SPEED
+            player.bomb_capacity = int(bm_settings.get("start_bombs"))
+            player.fire_power = int(bm_settings.get("start_fire"))
+            player.speed = bm_settings.player_speed()
+        self.destructible_at_round_start = self.count_destroyable_cells()
         self.game_start_time = self.current_time + 2000  # Add a 2-second freeze time
         
         # Reset crushing walls state
@@ -889,11 +963,14 @@ class Game:
         if self.screen:
             self.screen.surface = pygame.Surface((int(grid_size) * CELL_SIZE, int(grid_size) * CELL_SIZE))
 
-    def init_boss_fight(self, champion):
-        """Set up 1v1 boss fight: champion vs AI. Keeps champion, adds boosted AI boss."""
+    def init_boss_fight(self, champion, uber=False):
+        """Set up 1v1 boss fight: champion vs BomberMarv, or vs BomberTom after that."""
         from bm_params import (
             BOSS_SPEED_MULTIPLIER, BOSS_START_FIRE_POWER, BOSS_START_BOMB_CAPACITY,
-            BOSS_NAME, BOSS_COLOR, BOSS_EXTRA_LIVES, GRID_SIZE_BOSS, get_grid_size
+            BOSS_NAME, BOSS_COLOR, BOSS_EXTRA_LIVES, GRID_SIZE_BOSS, get_grid_size,
+            UBER_BOSS_NAME, UBER_BOSS_COLOR, UBER_BOSS_EXTRA_LIVES,
+            UBER_BOSS_START_FIRE_POWER, UBER_BOSS_START_BOMB_CAPACITY,
+            UBER_BOSS_SPEED_MULTIPLIER, UBER_BOSS_DRAW_SCALE,
         )
         self._accumulate_round_into_totals()
         grid_size = get_grid_size(player_count=2, is_boss_fight=True) or GRID_SIZE_BOSS
@@ -902,25 +979,58 @@ class Game:
         champion.start_grid_x, champion.start_grid_y = 1, 1
         boss_grid_x, boss_grid_y = grid_size - 2, grid_size - 2
 
-        boss = Player(boss_grid_x, boss_grid_y, BOSS_COLOR, None, BOSS_NAME)
+        if uber:
+            boss_name = UBER_BOSS_NAME
+            boss_color = UBER_BOSS_COLOR
+            extra_lives = UBER_BOSS_EXTRA_LIVES
+            start_fire = UBER_BOSS_START_FIRE_POWER
+            start_bombs = UBER_BOSS_START_BOMB_CAPACITY
+            boss_speed = int(bm_settings.player_speed() * UBER_BOSS_SPEED_MULTIPLIER)
+            draw_scale = UBER_BOSS_DRAW_SCALE
+            sprite = "brabi"
+            role = "uber"
+            global_id = 998
+            self.boss_stage = "brabi"
+        else:
+            boss_name = BOSS_NAME
+            boss_color = BOSS_COLOR
+            extra_lives = BOSS_EXTRA_LIVES
+            start_fire = BOSS_START_FIRE_POWER
+            start_bombs = BOSS_START_BOMB_CAPACITY
+            boss_speed = int(bm_settings.player_speed() * BOSS_SPEED_MULTIPLIER)
+            draw_scale = 1.0
+            sprite = "cleaver"
+            role = "boss"
+            global_id = 999
+            self.boss_stage = "bombermarv"
+
+        boss = Player(boss_grid_x, boss_grid_y, boss_color, None, boss_name)
         boss.is_local = False
         boss.is_ai = True
-        boss.ai_role = "boss"
+        boss.ai_role = role
         boss.ai_personality = "boss"
         boss.ai_slot = 0
         boss.client_id = None
         boss.client_player_id = None
-        boss.global_id = 999
+        boss.global_id = global_id
         boss.team = 1
-        boss.boss_lives_remaining = BOSS_EXTRA_LIVES
-        boss.bomb_capacity = BOSS_START_BOMB_CAPACITY
-        boss.fire_power = BOSS_START_FIRE_POWER
-        boss.speed = int(PLAYER_SPEED * BOSS_SPEED_MULTIPLIER)
+        boss.sprite = sprite
+        boss.draw_scale = draw_scale
+        boss.draw_radius = int(int(CELL_SIZE * PLAYER_DRAW_SCALE / 2) * draw_scale)
+        boss.boss_lives_remaining = extra_lives
+        boss.bomb_capacity = start_bombs
+        boss.fire_power = start_fire
+        boss.speed = boss_speed
+        boss.voice_until = 0
+        boss.next_voice_ms = None
+        boss.cleaver_swing_until = 0
+        boss.cleaver_next_swing_ms = None
 
         self.players = [champion, boss]
         self.starting_player_count = 2
         self.bombs = []
         self.explosions = []
+        self.flame_blocked_cells = set()
         self.recent_explosion_events = []
         self.big_explosion_over_threshold = False
         self.big_explosion_sound_at = []
@@ -954,13 +1064,17 @@ class Game:
             clear_safe_zone(self.board, p.start_grid_x, p.start_grid_y, offsets)
             p.reset()
             if p is boss:
-                p.bomb_capacity = BOSS_START_BOMB_CAPACITY
-                p.fire_power = BOSS_START_FIRE_POWER
-                p.speed = int(PLAYER_SPEED * BOSS_SPEED_MULTIPLIER)
-                p.boss_lives_remaining = BOSS_EXTRA_LIVES
-                p.ai_role = "boss"
+                p.bomb_capacity = start_bombs
+                p.fire_power = start_fire
+                p.speed = boss_speed
+                p.boss_lives_remaining = extra_lives
+                p.ai_role = role
                 p.ai_personality = "boss"
+                p.sprite = sprite
+                p.draw_scale = draw_scale
+                p.draw_radius = int(int(CELL_SIZE * PLAYER_DRAW_SCALE / 2) * draw_scale)
 
+        self.destructible_at_round_start = self.count_destroyable_cells()
         self.game_start_time = self.current_time + 2000
         self.crushing_walls_active = False
         self.crushing_walls_last_time = 0
@@ -1024,14 +1138,113 @@ class Game:
         if self.game_state == "champion":
             return f"Enter: fight {BOSS_NAME}   ·   R: reset trophies   ·   Esc: leave game"
         if self.game_state == "boss_result":
-            return "Enter or R: reset trophies from zero   ·   Esc: leave game"
+            _verdict, _detail, _color, prompt = self.boss_result_copy()
+            return prompt
         return ""
+
+    def _lobby_is_solo_local(self):
+        """One local human, no AI, and no connected browser players."""
+        if int(getattr(self, "prep_num_players", 1) or 1) != 1:
+            return False
+        if int(getattr(self, "prep_ai_count", 0) or 0) != 0:
+            return False
+        status = getattr(self, "_cached_status", None) or {}
+        clients = status.get("clients", {}) if isinstance(status, dict) else {}
+        for info in clients.values():
+            if isinstance(info, dict) and info.get("registered") and info.get("players"):
+                return False
+        return True
+
+    def start_match_from_lobby(self):
+        """Start the series. A lone local player goes straight to BomberMarv."""
+        self.prep_screen_completed = True
+        self._refresh_client_status()
+        if self._lobby_is_solo_local():
+            self.create_players()
+            champion = next((p for p in self.players if not getattr(p, "is_ai", False)), None)
+            if champion is not None:
+                self.boss_fight_champion = champion
+                self.boss_advance = "lobby"
+                self.init_boss_fight(champion)
+                self.game_state = "boss_fight"
+                return True
+        self.init_game()
+        self.game_state = "get_ready"
+        return True
+
+    def boss_result_copy(self):
+        """Verdict, detail line, color, and the Enter prompt for the boss result screen."""
+        winner = getattr(self, "boss_fight_winner", None)
+        advance = getattr(self, "boss_advance", "lobby")
+        stage = getattr(self, "boss_stage", "bombermarv")
+        beaten = UBER_BOSS_NAME if stage == "brabi" else BOSS_NAME
+        boss_won = getattr(winner, "ai_role", "") in ("boss", "uber") if winner is not None else False
+        if winner is None:
+            return ("Draw", "The arena took everyone.", (220, 224, 232), "Enter: back to the lobby")
+        if boss_won:
+            return (
+                "You lose",
+                f"{winner.name} wins the fight.",
+                (255, 96, 88),
+                "Enter: back to the lobby",
+            )
+        if advance == "brabi":
+            return (
+                "You win",
+                f"{beaten} is down.",
+                (88, 220, 120),
+                f"Enter: fight {UBER_BOSS_NAME}",
+            )
+        if stage == "brabi":
+            return (
+                "You win",
+                f"{winner.name} earns the title {MARV_KILLER_TITLE}.",
+                (255, 214, 90),
+                "Enter: back to the lobby",
+            )
+        return ("You win", f"{winner.name} wins the fight.", (88, 220, 120), "Enter: back to the lobby")
+
+    def marv_killer_result(self):
+        """True after the champion beats BomberTom, the second boss."""
+        winner = getattr(self, "boss_fight_winner", None)
+        if winner is None or getattr(self, "boss_stage", "") != "brabi":
+            return False
+        if getattr(self, "boss_advance", "lobby") == "brabi":
+            return False
+        return getattr(winner, "ai_role", "") not in ("boss", "uber")
+
+    def _roster_title(self, name):
+        if name and name in getattr(self, "marv_killer_names", set()):
+            return MARV_KILLER_TITLE
+        return ""
+
+    def _grant_marv_killer(self, winner):
+        """Remember who felled both bosses. The lobby keeps the title for this session."""
+        if winner is None:
+            return
+        winner.title = MARV_KILLER_TITLE
+        names = set(getattr(self, "marv_killer_names", set()) or set())
+        if getattr(winner, "name", ""):
+            names.add(winner.name)
+        self.marv_killer_names = names
+
+    def continue_from_boss_result(self):
+        """Enter after a boss fight: the next boss, or the lobby."""
+        if getattr(self, "boss_advance", "lobby") == "brabi" and getattr(self, "boss_fight_champion", None) is not None:
+            champion = self.boss_fight_champion
+            self.boss_advance = "lobby"
+            self.init_boss_fight(champion, uber=True)
+            self.game_state = "boss_fight"
+            return True
+        return self.return_to_lobby()
 
     def reset_series_and_start(self):
         """Clear trophies/stats and start a fresh series from the lobby roster."""
         self.reset_trophies()
         self.boss_fight_winner = None
         self.boss_fight_champion = None
+        self.boss_stage = "bombermarv"
+        self.boss_advance = "lobby"
         self.init_game()
         self.game_state = "get_ready"
         return True
@@ -1056,7 +1269,7 @@ class Game:
         if self.game_state == "champion":
             return self.continue_from_champion()
         if self.game_state == "boss_result":
-            return self.reset_series_and_start()
+            return self.continue_from_boss_result()
         return False
 
     def leave_prompt_states(self):
@@ -1111,8 +1324,11 @@ class Game:
         self.reset_trophies()
         self.boss_fight_winner = None
         self.boss_fight_champion = None
+        self.boss_stage = "bombermarv"
+        self.boss_advance = "lobby"
         self.bombs = []
         self.explosions = []
+        self.flame_blocked_cells = set()
         self.powerups = []
         self.kill_cam_clips = []
         self._pending_kill_cams = []
@@ -1209,8 +1425,10 @@ class Game:
                     if new_grid_x == avoid_cell_x and new_grid_y == avoid_cell_y:
                         continue
                     
-                    # Skip if this cell has a wall
+                    # Skip if this cell has a wall or a flame that has not cleared yet
                     if self.board[new_grid_y][new_grid_x] in (INDESTRUCTIBLE, DESTRUCTIBLE):
+                        continue
+                    if (new_grid_x, new_grid_y) in getattr(self, "flame_blocked_cells", ()):
                         continue
                     
                     # Test if the player can be positioned in this cell
@@ -1224,7 +1442,7 @@ class Game:
                     player.pos = test_pos
                     
                     # Check if this position is valid (no collisions)
-                    if not (player.collides_with_walls(self.board) or player.collides_with_bombs(self.bombs, original_pos)):
+                    if not (player.collides_with_walls(self.board, getattr(self, "flame_blocked_cells", None)) or player.collides_with_bombs(self.bombs, original_pos)):
                         # Found a valid position, keep it
                         return test_pos
                     
@@ -1253,25 +1471,40 @@ class Game:
         """Handle the crushing walls feature"""
         alive_players = [p for p in self.players if p.alive]
         
-        # Boss fight: 50% slower growth, start 1 minute later
+        # Boss fight waits longer than a crowded round and grows more slowly.
         if self.game_state == "boss_fight":
-            from bm_params import BOSS_CRUSHING_WALLS_DELAY, BOSS_CRUSHING_WALLS_GROWTH_INTERVAL_MS
-            crushing_delay = BOSS_CRUSHING_WALLS_DELAY
+            crushing_delay = bm_settings.get("walls_boss_delay_s")
             crushing_min_destroyable = CRUSHING_WALLS_MIN_DESTROYABLE
             crushing_max_alive = CRUSHING_WALLS_MAX_ALIVE
-            growth_interval_ms = BOSS_CRUSHING_WALLS_GROWTH_INTERVAL_MS
+            growth_interval_ms = int(bm_settings.get("walls_boss_growth_ms"))
         else:
-            crushing_delay = CRUSHING_WALLS_DELAY
+            crushing_delay = bm_settings.get("walls_delay_s")
             if int(getattr(self, "starting_player_count", 0) or 0) == 2:
-                crushing_delay = CRUSHING_WALLS_2P_DELAY
+                crushing_delay = bm_settings.get("walls_2p_delay_s")
             crushing_min_destroyable = CRUSHING_WALLS_MIN_DESTROYABLE
             crushing_max_alive = CRUSHING_WALLS_MAX_ALIVE
-            growth_interval_ms = CRUSHING_WALLS_GROWTH_INTERVAL_MS
+            growth_interval_ms = int(bm_settings.get("walls_growth_ms"))
         crushing_delay = max(int(crushing_delay), int(CRUSHING_WALLS_MIN_START_S))
-        
-        if len(alive_players) <= crushing_max_alive and \
-           (self.current_time - self.game_start_time) >= crushing_delay * 1000 and \
-           self.count_destroyable_cells() < crushing_min_destroyable:
+        elapsed_ms = self.current_time - self.game_start_time
+        remaining = self.count_destroyable_cells()
+        few_alive = (
+            len(alive_players) <= crushing_max_alive
+            and elapsed_ms >= crushing_delay * 1000
+            and remaining < crushing_min_destroyable
+        )
+        start_soft = int(getattr(self, "destructible_at_round_start", 0) or 0)
+        walls_thin = (
+            start_soft > 0
+            and remaining < start_soft * CRUSHING_WALLS_STALE_WALL_FRACTION
+        )
+        crowded = (
+            len(alive_players) > crushing_max_alive
+            and elapsed_ms >= crushing_delay * CRUSHING_WALLS_CROWDED_TIME_MULTIPLIER * 1000
+            and walls_thin
+        )
+        overtime = elapsed_ms >= crushing_delay * CRUSHING_WALLS_STALE_TIME_MULTIPLIER * 1000
+
+        if few_alive or crowded or overtime:
             
             if not self.crushing_walls_active:
                 # Initialize crushing walls
@@ -1395,17 +1628,50 @@ class Game:
             self._register_new_explosions(triggered)
         return triggered
 
+    def _tick_boss_taunt(self):
+        """Idle cleaver chops, and BomberMarv's line about every 15 seconds."""
+        if self.game_state != "boss_fight":
+            return
+        for player in self.players:
+            if not player.alive or getattr(player, "sprite", "") != "cleaver":
+                continue
+            moving = abs(float(player.direction[0])) + abs(float(player.direction[1])) > 0.25
+            if moving:
+                player.cleaver_swing_until = self.current_time + 180
+            else:
+                nxt = getattr(player, "cleaver_next_swing_ms", None)
+                if nxt is None:
+                    player.cleaver_next_swing_ms = self.current_time + random.randint(1800, 4200)
+                elif self.current_time >= nxt:
+                    player.cleaver_swing_until = self.current_time + 460
+                    player.cleaver_next_swing_ms = self.current_time + random.randint(2200, 4800)
+            if player.name != BOSS_NAME:
+                continue
+            due = getattr(player, "next_voice_ms", None)
+            if due is None:
+                player.next_voice_ms = self.current_time + random.randint(BOSS_TAUNT_INTERVAL_MS // 2, BOSS_TAUNT_INTERVAL_MS)
+                continue
+            if self.current_time < due:
+                continue
+            fresh_meat_sound.play()
+            player.voice_until = self.current_time + 2200
+            player.pickup_message = BOSS_TAUNT
+            player.pickup_message_end_time = self.current_time + 2200
+            player.next_voice_ms = self.current_time + BOSS_TAUNT_INTERVAL_MS + random.randint(-3000, 3000)
+
     def _register_new_explosions(self, explosions):
         """Track new blasts and play mocny_stral once unique tiles reach the window threshold."""
         if not explosions:
             return
+        window_ms = int(bm_settings.get("big_blast_window_ms"))
+        threshold = int(bm_settings.get("big_blast_tiles"))
         self.recent_explosion_events = prune_explosion_events(
-            self.recent_explosion_events, self.current_time, BIG_EXPLOSION_WINDOW_MS
+            self.recent_explosion_events, self.current_time, window_ms
         )
         aged_count = count_unique_explosion_tiles(
-            self.recent_explosion_events, self.current_time, BIG_EXPLOSION_WINDOW_MS
+            self.recent_explosion_events, self.current_time, window_ms
         )
-        self.big_explosion_over_threshold = aged_count >= BIG_EXPLOSION_TILE_THRESHOLD
+        self.big_explosion_over_threshold = aged_count >= threshold
         for exp in explosions:
             cells = tuple((int(cell[0]), int(cell[1])) for cell in exp.cells)
             self.recent_explosion_events.append((exp.start_time, cells))
@@ -1414,13 +1680,13 @@ class Game:
             else:
                 explosion_sound.play()
         tile_count = count_unique_explosion_tiles(
-            self.recent_explosion_events, self.current_time, BIG_EXPLOSION_WINDOW_MS
+            self.recent_explosion_events, self.current_time, window_ms
         )
         if crossed_big_explosion_threshold(
-            self.big_explosion_over_threshold, tile_count, BIG_EXPLOSION_TILE_THRESHOLD
+            self.big_explosion_over_threshold, tile_count, threshold
         ):
-            self.big_explosion_sound_at.append(self.current_time + BIG_EXPLOSION_SOUND_DELAY_MS)
-        self.big_explosion_over_threshold = tile_count >= BIG_EXPLOSION_TILE_THRESHOLD
+            self.big_explosion_sound_at.append(self.current_time + int(bm_settings.get("big_blast_delay_ms")))
+        self.big_explosion_over_threshold = tile_count >= threshold
 
     def _play_due_big_explosion_sounds(self):
         if not self.big_explosion_sound_at:
@@ -1429,13 +1695,14 @@ class Game:
         for play_at in self.big_explosion_sound_at:
             (due if play_at <= self.current_time else pending).append(play_at)
         for _ in due:
+            mocny_stral_sound.set_volume(float(bm_settings.get("big_blast_volume")))
             mocny_stral_sound.play()
         self.big_explosion_sound_at = pending
     
     def handle_explosions(self):
         
         for explosion in self.explosions[:]:
-            active_cells = compute_explosion_active_cells(explosion, self.current_time, EXPLOSION_DURATION)
+            active_cells = compute_explosion_active_cells(explosion, self.current_time, bm_settings.explosion_duration_ms())
             # Only check for kills when explosion arms are active
             if active_cells:
                 hit_radius = explosion_player_radius(CELL_SIZE, EXPLOSION_PLAYER_HIT_SCALE)
@@ -1471,7 +1738,7 @@ class Game:
                             if circle_rect_collision((player.pos[0], player.pos[1]), hit_radius, explosion_rect):
                                 if getattr(player, 'is_ai', False) and getattr(player, 'boss_lives_remaining', 0) > 0:
                                     player.boss_lives_remaining -= 1
-                                    player.boss_shield_until = self.current_time + BOSS_SHIELD_DURATION_MS
+                                    player.boss_shield_until = self.current_time + bm_settings.explosion_duration_ms() + 200
                                     player.alive = True
                                     player.death_animation_time = 0
                                     player._bomb_key_held = False
@@ -1499,42 +1766,62 @@ class Game:
                                 self._queue_kill_cam(player)
                                 break
             
-            # Clear soft walls as soon as the blast arm covers them
+            # Clear soft walls when the blast arm covers them, but keep the cell
+            # solid until that flame has retracted. Walking in early was a kill.
             for (x, y) in active_cells:
-                if self.board[y][x] == DESTRUCTIBLE:
-                    self.board[y][x] = EMPTY
-                    if explosion.owner is not None:
-                        explosion.owner.walls_destroyed += 1
-                    if random.random() < POWERUP_PROBABILITY:
-                        pu_type = random.choice(["bomb", "fire"])
-                        self.powerups.append(PowerUp(x, y, pu_type, spawn_time=explosion.start_time))
+                self._open_soft_wall(x, y, explosion)
 
             # Remove explosion when it ends
             if not explosion.is_active(self.current_time):
                 for (x, y) in explosion.cells:
-                    if self.board[y][x] == DESTRUCTIBLE:
-                        self.board[y][x] = EMPTY
-                        if explosion.owner is not None:
-                            explosion.owner.walls_destroyed += 1
-                        if random.random() < POWERUP_PROBABILITY:
-                            pu_type = random.choice(["bomb", "fire"])
-                            self.powerups.append(PowerUp(x, y, pu_type, spawn_time=explosion.start_time))
+                    self._open_soft_wall(x, y, explosion)
                 for pu in self.powerups[:]:
                     if pu.spawn_time < explosion.start_time and (pu.x, pu.y) in explosion.cells:
                         self.powerups.remove(pu)
                 self.explosions.remove(explosion)
+        self._refresh_flame_blocked_cells()
+
+    def _open_soft_wall(self, x, y, explosion):
+        if self.board[y][x] != DESTRUCTIBLE:
+            return
+        self.board[y][x] = EMPTY
+        blocked = getattr(self, "flame_blocked_cells", None)
+        if blocked is None:
+            self.flame_blocked_cells = set()
+            blocked = self.flame_blocked_cells
+        blocked.add((int(x), int(y)))
+        if explosion.owner is not None:
+            explosion.owner.walls_destroyed += 1
+        if random.random() < float(bm_settings.get("powerup_chance")):
+            pu_type = random.choice(["bomb", "fire"])
+            self.powerups.append(PowerUp(x, y, pu_type, spawn_time=explosion.start_time))
+
+    def _refresh_flame_blocked_cells(self):
+        blocked = getattr(self, "flame_blocked_cells", None)
+        if not blocked:
+            self.flame_blocked_cells = set()
+            return
+        covered = set()
+        for explosion in self.explosions:
+            if not explosion.is_active(self.current_time):
+                continue
+            for cell in compute_explosion_active_cells(explosion, self.current_time, bm_settings.explosion_duration_ms()):
+                covered.add((int(cell[0]), int(cell[1])))
+        self.flame_blocked_cells = {cell for cell in blocked if cell in covered}
                     
-    def place_quad_damage_powerup(self):        
-        # Use parameters from bm_params
-        from bm_params import QUAD_DAMAGE_DELAY, QUAD_DAMAGE_PROBABILITY
-        
+    def place_quad_damage_powerup(self):
         # Check if enough time has passed since game start
-        if (self.current_time - self.game_start_time) >= QUAD_DAMAGE_DELAY * 1000:
+        if (self.current_time - self.game_start_time) >= bm_settings.get("quad_delay_s") * 1000:
             # Only place if no quad damage powerup already exists
             if not any(pu.type == "quad_damage" for pu in self.powerups):
                 # Find empty cells
-                empty_cells = [(x, y) for y in range(self.grid_height) for x in range(self.grid_width) if self.board[y][x] == EMPTY]
-                if empty_cells and random.random() < QUAD_DAMAGE_PROBABILITY:
+                empty_cells = [
+                    (x, y)
+                    for y in range(self.grid_height)
+                    for x in range(self.grid_width)
+                    if self.board[y][x] == EMPTY and (x, y) not in self.flame_blocked_cells
+                ]
+                if empty_cells and random.random() < float(bm_settings.get("quad_chance")):
                     x, y = random.choice(empty_cells)
                     self.powerups.append(PowerUp(x, y, "quad_damage"))
                                 
@@ -1650,7 +1937,34 @@ class Game:
     
     def handle_prep_key_event(self, event):
         """Handle key events for game lobby navigation"""
+        if self.prep_section == "settings":
+            count = len(bm_settings.RULES) + 1
+            if event.key == Keys.ESCAPE:
+                bm_settings.save()
+                self.prep_section = "local_players"
+                return
+            if event.key == Keys.UP:
+                self.settings_cursor = (self.settings_cursor - 1) % count
+                return
+            if event.key == Keys.DOWN:
+                self.settings_cursor = (self.settings_cursor + 1) % count
+                return
+            if str(getattr(event, "unicode", "")).lower() == "r":
+                self.reset_match_rules()
+                return
+            if self.settings_cursor == bm_settings.RESET_ROW:
+                if event.key in (Keys.LEFT, Keys.RIGHT, Keys.ENTER):
+                    self.reset_match_rules()
+                return
+            if event.key in (Keys.LEFT, Keys.RIGHT, Keys.ENTER):
+                direction = -1 if event.key == Keys.LEFT else 1
+                self.change_setting(direction)
+            return
+
         last_player_row = self._prep_last_player_row()
+        if not self.prep_editing_name and str(getattr(event, "unicode", "")).lower() == "s":
+            self.prep_section = "settings"
+            return
         # Switch between sections
         if event.key == Keys.TAB:
             self.prep_section = 'start_game' if self.prep_section == 'local_players' else 'local_players'
@@ -1756,10 +2070,19 @@ class Game:
                         self.create_players()
         
         elif self.prep_section == 'start_game':
-            if event.key == Keys.ENTER:
-                self.prep_screen_completed = True
-                self.init_game()
-                self.game_state = "get_ready"
+            if event.key == Keys.LEFT:
+                self.prep_section = "settings_button"
+            elif event.key == Keys.ENTER:
+                self.start_match_from_lobby()
+        elif self.prep_section == "settings_button":
+            if event.key == Keys.RIGHT:
+                self.prep_section = "start_game"
+            elif event.key == Keys.ENTER:
+                self.prep_section = "settings"
+            elif event.key == Keys.UP:
+                self.prep_section = "local_players"
+                self.prep_cursor_row = last_player_row
+                self._sync_prep_cursor_col()
         
         # Handle text input when editing names
         if self.prep_editing_name and hasattr(event, 'unicode') and event.unicode:
@@ -1793,6 +2116,8 @@ class Game:
         if event.key == Keys.ESCAPE:
             if self.prep_editing_name:
                 self.prep_editing_name = False
+            elif self.prep_section == "settings_button":
+                self.prep_section = "local_players"
             else:
                 self.game_state = "startup"
                 
@@ -1866,9 +2191,7 @@ class Game:
                     if self.game_state == "startup":
                         self.game_state = "game_prep"
                     elif self.game_state == "game_prep":
-                        self.prep_screen_completed = True
-                        self.init_game()
-                        self.game_state = "get_ready"
+                        self.start_match_from_lobby()
                     elif self.game_state in ("win", "champion", "boss_result"):
                         self.continue_from_intermission()
                 elif keyname == 'r' and self.game_state in ("champion", "boss_result"):
@@ -1879,7 +2202,53 @@ class Game:
                 if DEGUG:
                     print(f"DEBUG: Player {player_obj.client_id}:{player_obj.client_player_id} KEYS UP -> {sorted(list(self.web_keys_by_player[player_obj]))}")
 
+    def kill_opponents(self):
+        """Drop every non-local player, including a boss on extra lives."""
+        for player in self.players:
+            if not player.alive:
+                continue
+            if getattr(player, "is_local", False) and not getattr(player, "is_ai", False):
+                continue
+            player.boss_lives_remaining = 0
+            player.alive = False
+            player.death_animation_time = 1000
+            player.death_time_ms = self.current_time
+            if getattr(self, "round_start_time", None):
+                player.death_time_rel_ms = max(0, self.current_time - self.round_start_time)
+            player.fire_power_at_death = player.fire_power
+            player.bomb_capacity_at_death = player.bomb_capacity
+            self.death_events.append(self.current_time)
+
+    def _poll_kill_cheat(self):
+        """Alt+K+L kills every opponent. One press, so holding the keys does not repeat."""
+        if self.game_state not in ("playing", "boss_fight"):
+            self._kill_cheat_held = False
+            return
+        def _held(code):
+            try:
+                return bool(is_key_pressed(code))
+            except Exception:
+                return False
+
+        alt = _held(Keys.LALT) or _held(Keys.RALT) or noted_alt_down()
+        try:
+            import pygame
+            alt = alt or bool(pygame.key.get_mods() & pygame.KMOD_ALT)
+        except Exception:
+            pass
+        chord = bool(
+            alt
+            and (_held(Keys.K) or noted_key_down(Keys.K))
+            and (_held(Keys.L) or noted_key_down(Keys.L))
+        )
+        if chord and not getattr(self, "_kill_cheat_held", False):
+            self._kill_cheat_held = True
+            self.kill_opponents()
+        elif not chord:
+            self._kill_cheat_held = False
+
     def update(self):
+        self._poll_kill_cheat()
         # update players
         for idx, player in enumerate(self.players):
             web_keys = set()
@@ -1933,8 +2302,9 @@ class Game:
                     elif pu.type == "quad_damage":
                         player.quad_damage = True
                         player.quad_damage_start_time = self.current_time
-                        player.bomb_capacity += QUAD_DAMAGE_POWER
-                        player.fire_power += QUAD_DAMAGE_POWER
+                        bonus = int(bm_settings.get("quad_power"))
+                        player.bomb_capacity += bonus
+                        player.fire_power += bonus
                         qd_sound.play()
                         player.quad_damage_collected += 1
                     self.powerups.remove(pu)
@@ -1945,6 +2315,7 @@ class Game:
         # Handle crushing walls feature
         self.handle_crushing_walls()
         self._play_due_big_explosion_sounds()
+        self._tick_boss_taunt()
         
         alive_players = [p for p in self.players if p.alive]
         alive_teams = {getattr(p, "team", 0) for p in alive_players}
@@ -1959,10 +2330,16 @@ class Game:
             if self.current_time >= self.endgame_hold_until:
                 # Boss fight: transition to boss_result (no trophy, reset happens on exit)
                 if self.game_state == "boss_fight":
-                    if alive_players:
-                        self.boss_fight_winner = alive_players[0]
+                    winner = alive_players[0] if alive_players else None
+                    champion_won = winner is not None and getattr(winner, "ai_role", "") not in ("boss", "uber")
+                    self.boss_fight_winner = winner
+                    if champion_won and getattr(self, "boss_stage", "bombermarv") != "brabi":
+                        self.boss_fight_champion = winner
+                        self.boss_advance = "brabi"
                     else:
-                        self.boss_fight_winner = None  # Tie
+                        self.boss_advance = "lobby"
+                        if champion_won and getattr(self, "boss_stage", "") == "brabi":
+                            self._grant_marv_killer(winner)
                     self.post_win_target_state = "boss_result"
                     self.post_win_transition_time = self.current_time + ENDGAME_POST_DELAY_MS
                 else:
@@ -2012,8 +2389,6 @@ class Game:
                 # Clear schedule to avoid repeat
                 self.post_win_target_state = None
                 self.post_win_transition_time = None
-                if self.game_state == "boss_fight" and hasattr(self, 'boss_fight_champion'):
-                    self.init_boss_fight(self.boss_fight_champion)
 
     def _serialize_boss_winner(self):
         """Serialize boss fight winner for client display."""
@@ -2026,6 +2401,7 @@ class Game:
             'name': winner.name,
             'is_ai': getattr(winner, 'is_ai', False),
             'color': list(winner.color) if hasattr(winner.color, '__iter__') else winner.color,
+            'title': getattr(winner, 'title', '') or '',
         }
 
     def to_dict(self):
@@ -2049,6 +2425,12 @@ class Game:
             'local_player_count': int(self.prep_num_players if self.game_state in ["startup", "game_prep"] else sum(1 for p in self.players if getattr(p, 'is_local', False))),
             'ai_count': int(getattr(self, "prep_ai_count", 0) if self.game_state in ["startup", "game_prep"] else sum(1 for p in self.players if getattr(p, "is_ai", False))),
             'trophy_win_threshold': int(self.trophy_threshold()),
+            'big_blast': {
+                'tiles': int(bm_settings.get("big_blast_tiles")),
+                'window_ms': int(bm_settings.get("big_blast_window_ms")),
+                'delay_ms': int(bm_settings.get("big_blast_delay_ms")),
+                'volume': float(bm_settings.get("big_blast_volume")),
+            },
             'result_prompt': self.result_prompt(),
             'boss_fight_winner': self._serialize_boss_winner(),
             'leave_prompt': {

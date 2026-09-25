@@ -109,7 +109,9 @@ class BackendGameLogic:
         while len(self.game.prep_controls) < self.game.prep_num_players:
             self.game.prep_controls.append(default_controls[len(self.game.prep_controls) % len(default_controls)])
         
-        # Create players and start game
+        # Create players and start game. A lone local player goes to the boss.
+        if hasattr(self.game, "start_match_from_lobby"):
+            return bool(self.game.start_match_from_lobby())
         self.game.create_players()
         self.game.prep_screen_completed = True
         self.game.init_game()

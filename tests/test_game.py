@@ -13,11 +13,21 @@ from bm_params import (
     BOSS_COLOR,
     BOSS_EXTRA_LIVES,
     BOSS_NAME,
+    CELL_SIZE,
     DESTRUCTIBLE,
     EMPTY,
     EXPLOSION_DURATION,
     INDESTRUCTIBLE,
     MAX_PLAYERS,
+    PLAYER_DRAW_SCALE,
+    PLAYER_SPEED,
+    UBER_BOSS_DRAW_SCALE,
+    UBER_BOSS_EXTRA_LIVES,
+    MARV_KILLER_TITLE,
+    UBER_BOSS_NAME,
+    UBER_BOSS_SPEED_MULTIPLIER,
+    UBER_BOSS_START_BOMB_CAPACITY,
+    UBER_BOSS_START_FIRE_POWER,
     QUAD_DAMAGE_POWER,
     QUAD_DAMAGE_TIME,
     REPLAY_LOG_INTERVAL_MS,
@@ -174,6 +184,44 @@ class PlayerBombTests(unittest.TestCase):
             self.player.update(400, self.board, [], 0)
         self.assertLess(self.player.pos[0], start[0] + 80)
 
+    def test_players_block_with_the_wall_collision_circle(self):
+        board = open_board()
+        a = _player(2, 2, name="A")
+        b = _player(4, 2, name="B")
+        game = types.SimpleNamespace(players=[a, b], flame_blocked_cells=set(), powerups=[])
+        a.pos[0], a.pos[1] = b.pos[0], b.pos[1]
+        self.assertTrue(a.collides_with_players(game.players))
+        b.alive = False
+        self.assertFalse(a.collides_with_players(game.players))
+        b.alive = True
+        a.pos[0], a.pos[1] = cell_center(2, 2)
+        b.pos[0], b.pos[1] = cell_center(4, 2)
+        reach = a.collision_radius + b.collision_radius
+        for _ in range(80):
+            with patch("bm_classes.is_key_pressed", side_effect=lambda k: k == Keys.D), patch(
+                "bm_classes.get_pressed_keys", return_value={}
+            ):
+                a.update(16, board, [], 0, game=game)
+            with patch("bm_classes.is_key_pressed", side_effect=lambda k: k == Keys.A), patch(
+                "bm_classes.get_pressed_keys", return_value={}
+            ):
+                b.update(16, board, [], 0, game=game)
+        dist = ((float(a.pos[0] - b.pos[0])) ** 2 + (float(a.pos[1] - b.pos[1])) ** 2) ** 0.5
+        self.assertGreaterEqual(dist, reach - 1.0)
+        self.assertLess(dist, CELL_SIZE * PLAYER_DRAW_SCALE)
+
+    def test_players_pass_through_when_blocking_is_off(self):
+        board = open_board()
+        a = _player(2, 2, name="A")
+        b = _player(3, 2, name="B")
+        game = types.SimpleNamespace(players=[a, b], flame_blocked_cells=set(), powerups=[], players_block=False)
+        start = float(a.pos[0])
+        with patch("bm_classes.is_key_pressed", side_effect=lambda k: k == Keys.D), patch(
+            "bm_classes.get_pressed_keys", return_value={}
+        ):
+            a.update(80, board, [], 0, game=game)
+        self.assertGreater(a.pos[0], start + 20)
+
     def test_quad_damage_expires(self):
         self.player.quad_damage = True
         self.player.quad_damage_start_time = 0
@@ -303,6 +351,35 @@ class ExplosionLogicTests(unittest.TestCase):
         self.game.explosions = [exp]
         self.game.handle_explosions()
         self.assertEqual(self.game.board[3][4], EMPTY)
+
+    def test_opened_wall_stays_solid_until_the_flame_is_gone(self):
+        player = self.game.players[0]
+        player.pos[0], player.pos[1] = cell_center(5, 3)
+        self.game.board[3][4] = DESTRUCTIBLE
+        start = 1000
+        self.game.current_time = start + 120
+        self.game.explosions = [Explosion([(3, 3), (4, 3)], start)]
+        self.game.handle_explosions()
+        self.assertEqual(self.game.board[3][4], EMPTY)
+        self.assertIn((4, 3), self.game.flame_blocked_cells)
+        with patch("bm_classes.is_key_pressed", side_effect=lambda k: k == Keys.A), patch(
+            "bm_classes.get_pressed_keys", return_value={}
+        ):
+            for _ in range(40):
+                player.update(16, self.game.board, [], self.game.current_time, game=self.game)
+                self.game.handle_explosions()
+        self.assertTrue(player.alive)
+        self.assertEqual(player.get_grid_pos(), (5, 3))
+        self.game.current_time = start + EXPLOSION_DURATION + 5
+        self.game.handle_explosions()
+        self.assertNotIn((4, 3), self.game.flame_blocked_cells)
+        with patch("bm_classes.is_key_pressed", side_effect=lambda k: k == Keys.A), patch(
+            "bm_classes.get_pressed_keys", return_value={}
+        ):
+            for _ in range(50):
+                player.update(16, self.game.board, [], self.game.current_time, game=self.game)
+        self.assertTrue(player.alive)
+        self.assertLessEqual(player.get_grid_pos()[0], 4)
 
     def test_boss_extra_life_stays_in_place(self):
         boss = _player(3, 3, name=BOSS_NAME)
@@ -494,6 +571,128 @@ class GameStateTests(unittest.TestCase):
         self.assertEqual(champ.total_walls_destroyed, 10)
         self.assertEqual(champ.walls_destroyed, 0)
         self.assertEqual(champ.total_players_killed, 2)
+        self.assertEqual(boss.sprite, "cleaver")
+
+    def test_beating_bombermarv_starts_brabi(self):
+        champion = next(p for p in self.game.players if not getattr(p, "is_ai", False))
+        self.game.init_boss_fight(champion)
+        self.game.game_state = "boss_fight"
+        boss = next(p for p in self.game.players if getattr(p, "is_ai", False))
+        champ = next(p for p in self.game.players if not getattr(p, "is_ai", False))
+        boss.alive = False
+        champ.alive = True
+        self.game.current_time = self.game.game_start_time + 5000
+        self.game.endgame_hold_until = self.game.current_time - 1
+        self.game.post_win_target_state = None
+        self.game.post_win_transition_time = None
+        with patch("bm_classes.get_pressed_keys", return_value={}), patch(
+            "bm_classes.is_key_pressed", return_value=False
+        ):
+            self.game.update()
+        self.assertEqual(self.game.boss_stage, "bombermarv")
+        self.assertEqual(self.game.boss_advance, "brabi")
+        self.assertEqual(self.game.post_win_target_state, "boss_result")
+        self.game.current_time = self.game.post_win_transition_time
+        with patch("bm_classes.get_pressed_keys", return_value={}), patch(
+            "bm_classes.is_key_pressed", return_value=False
+        ):
+            self.game.update()
+        self.assertEqual(self.game.game_state, "boss_result")
+        self.assertIn(UBER_BOSS_NAME, self.game.result_prompt())
+        self.game.continue_from_intermission()
+        brabi = next(p for p in self.game.players if getattr(p, "is_ai", False))
+        self.assertEqual(self.game.game_state, "boss_fight")
+        self.assertEqual(brabi.name, UBER_BOSS_NAME)
+        self.assertEqual(brabi.sprite, "brabi")
+        self.assertEqual(brabi.fire_power, UBER_BOSS_START_FIRE_POWER)
+        self.assertEqual(brabi.bomb_capacity, UBER_BOSS_START_BOMB_CAPACITY)
+        self.assertEqual(brabi.boss_lives_remaining, UBER_BOSS_EXTRA_LIVES)
+        self.assertEqual(brabi.speed, int(PLAYER_SPEED * UBER_BOSS_SPEED_MULTIPLIER))
+        self.assertEqual(brabi.draw_scale, UBER_BOSS_DRAW_SCALE)
+        base_radius = int(CELL_SIZE * PLAYER_DRAW_SCALE / 2)
+        self.assertEqual(brabi.draw_radius, int(base_radius * UBER_BOSS_DRAW_SCALE))
+        self.assertGreater(brabi.draw_radius, champ.draw_radius)
+
+    def test_boss_loss_returns_to_the_lobby(self):
+        champion = next(p for p in self.game.players if not getattr(p, "is_ai", False))
+        self.game.init_boss_fight(champion)
+        self.game.game_state = "boss_fight"
+        champ = next(p for p in self.game.players if not getattr(p, "is_ai", False))
+        champ.alive = False
+        self.game.current_time = self.game.game_start_time + 5000
+        self.game.endgame_hold_until = self.game.current_time - 1
+        self.game.post_win_target_state = None
+        self.game.post_win_transition_time = None
+        with patch("bm_classes.get_pressed_keys", return_value={}), patch(
+            "bm_classes.is_key_pressed", return_value=False
+        ):
+            self.game.update()
+        self.assertEqual(self.game.boss_advance, "lobby")
+        self.assertEqual(self.game.post_win_target_state, "boss_result")
+        self.game.game_state = "boss_result"
+        self.assertIn("lobby", self.game.result_prompt())
+        self.assertTrue(self.game.continue_from_intermission())
+        self.assertEqual(self.game.game_state, "game_prep")
+
+    def test_solo_start_opens_the_boss_fight(self):
+        self.game.prep_num_players = 1
+        self.game.prep_ai_count = 0
+        self.game._cached_status = None
+        self.game.game_state = "game_prep"
+        self.assertTrue(self.game.start_match_from_lobby())
+        self.assertEqual(self.game.game_state, "boss_fight")
+        names = [p.name for p in self.game.players]
+        self.assertIn(BOSS_NAME, names)
+        self.assertEqual(sum(1 for p in self.game.players if getattr(p, "is_ai", False)), 1)
+
+    def test_alt_k_l_kills_opponents(self):
+        human = next(p for p in self.game.players if not getattr(p, "is_ai", False))
+        human.is_local = True
+        for p in self.game.players:
+            p.alive = True
+        self.game.game_state = "playing"
+        self.game.current_time = 1000
+        self.game.round_start_time = 0
+        held = {Keys.LALT, Keys.K, Keys.L}
+
+        def _down(code):
+            return code in held
+
+        with patch("bm_classes.get_pressed_keys", return_value={}), patch(
+            "bm_classes.is_key_pressed", side_effect=_down
+        ):
+            self.game.update()
+        self.assertTrue(human.alive)
+        self.assertTrue(all(not p.alive for p in self.game.players if p is not human))
+        with patch("bm_classes.get_pressed_keys", return_value={}), patch(
+            "bm_classes.is_key_pressed", side_effect=_down
+        ):
+            self.game.update()
+        self.assertTrue(human.alive)
+
+    def test_alt_k_l_from_key_events_when_pressed_state_misses_alt(self):
+        import pygame
+        from input_abstraction import clear_noted_keys, note_key_event
+
+        human = next(p for p in self.game.players if not getattr(p, "is_ai", False))
+        human.is_local = True
+        for p in self.game.players:
+            p.alive = True
+        self.game.game_state = "playing"
+        self.game.current_time = 1000
+        self.game.round_start_time = 0
+        try:
+            note_key_event(types.SimpleNamespace(type=pygame.KEYDOWN, key=int(Keys.LALT), mod=0))
+            note_key_event(types.SimpleNamespace(type=pygame.KEYDOWN, key=int(Keys.K), mod=pygame.KMOD_ALT))
+            note_key_event(types.SimpleNamespace(type=pygame.KEYDOWN, key=int(Keys.L), mod=pygame.KMOD_ALT))
+            with patch("bm_classes.get_pressed_keys", return_value={}), patch(
+                "bm_classes.is_key_pressed", return_value=False
+            ), patch("pygame.key.get_mods", return_value=0):
+                self.game.update()
+            self.assertTrue(human.alive)
+            self.assertTrue(all(not p.alive for p in self.game.players if p is not human))
+        finally:
+            clear_noted_keys()
 
     def test_web_set_input_state_maps_keys(self):
         player = _player()
@@ -570,6 +769,68 @@ class GameStateTests(unittest.TestCase):
         self.game.handle_crushing_walls()
         self.assertFalse(self.game.crushing_walls_active)
         self.game.current_time = 120_000
+        self.game.handle_crushing_walls()
+        self.assertTrue(self.game.crushing_walls_active)
+
+    def test_boss_crushing_walls_wait_180s(self):
+        self.game.board = open_board(7, 7)
+        self.game.grid_width = 7
+        self.game.grid_height = 7
+        other = _player(5, 5, name="BomberMarv")
+        other.global_id = 2
+        self.game.players = [_player(3, 3), other]
+        self.game.starting_player_count = 2
+        self.game.destructible_at_round_start = 0
+        self.game.game_state = "boss_fight"
+        self.game.game_start_time = 0
+        self.game.current_time = 120_000
+        self.game.handle_crushing_walls()
+        self.assertFalse(self.game.crushing_walls_active)
+        self.game.current_time = 179_000
+        self.game.handle_crushing_walls()
+        self.assertFalse(self.game.crushing_walls_active)
+        self.game.current_time = 180_000
+        self.game.handle_crushing_walls()
+        self.assertTrue(self.game.crushing_walls_active)
+
+    def test_stale_map_starts_walls_after_double_timer(self):
+        board = open_board(9, 9)
+        for y in range(2, 6):
+            for x in range(2, 6):
+                board[y][x] = DESTRUCTIBLE
+        self.game.board = board
+        self.game.grid_width = 9
+        self.game.grid_height = 9
+        players = []
+        for i, (x, y) in enumerate(((1, 1), (7, 1), (1, 7), (7, 7))):
+            player = _player(x, y, name=f"P{i}")
+            player.global_id = i + 1
+            players.append(player)
+        self.game.players = players
+        self.game.starting_player_count = 4
+        self.game.destructible_at_round_start = 100
+        self.game.game_state = "playing"
+        self.game.game_start_time = 0
+        self.game.crushing_walls_active = False
+        self.game.current_time = 120_000
+        self.game.handle_crushing_walls()
+        self.assertFalse(self.game.crushing_walls_active)
+        # 16 of 100 is not under 15%, so 1.5x (180s) still waits.
+        self.game.current_time = 180_000
+        self.game.handle_crushing_walls()
+        self.assertFalse(self.game.crushing_walls_active)
+        board[2][2] = EMPTY
+        board[2][3] = EMPTY
+        self.game.current_time = 179_000
+        self.game.handle_crushing_walls()
+        self.assertFalse(self.game.crushing_walls_active)
+        self.game.current_time = 180_000
+        self.game.handle_crushing_walls()
+        self.assertTrue(self.game.crushing_walls_active)
+        board[2][2] = DESTRUCTIBLE
+        board[2][3] = DESTRUCTIBLE
+        self.game.crushing_walls_active = False
+        self.game.current_time = 240_000
         self.game.handle_crushing_walls()
         self.assertTrue(self.game.crushing_walls_active)
 
@@ -819,11 +1080,78 @@ class GameStateTests(unittest.TestCase):
     def test_champion_boss_card_is_top_right(self):
         from bm_drawing import champion_boss_card_rect
         rect = champion_boss_card_rect(1280, 720)
-        self.assertGreater(rect.x, 1280 * 0.7)
         self.assertLess(rect.y, 40)
-        self.assertLess(rect.width, 280)
-        self.assertGreaterEqual(rect.height, 140)
+        self.assertGreater(rect.width, 400)
+        self.assertGreater(rect.height, 300)
+        self.assertGreater(rect.x, 1280 * 0.5)
         self.assertLessEqual(rect.right, 1280)
+
+    def test_brabi_win_draws_an_invite_card(self):
+        import pygame
+        from bm_drawing import champion_boss_card_rect, draw_boss_result_screen
+        pygame.font.init()
+        surface = pygame.Surface((1280, 800))
+        surface.fill((12, 14, 18))
+        human = next(p for p in self.game.players if not getattr(p, "is_ai", False))
+        self.game.boss_advance = "brabi"
+        self.game.boss_fight_winner = human
+        self.game.game_state = "boss_result"
+        draw_boss_result_screen(surface, human, self.game.players, self.game)
+        card = champion_boss_card_rect(1280, 800)
+        fill = surface.get_at((card.x + 24, card.y + 24))
+        body = surface.get_at((card.centerx, card.y + 80))
+        self.assertEqual(fill[:3], (24, 28, 38))
+        self.assertGreater(body[1], 160)
+        self.game.boss_advance = "lobby"
+        surface.fill((12, 14, 18))
+        draw_boss_result_screen(surface, human, self.game.players, self.game)
+        plain = surface.get_at((card.x + 24, card.y + 24))
+        self.assertNotEqual(plain[:3], (24, 28, 38))
+
+    def test_beating_bombertom_grants_marv_killer(self):
+        import pygame
+        from bm_drawing import draw_boss_result_screen, marv_killer_banner_rect
+        champion = next(p for p in self.game.players if not getattr(p, "is_ai", False))
+        self.game.init_boss_fight(champion, uber=True)
+        self.game.game_state = "boss_fight"
+        boss = next(p for p in self.game.players if getattr(p, "is_ai", False))
+        champ = next(p for p in self.game.players if not getattr(p, "is_ai", False))
+        boss.alive = False
+        boss.boss_lives_remaining = 0
+        champ.alive = True
+        self.game.current_time = self.game.game_start_time + 5000
+        self.game.endgame_hold_until = self.game.current_time - 1
+        self.game.post_win_target_state = None
+        self.game.post_win_transition_time = None
+        with patch("bm_classes.get_pressed_keys", return_value={}), patch(
+            "bm_classes.is_key_pressed", return_value=False
+        ):
+            self.game.update()
+        self.game.current_time = self.game.post_win_transition_time
+        with patch("bm_classes.get_pressed_keys", return_value={}), patch(
+            "bm_classes.is_key_pressed", return_value=False
+        ):
+            self.game.update()
+        self.assertEqual(self.game.game_state, "boss_result")
+        self.assertTrue(self.game.marv_killer_result())
+        heading, detail, _color, prompt = self.game.boss_result_copy()
+        self.assertEqual(heading, "You win")
+        self.assertIn(MARV_KILLER_TITLE, detail)
+        self.assertIn(champ.name, detail)
+        self.assertIn("lobby", prompt)
+        self.assertIn(champ.name, self.game.marv_killer_names)
+        self.assertEqual(champ.title, MARV_KILLER_TITLE)
+        pygame.font.init()
+        surface = pygame.Surface((1280, 800))
+        draw_boss_result_screen(surface, champ, self.game.players, self.game)
+        banner = marv_killer_banner_rect(1280, 800)
+        gold = surface.get_at((banner.centerx, banner.y + 2))
+        self.assertGreater(gold[0], 180)
+        self.assertGreater(gold[1], 140)
+        self.assertTrue(self.game.continue_from_intermission())
+        self.assertEqual(self.game.game_state, "game_prep")
+        titled = next(p for p in self.game.get_all_players_info() if p["name"] == champ.name)
+        self.assertEqual(titled["title"], MARV_KILLER_TITLE)
 
     def test_get_ready_banner_stays_off_corner_spawns(self):
         from bm_drawing import get_ready_banner_rect

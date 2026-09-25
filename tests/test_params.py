@@ -11,6 +11,9 @@ from bm_params import (
     CRUSHING_WALLS_DELAY,
     CRUSHING_WALLS_GROWTH_INTERVAL_MS,
     CRUSHING_WALLS_MIN_START_S,
+    CRUSHING_WALLS_CROWDED_TIME_MULTIPLIER,
+    CRUSHING_WALLS_STALE_TIME_MULTIPLIER,
+    CRUSHING_WALLS_STALE_WALL_FRACTION,
     GRID_SIZE_1_2,
     GRID_SIZE_2_PLAYERS,
     GRID_SIZE_3_4,
@@ -88,8 +91,12 @@ class GridSizeTests(unittest.TestCase):
         self.assertEqual(CRUSHING_WALLS_MIN_START_S, 120)
         self.assertGreaterEqual(CRUSHING_WALLS_DELAY, CRUSHING_WALLS_MIN_START_S)
         self.assertGreaterEqual(CRUSHING_WALLS_2P_DELAY, CRUSHING_WALLS_MIN_START_S)
+        self.assertEqual(BOSS_CRUSHING_WALLS_DELAY, 180)
         self.assertGreaterEqual(BOSS_CRUSHING_WALLS_DELAY, CRUSHING_WALLS_MIN_START_S)
         self.assertEqual(BOSS_CRUSHING_WALLS_GROWTH_INTERVAL_MS, 1800)
+        self.assertEqual(CRUSHING_WALLS_STALE_WALL_FRACTION, 0.15)
+        self.assertEqual(CRUSHING_WALLS_CROWDED_TIME_MULTIPLIER, 1.5)
+        self.assertEqual(CRUSHING_WALLS_STALE_TIME_MULTIPLIER, 2)
 
     def test_quad_damage_delay_is_sixty_seconds(self):
         self.assertEqual(QUAD_DAMAGE_DELAY, 60)

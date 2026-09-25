@@ -30,6 +30,10 @@ export interface PlayerState {
     is_ai?: boolean;
     shield_until?: number;
     boss_lives_remaining?: number;
+    sprite?: string;
+    draw_scale?: number;
+    voice_until?: number;
+    cleaver_swing_until?: number;
 }
 
 export interface BombState {
@@ -61,6 +65,7 @@ export interface BossFightWinner {
     name: string;
     is_ai: boolean;
     color: [number, number, number];
+    title?: string;
 }
 
 export interface GameState {
@@ -98,6 +103,12 @@ export interface GameState {
         input_tick_apply_lag_p95?: number
     }
     trophy_win_threshold?: number
+    big_blast?: {
+        tiles: number
+        window_ms: number
+        delay_ms: number
+        volume: number
+    }
     result_prompt?: string
     leave_prompt?: {
         open: boolean

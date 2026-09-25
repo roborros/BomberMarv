@@ -252,8 +252,11 @@ class GameCommandHandler:
             if not self.game.prep_screen_completed:
                 self.game.game_state = "game_prep"
             else:
-                self.game.init_game()
-                self.game.game_state = "get_ready"
+                if hasattr(self.game, "start_match_from_lobby"):
+                    self.game.start_match_from_lobby()
+                else:
+                    self.game.init_game()
+                    self.game.game_state = "get_ready"
             return True
         
         elif self.game.game_state == "game_prep":

@@ -195,7 +195,7 @@ class GoalTests(unittest.TestCase):
             ("cautious", "farm", (5, 3)),
             ("normal", "farm", (5, 3)),
             ("crazy", "hunt", None),
-            ("boss", "hunt", None),
+            ("boss", "farm", (5, 3)),
         ):
             with self.subTest(personality=name):
                 bot = _bot(1, 1, name)
@@ -203,6 +203,28 @@ class GoalTests(unittest.TestCase):
                 self.assertEqual(bot._ai_goal_kind, kind)
                 if cell is not None:
                     self.assertEqual(bot._ai_goal_cell, cell)
+
+    def test_boss_takes_a_powerup_before_chasing_a_far_player(self):
+        board = _farm_board()
+        bot = _bot(1, 1, "boss")
+        far = _bot(7, 5, "normal")
+        pu = type("PU", (), {"x": 3, "y": 1, "type": "fire"})()
+        think_ai(bot, _arena(board, [bot, far], powerups=[pu]))
+        self.assertEqual(bot._ai_goal_kind, "powerup")
+        self.assertEqual(bot._ai_goal_cell, (3, 1))
+
+    def test_boss_leaves_a_side_after_bombing_to_block_another(self):
+        board = open_board(9, 7)
+        bot = _bot(6, 5, "boss", fire_power=2)
+        bot._ai_last_bomb_ms = 0
+        opp = _bot(7, 5, "normal")
+        opp.direction = (1.0, 0.0)
+        step, place = think_ai(bot, _arena(board, [bot, opp], now=40))
+        self.assertFalse(place)
+        self.assertEqual(bot._ai_goal_kind, "block")
+        self.assertNotEqual(bot._ai_goal_cell, (6, 5))
+        self.assertEqual(abs(bot._ai_goal_cell[0] - 7) + abs(bot._ai_goal_cell[1] - 5), 1)
+        self.assertNotEqual(step, (0, 0))
 
     def test_crazy_walks_to_quad_damage_before_a_closer_brick(self):
         board = _farm_board()
@@ -225,6 +247,41 @@ class GoalTests(unittest.TestCase):
         self.assertNotEqual(step, (0, 0))
         self.assertIn(bot._ai_goal_kind, ("wait", "flee"))
         self.assertTrue(_must_flee(bot, game, _danger_times(game), set(), set(), 1, 1))
+
+    def test_equal_detour_keeps_the_current_heading(self):
+        board = open_board(9, 7)
+        for y in (2, 3, 4):
+            board[y][4] = INDESTRUCTIBLE
+        opp = _bot(6, 3, "normal")
+        for name in ("normal", "crazy", "boss"):
+            with self.subTest(personality=name):
+                bot = _bot(2, 3, name)
+                bot._ai_last_dir = (0, -1)
+                step, _place = think_ai(bot, _arena(board, [bot, opp]))
+                self.assertEqual(step, (0, -1))
+                bot._ai_recent_cells = ((2, 3),)
+                bot.pos[1] -= 100
+                bot._ai_last_dir = (0, -1)
+                step, _place = think_ai(bot, _arena(board, [bot, opp]))
+                self.assertNotEqual(step, (0, 1))
+
+    def test_tied_farm_spots_do_not_freeze_the_bot(self):
+        board = open_board(9, 5)
+        for x in range(9):
+            board[1][x] = INDESTRUCTIBLE
+            board[3][x] = INDESTRUCTIBLE
+        board[1][3] = DESTRUCTIBLE
+        board[2][1] = DESTRUCTIBLE
+        board[2][5] = DESTRUCTIBLE
+        board[2][6] = INDESTRUCTIBLE
+        bot = _bot(3, 2, "boss")
+        opp = _bot(8, 2, "normal")
+        game = _arena(board, [bot, opp])
+        game.destructible_at_round_start = 3
+        step, place = think_ai(bot, game)
+        self.assertFalse(place)
+        self.assertNotEqual(step, (0, 0))
+        self.assertEqual(bot._ai_goal_kind, "farm")
 
 
 class FleeTests(unittest.TestCase):

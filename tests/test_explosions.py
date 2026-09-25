@@ -17,6 +17,7 @@ from explosions import (
 )
 from bm_params import (
     BIG_EXPLOSION_TILE_THRESHOLD,
+    BIG_EXPLOSION_VOLUME,
     BIG_EXPLOSION_WINDOW_MS,
     CELL_SIZE,
     DESTRUCTIBLE,
@@ -29,9 +30,10 @@ from bm_params import (
 
 
 class TestBigExplosionWindow(unittest.TestCase):
-    def test_defaults_are_25_tiles_in_700ms(self):
-        self.assertEqual(BIG_EXPLOSION_TILE_THRESHOLD, 25)
+    def test_defaults_are_50_tiles_in_700ms(self):
+        self.assertEqual(BIG_EXPLOSION_TILE_THRESHOLD, 50)
         self.assertEqual(BIG_EXPLOSION_WINDOW_MS, 700)
+        self.assertEqual(BIG_EXPLOSION_VOLUME, 1.0)
 
     def test_single_large_explosion_crosses_threshold(self):
         cells = [(i, 0) for i in range(BIG_EXPLOSION_TILE_THRESHOLD)]

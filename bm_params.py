@@ -42,8 +42,21 @@ BOSS_START_BOMB_CAPACITY = 2
 BOSS_NAME = "BomberMarv"
 BOSS_COLOR = (56, 56, 62)
 BOSS_QUOTE = "Finally a worthy challenger, come and fight me!"
-BOSS_CRUSHING_WALLS_DELAY = 120      # Delay before crushing walls in boss fight (seconds)
-BOSS_CRUSHING_WALLS_GROWTH_INTERVAL_MS = 1800  # 2x slower than the previous FFA interval
+BOSS_TAUNT = "Fresh meat!"
+BOSS_TAUNT_INTERVAL_MS = 15000
+# Uberboss after BomberMarv falls. Extra lives are revives, so 2 means 3 lives total.
+UBER_BOSS_NAME = "BomberTom"
+MARV_KILLER_TITLE = "MarvKiller"
+UBER_BOSS_QUOTE = "The butcher was practice, now you face me."
+UBER_BOSS_COLOR = (36, 200, 84)
+UBER_BOSS_SPEED_MULTIPLIER = 2.0
+UBER_BOSS_EXTRA_LIVES = 2
+UBER_BOSS_START_FIRE_POWER = 5
+UBER_BOSS_START_BOMB_CAPACITY = 5
+UBER_BOSS_DRAW_SCALE = 1.5
+UBER_BOSS_GLOW_PERIOD_MS = 1400
+BOSS_CRUSHING_WALLS_DELAY = 180      # Delay before crushing walls in boss fight (seconds)
+BOSS_CRUSHING_WALLS_GROWTH_INTERVAL_MS = 1800  # Slower squeeze than a normal round
 
 QUAD_DAMAGE_PROBABILITY = 0.0005 # Chance to spawn a Quad Damage powerup
 QUAD_DAMAGE_TIME = 20 # Duration of Quad Damage effect (s)
@@ -55,9 +68,14 @@ QUAD_DAMAGE_SPEEDUP = 1.5  # Speedup
 CRUSHING_WALLS_MIN_START_S = 120        # Never start sooner than this after game_start_time
 CRUSHING_WALLS_DELAY = 120              # Delay before crushing walls activate (seconds)
 CRUSHING_WALLS_2P_DELAY = 180           # Soonest start when the round began with 2 players
-CRUSHING_WALLS_MIN_DESTROYABLE = 500      # Minimum destroyable cells before activation
+CRUSHING_WALLS_MIN_DESTROYABLE = 500      # Start once fewer than this many soft walls remain
 CRUSHING_WALLS_MAX_ALIVE = 2              # Max alive players to allow activation (<= triggers)
 CRUSHING_WALLS_GROWTH_INTERVAL_MS = 1200  # Interval between new walls once active (ms)
+# More than two players still alive, and fewer than 15% of the soft walls remain.
+CRUSHING_WALLS_STALE_WALL_FRACTION = 0.15
+CRUSHING_WALLS_CROWDED_TIME_MULTIPLIER = 1.5
+# After twice the wait, the walls start even if the soft walls are still up.
+CRUSHING_WALLS_STALE_TIME_MULTIPLIER = 2
 
 # Lobby rows (local players section)
 PREP_ROW_LOCAL = 0
@@ -146,9 +164,10 @@ EXPLOSION_DURATION = 400
 BOSS_SHIELD_DURATION_MS = EXPLOSION_DURATION + 200  # i-frames after spending an extra life
 
 # Play mocny_stral.mp3 once unique explosion tiles in this window reach the threshold.
-BIG_EXPLOSION_TILE_THRESHOLD = 25
+BIG_EXPLOSION_TILE_THRESHOLD = 50
 BIG_EXPLOSION_WINDOW_MS = 700
 BIG_EXPLOSION_SOUND_DELAY_MS = 300
+BIG_EXPLOSION_VOLUME = 1.0
 
 # Explosion collision: inner 70% of a flaming cell. Flame art stops at the
 # last cell's center; the hit rect is that same inner 70% square.

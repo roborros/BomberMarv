@@ -8,6 +8,7 @@ import pygame
 import sys
 from typing import Optional, Tuple
 from event_abstraction import EventProcessor, GameCommandHandler
+from input_abstraction import note_key_event
 from bm_params import BASE_WIDTH, BASE_HEIGHT, INITIAL_WINDOW_SIZE
 
 class FrontendScreen:
@@ -131,6 +132,7 @@ class FrontendEventHandler:
     def process_events(self):
         """Process all pygame events and delegate to game logic"""
         for event in pygame.event.get():
+            note_key_event(event)
             # Convert pygame event to game event
             game_event = EventProcessor.process_pygame_event(event)
             

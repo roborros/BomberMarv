@@ -56,6 +56,62 @@ class Keys:
     X = pygame.K_x
     Y = pygame.K_y
     Z = pygame.K_z
+    LALT = pygame.K_LALT
+    RALT = pygame.K_RALT
+
+# Key-down notes from the event queue. pygame.key.get_pressed() is indexed by
+# scancode after a keycode conversion, but a dict built from range(len(state))
+# never contains Alt (its keycode is far past the 512 scancodes). Windows also
+# delivers Alt chords as system keys, which the pressed-state array can miss.
+_noted_keys = set()
+_noted_alt = False
+_ALT_MOD_MASK = pygame.KMOD_ALT | pygame.KMOD_LALT | pygame.KMOD_RALT
+
+
+def clear_noted_keys() -> None:
+    """Drop tracked keys. Used when focus is lost and by tests."""
+    global _noted_alt
+    _noted_keys.clear()
+    _noted_alt = False
+
+
+def note_key_event(event) -> None:
+    """Remember KEYDOWN / KEYUP so Alt+K+L still counts when get_pressed misses it."""
+    global _noted_alt
+    etype = getattr(event, "type", None)
+    if etype == pygame.KEYDOWN:
+        key = getattr(event, "key", None)
+        if key is None:
+            return
+        key = int(key)
+        _noted_keys.add(key)
+        mods = int(getattr(event, "mod", 0) or 0)
+        _noted_alt = key in (int(Keys.LALT), int(Keys.RALT)) or bool(mods & _ALT_MOD_MASK)
+    elif etype == pygame.KEYUP:
+        key = getattr(event, "key", None)
+        if key is None:
+            return
+        key = int(key)
+        _noted_keys.discard(key)
+        mods = int(getattr(event, "mod", 0) or 0)
+        _noted_alt = (
+            int(Keys.LALT) in _noted_keys
+            or int(Keys.RALT) in _noted_keys
+            or bool(mods & _ALT_MOD_MASK)
+        )
+    elif etype in (
+        getattr(pygame, "WINDOWFOCUSLOST", -1),
+        getattr(pygame, "WINDOWMINIMIZED", -2),
+    ):
+        clear_noted_keys()
+
+
+def noted_key_down(key_code: int) -> bool:
+    return int(key_code) in _noted_keys
+
+
+def noted_alt_down() -> bool:
+    return _noted_alt or noted_key_down(Keys.LALT) or noted_key_down(Keys.RALT)
 
 class InputBackend(ABC):
     """Abstract base class for input backends"""
