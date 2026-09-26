@@ -998,7 +998,8 @@ export class Renderer {
             return cols;
         };
 
-        const winnerPlayer = players.find(p => p.alive) || null
+        const alivePlayers = players.filter(p => p.alive)
+        const winnerPlayer = alivePlayers.length === 1 ? alivePlayers[0] : null
         let winnerLabel = 'No one wins!'
         if (state.state === 'boss_result') {
             const bossWinner = state.boss_fight_winner

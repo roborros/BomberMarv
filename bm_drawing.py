@@ -15,6 +15,7 @@ from explosions import (
     explosion_tip_clip,
     is_player_in_planned_blast,
 )
+from bm_paths import lan_join_label
 from replay import frame_at_time, hydrate_replay_snapshot, letterbox_dest, pick_kill_cam, replay_view_rect
 
 _AVATAR_CACHE = {}
@@ -1745,8 +1746,15 @@ def draw_game_prep(surface, Game):
     inset = 20
     section_font = _ui_font(min(32, max(22, sh // 48)), bold=True)
     label_font = _ui_font(min(20, max(16, sh // 60)), bold=True)
+    join_label = lan_join_label()
     _blit_label(surface, section_font, "Players", (235, 242, 255), left_panel.x + inset, left_panel.y + 14, left_panel.width - 40, section_font.get_height() + 2, vcenter=False)
-    _blit_label(surface, section_font, "Remote clients", (235, 242, 255), right_panel.x + inset, right_panel.y + 14, right_panel.width - 40, section_font.get_height() + 2, vcenter=False)
+    _blit_label(surface, section_font, "Remote players", (235, 242, 255), right_panel.x + inset, right_panel.y + 14, right_panel.width - 40, section_font.get_height() + 2, vcenter=False)
+    join_font = _ui_font(min(20, max(14, sh // 62)), bold=True)
+    _blit_label(
+        surface, join_font, join_label, (240, 214, 130),
+        right_panel.x + inset, right_panel.y + 16 + section_font.get_height(),
+        right_panel.width - 40, join_font.get_height() + 2, vcenter=False,
+    )
 
     count_label_y = left_panel.y + 14 + section_font.get_height() + 8
     _blit_label(surface, label_font, "Local player count", (185, 214, 180), left_panel.x + inset, count_label_y, 420, label_font.get_height() + 2, vcenter=False)
@@ -1901,7 +1909,7 @@ def draw_game_prep(surface, Game):
 
     card_font = _ui_font(min(24, max(16, sh // 58)), bold=True)
     card_sub = _ui_font(min(18, max(14, sh // 64)))
-    client_card_y = right_panel.y + 14 + section_font.get_height() + 14
+    client_card_y = right_panel.y + 18 + section_font.get_height() + join_font.get_height() + 12
     card_h = min(92, max(70, (right_panel.bottom - client_card_y - 20) // 4))
     if cached_clients:
         for client_id, info in cached_clients.items():
@@ -1936,7 +1944,7 @@ def draw_game_prep(surface, Game):
             empty.x + 16, empty.y + 16, empty.width - 32, card_font.get_height() + 4, vcenter=False,
         )
         _blit_label(
-            surface, card_sub, "Share this PC's address. Guests open port 8080 or 5173 on the same Wi-Fi.",
+            surface, card_sub, f"Share {join_label} with guests on the same Wi-Fi.",
             (172, 184, 204), empty.x + 16, empty.y + 20 + card_font.get_height(), empty.width - 32, empty.height - card_font.get_height() - 28, vcenter=False,
         )
 

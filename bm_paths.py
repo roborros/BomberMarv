@@ -101,6 +101,20 @@ def detect_lan_ip() -> str:
     return ips[0] if ips else "127.0.0.1"
 
 
+def http_join_port() -> int:
+    raw = os.environ.get("BM_HTTP_PORT", "8080")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 8080
+
+
+def lan_join_label(http_port: int | None = None) -> str:
+    """Address guests type in a browser on the same network."""
+    port = http_join_port() if http_port is None else int(http_port)
+    return f"http://{detect_lan_ip()}:{port}"
+
+
 def print_join_urls(http_port: int = 8080, ws_port: int = 8765) -> None:
     lan_ips = list_lan_ips()
     print("", flush=True)

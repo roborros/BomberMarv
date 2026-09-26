@@ -19,6 +19,7 @@ from bm_params import (
     EXPLOSION_DURATION,
     INDESTRUCTIBLE,
     MAX_PLAYERS,
+    PREP_ROW_PLAYERS,
     PLAYER_DRAW_SCALE,
     PLAYER_SPEED,
     UBER_BOSS_DRAW_SCALE,
@@ -473,6 +474,117 @@ class GameStateTests(unittest.TestCase):
         self.game.handle_prep_key_event(event)
         self.assertEqual(self.game.game_state, "get_ready")
         self.assertTrue(self.game.prep_screen_completed)
+
+    def _prep_key(self, key, unicode=""):
+        return types.SimpleNamespace(key=key, unicode=unicode)
+
+    def test_local_name_edit_commits_and_clears_caret(self):
+        self.game.prep_num_players = 2
+        self.game.prep_ai_count = 0
+        self.game.game_state = "game_prep"
+        self.game.prep_section = "local_players"
+        self.game.prep_cursor_row = PREP_ROW_PLAYERS
+        original = self.game.prep_player_names[0]
+        self.game.handle_prep_key_event(self._prep_key(Keys.ENTER, "\r"))
+        self.assertTrue(self.game.prep_editing_name)
+        self.game.handle_prep_key_event(self._prep_key(Keys.BACKSPACE))
+        self.game.handle_prep_key_event(self._prep_key(0, "t"))
+        self.game.handle_prep_key_event(self._prep_key(Keys.ENTER, "\r"))
+        self.assertFalse(self.game.prep_editing_name)
+        self.assertFalse(self.game.team_mode_enabled)
+        renamed = self.game.get_all_players_info()[0]["name"]
+        self.assertEqual(renamed, original[:-1] + "t")
+        self.assertFalse(renamed.endswith("_"))
+        self.assertNotIn("\r", renamed)
+        self.game.handle_prep_key_event(self._prep_key(Keys.DOWN))
+        self.assertFalse(self.game.prep_editing_name)
+        self.assertNotEqual(self.game.prep_cursor_row, PREP_ROW_PLAYERS)
+        self.assertEqual(self.game.get_all_players_info()[0]["name"], renamed)
+
+    def test_web_name_edit_commits_and_clears_caret(self):
+        self.game.prep_num_players = 1
+        self.game.prep_ai_count = 0
+        self.game._cached_status = {
+            "clients": {
+                "4": {"registered": True, "players": [2], "display_name": "Webby", "slot": 2}
+            },
+            "players": {},
+        }
+        self.game.game_state = "game_prep"
+        self.game.prep_section = "local_players"
+        infos = self.game.get_all_players_info()
+        web_index = next(i for i, info in enumerate(infos) if info["type"] == "client")
+        self.game.prep_cursor_row = PREP_ROW_PLAYERS + web_index
+        self.game.handle_prep_key_event(self._prep_key(Keys.ENTER, "\r"))
+        self.assertTrue(self.game.prep_editing_name)
+        self.assertEqual(self.game.prep_name_edit_index, web_index)
+        self.game.handle_prep_key_event(self._prep_key(0, "X"))
+        self.game.handle_prep_key_event(self._prep_key(Keys.ENTER, "\r"))
+        self.assertFalse(self.game.prep_editing_name)
+        renamed = self.game.get_all_players_info()[web_index]["name"]
+        self.assertEqual(renamed, "WebbyX")
+        self.assertFalse(renamed.endswith("_"))
+        self.game.handle_prep_key_event(self._prep_key(Keys.UP))
+        self.assertFalse(self.game.prep_editing_name)
+        self.assertEqual(self.game.get_all_players_info()[web_index]["name"], "WebbyX")
+
+    def test_two_living_players_do_not_end_the_round(self):
+        players = self.game.players[:2]
+        self.assertGreaterEqual(len(players), 2)
+        for player in self.game.players:
+            player.alive = player in players
+            player.team = 0
+        self.game.team_mode_enabled = True
+        self.game.game_state = "playing"
+        self.game.current_time = 8000
+        self.game.game_start_time = 0
+        self.game.endgame_hold_until = None
+        self.game.post_win_target_state = None
+        trophies = [player.trophies for player in self.game.players]
+        with patch("bm_classes.get_pressed_keys", return_value={}), patch(
+            "bm_classes.is_key_pressed", return_value=False
+        ):
+            self.game.update()
+        self.assertIsNone(self.game.endgame_hold_until)
+        self.assertIsNone(self.game.post_win_target_state)
+        self.assertEqual(self.game.game_state, "playing")
+        self.assertTrue(all(player.alive for player in players))
+        self.assertEqual([player.trophies for player in self.game.players], trophies)
+
+    def test_one_survivor_wins_and_all_dead_is_a_draw(self):
+        survivor, other = self.game.players[0], self.game.players[1]
+        for player in self.game.players:
+            player.alive = player is survivor
+            player.trophies = 0
+        self.game.team_mode_enabled = True
+        survivor.team = 0
+        other.team = 0
+        self.game.game_state = "playing"
+        self.game.current_time = 4000
+        self.game.endgame_hold_until = 0
+        self.game.post_win_target_state = None
+        self.game.death_events = [1000]
+        with patch("bm_classes.get_pressed_keys", return_value={}), patch(
+            "bm_classes.is_key_pressed", return_value=False
+        ):
+            self.game.update()
+        self.assertEqual(survivor.trophies, 1)
+        self.assertEqual(other.trophies, 0)
+        self.assertEqual(self.game.post_win_target_state, "win")
+
+        for player in self.game.players:
+            player.alive = False
+            player.trophies = 0
+        self.game.post_win_target_state = None
+        self.game.post_win_transition_time = None
+        self.game.endgame_hold_until = 0
+        self.game.game_state = "playing"
+        with patch("bm_classes.get_pressed_keys", return_value={}), patch(
+            "bm_classes.is_key_pressed", return_value=False
+        ):
+            self.game.update()
+        self.assertTrue(all(player.trophies == 0 for player in self.game.players))
+        self.assertEqual(self.game.post_win_target_state, "win")
 
     def test_tab_switches_prep_section(self):
         self.game.prep_section = "local_players"
