@@ -21,7 +21,7 @@ BomberMarv is built for a living-room LAN: up to eight players, CPU opponents, t
 
 ## Download
 
-These are the URLs a GitHub Release will serve. This pass does **not** publish or tag anything; attach `dist/BomberMarv-windows.zip` the first time you create a release.
+The Windows host is the zip on the latest [GitHub Release](https://github.com/roborros/BomberMarv/releases/latest). Source is the `dev` branch.
 
 | Package | Link |
 | --- | --- |
@@ -30,8 +30,6 @@ These are the URLs a GitHub Release will serve. This pass does **not** publish o
 | **Git clone** | `git clone https://github.com/roborros/BomberMarv.git` |
 
 The Windows zip is a folder, not a single-file installer. Unzip it, keep `BomberMarv.exe` next to the bundled `img/`, `sounds/`, and web files, then double-click the exe. Friends open `http://<host-ip>:8080` in a browser.
-
-Until a release exists, play from source with the How to section below, or build the zip yourself with `python compile_windows.py`.
 
 ## How to
 
@@ -90,7 +88,7 @@ python compile_windows.py
 Output:
 
 - `dist/BomberMarv/BomberMarv.exe` — copy the whole `BomberMarv` folder
-- `dist/BomberMarv-windows.zip` — the file a GitHub Release should attach
+- `dist/BomberMarv-windows.zip` — the file attached to the GitHub Release
 
 Python and Bun stay required only on the machine that *builds*. Players of the zip do not need them.
 

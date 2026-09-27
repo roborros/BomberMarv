@@ -1193,8 +1193,10 @@ class GameStateTests(unittest.TestCase):
         from bm_drawing import champion_boss_card_rect
         rect = champion_boss_card_rect(1280, 720)
         self.assertLess(rect.y, 40)
-        self.assertGreater(rect.width, 400)
-        self.assertGreater(rect.height, 300)
+        self.assertLess(rect.bottom, int(720 * 0.34))
+        self.assertGreater(rect.width, 450)
+        self.assertLess(rect.width, 560)
+        self.assertGreater(rect.height, 180)
         self.assertGreater(rect.x, 1280 * 0.5)
         self.assertLessEqual(rect.right, 1280)
 
@@ -1211,9 +1213,14 @@ class GameStateTests(unittest.TestCase):
         draw_boss_result_screen(surface, human, self.game.players, self.game)
         card = champion_boss_card_rect(1280, 800)
         fill = surface.get_at((card.x + 24, card.y + 24))
-        body = surface.get_at((card.centerx, card.y + 80))
         self.assertEqual(fill[:3], (24, 28, 38))
-        self.assertGreater(body[1], 160)
+        green = False
+        for y in range(card.y + 4, card.y + card.height // 2):
+            pixel = surface.get_at((card.centerx, y))
+            if pixel[1] > 150 and pixel[1] > pixel[0] + 40:
+                green = True
+                break
+        self.assertTrue(green)
         self.game.boss_advance = "lobby"
         surface.fill((12, 14, 18))
         draw_boss_result_screen(surface, human, self.game.players, self.game)

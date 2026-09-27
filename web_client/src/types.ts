@@ -48,6 +48,8 @@ export interface ExplosionState {
     cells: [number, number][];
     start_time: number;
     quad_damage: boolean;
+    lightning?: boolean;
+    lightning_style?: string;
 }
 
 export interface PowerUpState {

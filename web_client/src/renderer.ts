@@ -1,9 +1,10 @@
 import type { GameState, PlayerState, BombState, ExplosionState, PowerUpState } from './types';
 import { computeBoardSignature } from './boardHash';
 import { isPlayerInPlannedBlast, explosionArmPixelLength } from './explosionVisual';
+import { drawLightningExplosion } from './lightning';
 import { buildWinStatRows } from './winStats';
 import { computeCanvasBackingStore } from './canvasScale';
-import { BOSS_COLOR, BOSS_NAME, BOMBER_TOM_COLOR, BOMBER_TOM_NAME, BOMBER_TOM_QUOTE, MARV_KILLER_TITLE, bossResultTitle, championBossCardRect, inviteQuoteLines, isMarvKillerWin, showsBomberTomInvite } from './championChallenge';
+import { BOSS_COLOR, BOSS_NAME, BOSS_QUOTE, BOMBER_TOM_COLOR, BOMBER_TOM_NAME, BOMBER_TOM_QUOTE, MARV_KILLER_TITLE, bossResultTitle, championBossCardRect, inviteQuoteLines, isMarvKillerWin, marvKillerBannerRect, showsBomberTomInvite } from './championChallenge';
 
 // Constants matching Python host rendering
 const CELL_SIZE = 100;
@@ -549,6 +550,20 @@ export class Renderer {
         const leftLength = explosionArmPixelLength(armFactor, leftMax, CELL_SIZE);
         const rightLength = explosionArmPixelLength(armFactor, rightMax, CELL_SIZE);
 
+        if (explosion.lightning) {
+            drawLightningExplosion(
+                this.ctx,
+                [centerPixelX, centerPixelY],
+                [[0, -1, upLength], [0, 1, downLength], [-1, 0, leftLength], [1, 0, rightLength]],
+                CELL_SIZE,
+                currentTimeMs,
+                explosion.start_time + cx * 17 + cy * 31,
+                Math.max(0.35, armFactor),
+                explosion.lightning_style || 'marv',
+            );
+            return;
+        }
+
         const centerSprite = explosion.quad_damage ? this.blastCenterQd : this.blastCenter;
         const armSprite = explosion.quad_damage ? this.blastArmQd : this.blastArm;
         const thickness = CELL_SIZE * FLAME_ARM_THICKNESS_RATIO;
@@ -749,7 +764,7 @@ export class Renderer {
         this.drawBossInvite(state, {
             name: BOSS_NAME,
             color: BOSS_COLOR,
-            quoteLines: inviteQuoteLines('Finally a worthy challenger, come and fight me!'),
+            quote: BOSS_QUOTE,
             stats: 'x1.4  ·  Fire 2  ·  Bombs 2  ·  +1 life',
             sprite: 'cleaver',
             drawScale: 1,
@@ -763,7 +778,7 @@ export class Renderer {
         this.drawBossInvite(state, {
             name: BOMBER_TOM_NAME,
             color: BOMBER_TOM_COLOR,
-            quoteLines: inviteQuoteLines(BOMBER_TOM_QUOTE),
+            quote: BOMBER_TOM_QUOTE,
             stats: 'x2  ·  Fire 5  ·  Bombs 5  ·  +2 lives',
             sprite: 'brabi',
             drawScale: 1.5,
@@ -776,7 +791,7 @@ export class Renderer {
     private drawBossInvite(state: GameState, invite: {
         name: string
         color: [number, number, number]
-        quoteLines: string[]
+        quote: string
         stats: string
         sprite: string
         drawScale: number
@@ -795,9 +810,9 @@ export class Renderer {
         this.roundRect(card.x, card.y, card.w, card.h, 14);
         this.ctx.stroke();
 
-        const bossR = Math.max(16, Math.floor(Math.min(card.w, card.h) * 0.16 * invite.radiusScale));
+        const bossR = Math.max(18, Math.floor(Math.min(card.w, card.h) * 0.18 * invite.radiusScale));
         const bossX = card.x + card.w / 2;
-        const bossY = card.y + 12 + bossR;
+        const bossY = card.y + 10 + bossR;
         this.ctx.fillStyle = invite.backdrop;
         this.ctx.beginPath();
         this.ctx.arc(bossX, bossY, bossR * 1.18, 0, Math.PI * 2);
@@ -827,24 +842,28 @@ export class Renderer {
 
         this.ctx.textAlign = 'center';
         this.ctx.textBaseline = 'top';
-        const nameSize = Math.max(28, Math.floor(card.h * 0.1));
-        const quoteSize = Math.max(22, Math.floor(card.h * 0.07));
-        const statSize = Math.max(20, Math.floor(card.h * 0.065));
+        const nameSize = Math.max(22, Math.min(34, Math.floor(card.h / 8)));
+        const quoteSize = Math.max(18, Math.min(26, Math.floor(card.h / 10)));
+        const statSize = Math.max(15, Math.min(20, Math.floor(card.h / 13)));
         this.setUiFont(nameSize, true);
         this.ctx.fillStyle = 'rgb(236, 240, 248)';
-        this.ctx.fillText(invite.name, bossX, bossY + bossR + 8, card.w - 24);
+        this.ctx.fillText(invite.name, bossX, bossY + bossR + 8, card.w - 28);
 
         this.setUiFont(quoteSize, true);
         this.ctx.fillStyle = 'rgb(210, 214, 230)';
+        const maxChars = Math.max(18, Math.floor((card.w - 40) / (quoteSize * 0.55)));
+        const quoteLines = inviteQuoteLines(invite.quote, maxChars);
         let quoteY = bossY + bossR + nameSize + 10;
-        for (const line of invite.quoteLines) {
-            this.ctx.fillText(line, bossX, quoteY, card.w - 28);
-            quoteY += quoteSize + 6;
+        const statsFloor = card.y + card.h - statSize - 14;
+        for (const line of quoteLines) {
+            if (quoteY + quoteSize > statsFloor - 6) break;
+            this.ctx.fillText(line, bossX, quoteY, card.w - 32);
+            quoteY += quoteSize + 4;
         }
 
         this.setUiFont(statSize);
         this.ctx.fillStyle = 'rgb(186, 196, 210)';
-        this.ctx.fillText(invite.stats, bossX, card.y + card.h - statSize - 16, card.w - 24);
+        this.ctx.fillText(invite.stats, bossX, Math.min(statsFloor, quoteY + 6), card.w - 28);
         this.ctx.textAlign = 'left';
         this.ctx.textBaseline = 'alphabetic';
     }
@@ -852,10 +871,11 @@ export class Renderer {
     private drawMarvKillerBanner(state: GameState) {
         const w = this.width;
         const h = this.height;
-        const cardW = Math.min(920, Math.max(480, Math.floor(w * 0.62)));
-        const cardH = Math.min(250, Math.max(168, Math.floor(h * 0.26)));
-        const x = Math.floor((w - cardW) / 2);
-        const y = Math.max(14, Math.floor(h * 0.03));
+        const banner = marvKillerBannerRect(w, h);
+        const cardW = banner.w;
+        const cardH = banner.h;
+        const x = banner.x;
+        const y = banner.y;
         this.ctx.fillStyle = 'rgb(28, 20, 8)';
         this.roundRect(x, y, cardW, cardH, 18);
         this.ctx.fill();

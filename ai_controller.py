@@ -5,7 +5,8 @@ Grid BFS with a timed danger map. Think at ~12.5 Hz; steering (center-then-turn)
 runs every sim tick via compute_ai_input.
 
 CPU personalities are cautious, normal, or crazy. The champion boss uses the
-boss script: chase, bomb, and stand in the way instead of waiting.
+boss script: chase and bomb. A bot plants when a brick or a lane is worth it
+and one exit is still open, instead of waiting until both sides close.
 """
 
 from collections import deque
@@ -79,10 +80,10 @@ def _search_dirs(player, origin: Coord, now: int):
 DANGER_LEAD_MS = 700
 BOSS_DANGER_LEAD_MS = 1100
 
-BOMB_COOLDOWN_MS = 180
-CAUTIOUS_BOMB_COOLDOWN_MS = 420
-BOSS_BOMB_COOLDOWN_MS = 90
-CRAZY_BOMB_COOLDOWN_MS = 60
+BOMB_COOLDOWN_MS = 70
+CAUTIOUS_BOMB_COOLDOWN_MS = 140
+BOSS_BOMB_COOLDOWN_MS = 30
+CRAZY_BOMB_COOLDOWN_MS = 40
 POWERUP_HUNT_LIMIT = 14
 BOSS_POWERUP_HUNT_LIMIT = 22
 CAUTIOUS_POWERUP_HUNT_LIMIT = 18
@@ -97,20 +98,23 @@ AI_TASTE_MS = 900
 AI_TASTE_NOISE = 0.45
 AI_COMMIT_BONUS = 0.7
 AI_REVISIT_PENALTY = 1.5
-CPU_SAFETY_MARGIN_MS = 80
-BOSS_SAFETY_MARGIN_MS = 40
-CAUTIOUS_SAFETY_MARGIN_MS = 160
-CRAZY_SAFETY_MARGIN_MS = 40
+CPU_SAFETY_MARGIN_MS = 60
+BOSS_SAFETY_MARGIN_MS = 20
+CAUTIOUS_SAFETY_MARGIN_MS = 100
+CRAZY_SAFETY_MARGIN_MS = 30
 CLOSE_COMBAT_MANHATTAN = 4
 CAUTIOUS_NEAR_CELLS = 4
+# How far past the fuse a bot will still throw down an open lane.
+LANE_LEAD_CELLS = 2
+BOSS_LANE_LEAD_CELLS = 4
 HEAD_START_CELLS = 1
 TRAP_SAFE_NEIGHBORS = 2
 BOSS_TRAP_SAFE_NEIGHBORS = 3
 FARM_SEARCH_LIMIT = 10
 BLOCK_SEARCH_LIMIT = 12
 AI_PERSONALITIES = ("cautious", "normal", "crazy")
-# Extra cells of travel required before planting, so a barely-possible exit is refused.
-ESCAPE_RESERVE_CELLS = 1
+# Slow cautious bots keep one spare cell. Faster bots spend the fuse on the run.
+ESCAPE_RESERVE_CELLS = 0
 
 _INF = 10**12
 
@@ -194,10 +198,7 @@ def _bomb_cooldown_ms(player) -> int:
 
 def _max_live_bombs(player) -> int:
     raw = getattr(player, "bomb_capacity", 1)
-    cap = 1 if raw is None else max(0, int(raw))
-    if ai_personality(player) == "cautious":
-        return min(1, cap)
-    return cap
+    return 1 if raw is None else max(0, int(raw))
 
 
 def _trap_neighbor_limit(player) -> int:
@@ -642,6 +643,84 @@ def _must_flee(
     return not _safe_to_stay(start, now, danger_times, _explosion_duration())
 
 
+def _escape_reserve_cells(player) -> int:
+    """Spare cells before a plant. Speed replaces the spare: a fast bot clears the cell."""
+    persona = ai_personality(player)
+    if persona in ("boss", "crazy"):
+        return 0
+    if _cell_travel_ms(player) < _default_travel_ms():
+        return 0
+    if persona == "cautious":
+        return 1
+    return ESCAPE_RESERVE_CELLS
+
+
+def _closing_cells(player, game) -> Set[Coord]:
+    """Where a nearby opponent is standing or about to step. Those are not exits."""
+    start = player.get_grid_pos()
+    closing: Set[Coord] = set()
+    for opp in _alive_opponents(player, game):
+        og = opp.get_grid_pos()
+        if _manhattan(start, og) > 5:
+            continue
+        closing.add(og)
+        face = _facing_step(opp)
+        if face == (0, 0):
+            continue
+        step = (og[0] + face[0], og[1] + face[1])
+        if _manhattan(start, step) <= 2:
+            closing.add(step)
+    closing.discard(start)
+    return closing
+
+
+def _open_lane(board, start: Coord, goal: Coord) -> bool:
+    """True when start and goal share a row or column of empty cells."""
+    sx, sy = start
+    gx, gy = goal
+    if sx != gx and sy != gy:
+        return False
+    if start == goal:
+        return True
+    step_x = 0 if sx == gx else (1 if gx > sx else -1)
+    step_y = 0 if sy == gy else (1 if gy > sy else -1)
+    x, y = sx + step_x, sy + step_y
+    while (x, y) != goal:
+        if not _in_bounds_empty(board, x, y):
+            return False
+        x += step_x
+        y += step_y
+    return True
+
+
+def _lane_lead(player) -> int:
+    persona = ai_personality(player)
+    fire = max(1, int(getattr(player, "fire_power", 1) or 1))
+    if persona == "boss":
+        return fire + BOSS_LANE_LEAD_CELLS
+    if persona == "crazy":
+        return fire + LANE_LEAD_CELLS + 1
+    if persona == "cautious":
+        return fire + 1
+    return fire + LANE_LEAD_CELLS
+
+
+def _open_lane_toward_opponent(player, game) -> bool:
+    """Bosses and crazy bots cut an open lane a little before the shot connects."""
+    if ai_personality(player) not in ("boss", "crazy"):
+        return False
+    start = player.get_grid_pos()
+    reach = _lane_lead(player)
+    for opp in _alive_opponents(player, game):
+        og = opp.get_grid_pos()
+        dist = _manhattan(start, og)
+        if dist <= 0 or dist > reach:
+            continue
+        if _open_lane(game.board, start, og):
+            return True
+    return False
+
+
 def _can_escape_after_bomb(player, game, danger: set = None) -> bool:
     """True if a timed path reaches a stay-safe cell before our fuse ends."""
     now = int(getattr(game, "current_time", 0))
@@ -656,17 +735,17 @@ def _can_escape_after_bomb(player, game, danger: set = None) -> bool:
         times[cell] = min(times.get(cell, boom), boom)
     bomb_cells = _cells_with_bombs(game.bombs)
     bomb_cells.add((px, py))
+    # Cells an opponent already stands on, or is stepping into, are not an exit.
+    bomb_cells.update(_closing_cells(player, game))
     travel = _cell_travel_ms(player)
     margin = _safety_margin_ms(player)
     plan = _timed_escape_step(
-        game.board, (px, py), times, bomb_cells, now, travel, margin, occupied=None,
+        game.board, (px, py), times, bomb_cells, now, travel, margin, occupied=None, player=player,
     )
     if plan is None:
         return False
     _step, dist, _goal = plan
-    reserve = ESCAPE_RESERVE_CELLS
-    if not _is_cell_centered(player):
-        reserve += 1
+    reserve = _escape_reserve_cells(player)
     return (dist + reserve) * travel + margin < timer
 
 
@@ -1015,31 +1094,17 @@ def _should_place_bomb(
     if not _can_escape_after_bomb(player, game):
         return False
 
-    persona = ai_personality(player)
-    if persona == "cautious" and _nearest_opponent_dist(player, game) <= CAUTIOUS_NEAR_CELLS:
-        return False
-    open_arena = _open_arena(game)
-    if persona == "cautious":
-        if open_arena and _attack_available(
-            player, game, danger_times, bomb_cells, now, travel_ms, margin_ms,
-            nearby_only=False,
-        ):
-            return True
-    elif _attack_available(
+    here = _soft_walls_hit(game.board, px, py, int(getattr(player, "fire_power", 1) or 1))
+    # Any brick is worth a bomb when a way out exists. Walking to a slightly
+    # richer cell is how they used to stand still and get flanked.
+    if here > 0:
+        return True
+    if _attack_available(
         player, game, danger_times, bomb_cells, now, travel_ms, margin_ms,
-        nearby_only=(persona == "normal" and not open_arena),
+        nearby_only=False,
     ):
         return True
-
-    here = _soft_walls_hit(game.board, px, py, int(getattr(player, "fire_power", 1) or 1))
-    if here <= 0:
-        return False
-    options = _reachable_wall_cells(
-        game.board, (px, py), int(player.fire_power), bomb_cells,
-        danger_times, now, travel_ms, margin_ms,
-    )
-    best = max((score for score, _dist, _cell in options), default=0)
-    return here >= best
+    return _open_lane_toward_opponent(player, game)
 
 
 def _random_safe_direction(
@@ -1565,13 +1630,10 @@ def think_ai(player, game) -> Tuple[Coord, bool]:
         _commit_goal(player, "wait", plan[2], now)
         return plan[0], place
 
-    sticky = None
-    persona = ai_personality(player)
-    threatened = persona == "cautious" and _nearest_opponent_dist(player, game) <= CAUTIOUS_NEAR_CELLS
-    if not threatened:
-        sticky = _follow_sticky(player, board, times, bombs, occupied, now, travel, margin)
+    sticky = _follow_sticky(player, board, times, bombs, occupied, now, travel, margin)
     if sticky is not None:
         return sticky, False
+    persona = ai_personality(player)
 
     def _finish(kind: str, plan: Tuple[Coord, Coord]):
         step, goal = plan
@@ -1580,11 +1642,7 @@ def think_ai(player, game) -> Tuple[Coord, bool]:
             step = _idle_step(player, board, start, bombs, occupied, times, now)
         return step, False
 
-    if threatened:
-        retreat = _retreat_plan(player, game, times, bombs, occupied, now, travel, margin)
-        if retreat is not None and retreat[0] != (0, 0):
-            return _finish("retreat", retreat)
-    elif _open_arena(game) and persona != "boss":
+    if _open_arena(game) and persona != "boss":
         block = _block_plan(player, game, times, bombs, occupied, now, travel, margin)
         if block is not None:
             return _finish("block", block)
@@ -1600,26 +1658,25 @@ def think_ai(player, game) -> Tuple[Coord, bool]:
         if bonus is not None:
             return _finish("powerup", bonus)
     elif persona == "boss":
-        # While the maze is still up and the fight is not in their face, clear bricks
-        # and take every pickup. Pressure starts once they are close or the map is open.
-        early = not _close_combat(player, game) and not _open_arena(game)
-        if early:
-            qd = _powerup_plan(player, game, times, bombs, occupied, now, travel, margin, mode="qd")
-            if qd is not None:
-                return _finish("powerup", qd)
-            bonus = _powerup_plan(player, game, times, bombs, occupied, now, travel, margin, mode="other")
-            if bonus is not None:
-                return _finish("powerup", bonus)
-            farm = _farm_plan(player, game, times, bombs, occupied, now, travel, margin)
-            if farm is not None:
-                return _finish("farm", farm)
+        # Fight first. Grab a quad only when it is closer than the opponent.
+        near = _nearest_opponent_dist(player, game)
+        qd = _powerup_plan(player, game, times, bombs, occupied, now, travel, margin, mode="qd")
+        if qd is not None and _manhattan(start, qd[1]) + 1 < near:
+            return _finish("powerup", qd)
         pressure = _boss_pressure_plan(player, game, times, bombs, occupied, now, travel, margin)
         if pressure is not None:
             return _finish("block", pressure)
         hunt = _hunt_plan(player, game, times, bombs, occupied, now, travel, margin)
         if hunt is not None:
             return _finish("hunt", hunt)
+        bonus = _powerup_plan(player, game, times, bombs, occupied, now, travel, margin, mode="other")
+        if bonus is not None:
+            return _finish("powerup", bonus)
     elif persona == "cautious":
+        if _opponents_nearby(player, game) or _open_lane_toward_opponent(player, game):
+            hunt = _hunt_plan(player, game, times, bombs, occupied, now, travel, margin)
+            if hunt is not None:
+                return _finish("hunt", hunt)
         bonus = _powerup_plan(player, game, times, bombs, occupied, now, travel, margin, mode="any")
         if bonus is not None:
             return _finish("powerup", bonus)
@@ -1636,12 +1693,11 @@ def think_ai(player, game) -> Tuple[Coord, bool]:
             if bonus is not None:
                 return _finish("powerup", bonus)
 
-    if persona != "boss" or not _alive_opponents(player, game):
-        farm = _farm_plan(player, game, times, bombs, occupied, now, travel, margin)
-        if farm is not None:
-            return _finish("farm", farm)
+    farm = _farm_plan(player, game, times, bombs, occupied, now, travel, margin)
+    if farm is not None:
+        return _finish("farm", farm)
 
-    if persona in ("normal", "boss", "crazy") or _open_arena(game):
+    if persona in ("normal", "boss", "crazy", "cautious") or _open_arena(game):
         hunt = _hunt_plan(player, game, times, bombs, occupied, now, travel, margin)
         if hunt is not None:
             return _finish("hunt", hunt)

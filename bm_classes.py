@@ -456,6 +456,9 @@ class Explosion:
         self.start_time = start_time
         self.quad_damage = quad_damage
         self.owner = owner
+        from lightning import is_boss_lightning_owner, lightning_style_for
+        self.lightning = is_boss_lightning_owner(owner)
+        self.lightning_style = lightning_style_for(owner)
 
     def is_active(self, current_time):
         return current_time - self.start_time < bm_settings.explosion_duration_ms()
@@ -465,6 +468,8 @@ class Explosion:
             'cells': self.cells,
             'start_time': self.start_time,
             'quad_damage': self.quad_damage,
+            'lightning': bool(getattr(self, "lightning", False)),
+            'lightning_style': getattr(self, "lightning_style", "") or "",
             'owner_player_id': int(getattr(self.owner, "global_id", 0)) if self.owner is not None else None,
         }
 
@@ -928,7 +933,7 @@ class Game:
             player.speed = bm_settings.player_speed()
         self.destructible_at_round_start = self.count_destroyable_cells()
         self.game_start_time = self.current_time + 2000  # Add a 2-second freeze time
-        
+
         # Reset crushing walls state
         self.crushing_walls_active = False
         self.crushing_walls_last_time = 0

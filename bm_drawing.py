@@ -16,6 +16,7 @@ from explosions import (
     is_player_in_planned_blast,
 )
 from bm_paths import lan_join_label
+from lightning import draw_lightning_cross
 from replay import frame_at_time, hydrate_replay_snapshot, letterbox_dest, pick_kill_cam, replay_view_rect
 
 _AVATAR_CACHE = {}
@@ -820,7 +821,20 @@ def draw_explosions(surface, current_time, explosions):
         down_length = explosion_arm_pixel_length(arm_factor, down_max, CELL_SIZE)
         left_length = explosion_arm_pixel_length(arm_factor, left_max, CELL_SIZE)
         right_length = explosion_arm_pixel_length(arm_factor, right_max, CELL_SIZE)
-        
+
+        if getattr(explosion, "lightning", False):
+            draw_lightning_cross(
+                surface,
+                center_pixel,
+                ((0, -1, up_length), (0, 1, down_length), (-1, 0, left_length), (1, 0, right_length)),
+                CELL_SIZE,
+                current_time,
+                seed=int(explosion.start_time) + cx * 17 + cy * 31,
+                alpha_scale=max(0.35, arm_factor),
+                style=getattr(explosion, "lightning_style", "") or "marv",
+            )
+            continue
+
         if explosion.quad_damage:
             img = _get_image_asset("blast_image_qd")
             center_img = _get_image_asset("blast_centre_image_qd")
@@ -978,11 +992,16 @@ def draw_controls(surface, players):
             break
 
 
+def result_content_top(sh):
+    """Y where the result heading starts. Corner cards stay above this line."""
+    return int(sh * 0.34)
+
+
 def _win_screen_regions(sw, sh, has_replay):
     """Stats on top; replay is a near-square panel under the table when present."""
     padding = max(16, int(sw * 0.012))
     gap = 14
-    table_top_min = int(sh * 0.34)
+    table_top_min = result_content_top(sh)
     table_w = sw - 2 * padding
     replay_w = 0
     replay_h = 0
@@ -1137,11 +1156,11 @@ def draw_stat_screen(surface, winner, players, game=None, heading=None, heading_
         if extra:
             caption_text = f"{caption_text}   ·   {extra}"
     caption_h = caption_font.get_height() + 10
+    # The heading stays on the content line, clear of the corner card above it.
     winner_top = table_top_min
     table_top = winner_top + winner_h + caption_h + 16
     if table_top + table_h > table_bottom:
-        table_top = max(padding + winner_h + caption_h + 12, table_bottom - table_h)
-        winner_top = max(padding, table_top - winner_h - caption_h - 8)
+        table_top = winner_top + winner_h + caption_h + 8
 
     winner_x = table_left + max(0, (table_w - winner_surf.get_width() - trophy_strip_w - 12) // 2)
     surface.blit(winner_surf, (winner_x, winner_top))
@@ -1309,11 +1328,24 @@ def draw_stat_screen(surface, winner, players, game=None, heading=None, heading_
         
     #draw_controls(surface)
 
+def _result_logo_rect(sw, sh):
+    """Square logo box from the result background, so the invite card can sit beside it."""
+    side = min(sw // 2, sh // 4)
+    cx = sw // 2
+    cy = max(side // 2 + 16, sh // 5)
+    return pygame.Rect(cx - side // 2, cy - side // 2, side, side)
+
+
 def champion_boss_card_rect(sw, sh):
-    """Top-right card for the BomberMarv challenge portrait."""
-    margin = max(14, int(min(sw, sh) * 0.02))
-    card_w = min(472, max(312, int(sw * 0.36)))
-    card_h = min(440, max(280, int(sh * 0.52)))
+    """Top-right invite card. Wider than the logo gap, still above the heading."""
+    margin = max(12, int(min(sw, sh) * 0.018))
+    logo = _result_logo_rect(sw, sh)
+    card_h = max(1, min(300, result_content_top(sh) - margin - 10))
+    room = sw - margin - logo.right - 18
+    if room >= 280:
+        card_w = min(540, room)
+    else:
+        card_w = min(340, max(200, sw - 2 * margin))
     return pygame.Rect(sw - margin - card_w, margin, card_w, card_h)
 
 
@@ -1325,11 +1357,55 @@ def draw_champion_screen(surface, champion, players=None, game=None):
     _draw_champion_boss_card(surface, game)
 
 
-def _invite_quote_lines(quote):
-    parts = str(quote).split(", ", 1)
-    if len(parts) == 2:
-        return (f'"{parts[0]},', f'{parts[1]}"')
-    return (f'"{quote}"',)
+def _quote_beats(quote):
+    """Break a boss line on its punches, then on a single comma."""
+    import re
+    text = str(quote).strip()
+    beats = [part.strip() for part in re.split(r"(?<=\?!) |(?<=\?\?\?) ", text) if part.strip()]
+    if len(beats) == 1 and ", " in text:
+        left, right = text.split(", ", 1)
+        beats = [f"{left},", right]
+    return beats or [text]
+
+
+def _wrap_words(text, font, width):
+    words = str(text).split()
+    if not words:
+        return []
+    lines = []
+    current = ""
+    for word in words:
+        trial = word if not current else f"{current} {word}"
+        if not current or font.size(trial)[0] <= width:
+            current = trial
+        else:
+            lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines
+
+
+def _invite_quote_lines(quote, font=None, width=10**6):
+    lines = []
+    for beat in _quote_beats(quote):
+        if font is None:
+            lines.append(beat)
+        else:
+            lines.extend(_wrap_words(beat, font, width) or [beat])
+    if not lines:
+        return ['""']
+    if len(lines) == 1:
+        return [f'"{lines[0]}"']
+    quoted = []
+    for i, line in enumerate(lines):
+        if i == 0:
+            quoted.append(f'"{line}')
+        elif i == len(lines) - 1:
+            quoted.append(f'{line}"')
+        else:
+            quoted.append(line)
+    return quoted
 
 
 def _draw_boss_invite_card(surface, game, *, name, color, quote, stats, sprite, backdrop, ring, radius_scale=1.0):
@@ -1344,8 +1420,8 @@ def _draw_boss_invite_card(surface, game, *, name, color, quote, stats, sprite, 
     pygame.draw.rect(surface, (196, 209, 228), card, 2, border_radius=14)
 
     pulse = 0.5 + 0.5 * math.sin(time.time() * 3.0)
-    boss_r = max(16, int(min(card.width, card.height) * 0.16 * radius_scale))
-    boss_pos = (card.centerx, card.y + 12 + boss_r)
+    boss_r = max(18, int(min(card.width, card.height) * 0.18 * radius_scale))
+    boss_pos = (card.centerx, card.y + 10 + boss_r)
     now = getattr(game, "current_time", 0) if game is not None else int(time.time() * 1000)
     glow_r = int(boss_r * (1.18 + 0.06 * pulse))
     pygame.draw.circle(surface, backdrop, boss_pos, glow_r)
@@ -1371,23 +1447,36 @@ def _draw_boss_invite_card(surface, game, *, name, color, quote, stats, sprite, 
     )
     draw_players(surface, [boss_portrait], current_time=now)
 
-    name_font = _ui_font(min(44, max(28, card.height // 10)), bold=True)
-    quote_font = _ui_font(min(30, max(22, card.height // 14)))
-    stat_font = _ui_font(min(26, max(20, card.height // 16)))
-    inset = 10
+    name_font = _ui_font(min(34, max(22, card.height // 8)), bold=True)
+    stat_font = _ui_font(min(20, max(15, card.height // 13)))
+    inset = 14
     text_w = card.width - inset * 2
     name_y = boss_pos[1] + boss_r + 6
     _blit_label(surface, name_font, name, (236, 240, 248), card.x + inset, name_y, text_w, name_font.get_height() + 2)
-    quote_y = name_y + name_font.get_height() + 4
+    stats_h = stat_font.get_height() + 2
+    quote_top = name_y + name_font.get_height() + 4
+    quote_budget = max(12, card.bottom - 10 - stats_h - 8 - quote_top)
+    quote_font = _ui_font(16)
+    lines = _invite_quote_lines(quote, quote_font, text_w)
     line_h = quote_font.get_height() + 2
-    for i, line in enumerate(_invite_quote_lines(quote)):
+    for size in range(min(26, max(18, card.height // 10)), 15, -1):
+        quote_font = _ui_font(size)
+        lines = _invite_quote_lines(quote, quote_font, text_w)
+        line_h = quote_font.get_height() + 2
+        if len(lines) * line_h <= quote_budget:
+            break
+    for i, line in enumerate(lines):
+        y = quote_top + i * line_h
+        if y + line_h > card.bottom - stats_h - 12:
+            break
         _blit_label(
             surface, quote_font, line, (210, 214, 230),
-            card.x + inset, quote_y + i * line_h, text_w, line_h, vcenter=False,
+            card.x + inset, y, text_w, line_h, vcenter=False,
         )
+    stats_y = min(card.bottom - stats_h - 10, quote_top + len(lines) * line_h + 8)
     _blit_label(
         surface, stat_font, stats, (186, 196, 210),
-        card.x + inset, card.bottom - stat_font.get_height() - 10, text_w, stat_font.get_height() + 2,
+        card.x + inset, stats_y, text_w, stats_h,
     )
 
 
@@ -1417,10 +1506,13 @@ def _draw_brabi_invite_card(surface, game=None):
 
 
 def marv_killer_banner_rect(sw, sh):
-    """Gold ceremony panel in the logo band, above the result table."""
-    card_w = min(920, max(480, int(sw * 0.62)))
-    card_h = min(250, max(168, int(sh * 0.26)))
-    return pygame.Rect((sw - card_w) // 2, max(14, int(sh * 0.03)), card_w, card_h)
+    """Gold ceremony panel in the logo band, above the result heading."""
+    margin_y = max(12, int(sh * 0.03))
+    gap = 12
+    card_w = min(760, max(420, int(sw * 0.52)))
+    max_h = max(1, result_content_top(sh) - margin_y - gap)
+    card_h = min(190, max_h)
+    return pygame.Rect((sw - card_w) // 2, margin_y, card_w, card_h)
 
 
 def _draw_marv_killer_banner(surface, name):
@@ -1428,7 +1520,9 @@ def _draw_marv_killer_banner(surface, name):
     _ensure_fonts_initialized()
     sw, sh = surface.get_size()
     card = marv_killer_banner_rect(sw, sh)
-    pygame.draw.rect(surface, COLOR_BG, pygame.Rect(0, 0, sw, max(card.bottom + 12, int(sh * 0.33))))
+    # Clear the logo band so the ceremony panel is the only thing above the heading.
+    wipe_bottom = result_content_top(sh) - 6
+    pygame.draw.rect(surface, COLOR_BG, pygame.Rect(0, 0, sw, max(0, wipe_bottom)))
     pygame.draw.rect(surface, (28, 20, 8), card, border_radius=18)
     pygame.draw.rect(surface, (232, 196, 74), card, 3, border_radius=18)
     trophy = max(26, min(44, card.height // 6))
@@ -1534,13 +1628,15 @@ def draw_player_directions(surface, players, theGame):
             surface.blit(highlight_surface, (highlight_rect[0], highlight_rect[1]))
     
 def draw_adjust_screen_size(screen):
-    factor = min(screen.window_size[0] / BASE_WIDTH, screen.window_size[1] / BASE_HEIGHT)
-    new_width = int(BASE_WIDTH * factor)
-    new_height = int(BASE_HEIGHT * factor)
+    from frontend import present_rect
+    surf_w, surf_h = screen.surface.get_size()
+    win_w, win_h = screen.window_size
+    fullscreen = bool(getattr(getattr(screen, "window", None), "is_fullscreen", False))
+    new_width, new_height, x_offset, y_offset = present_rect(
+        surf_w, surf_h, win_w, win_h, cover=fullscreen,
+    )
     scaled_surface = pygame.transform.smoothscale(screen.surface, (new_width, new_height))
-    screen.window.fill((0,0,0))
-    x_offset = (screen.window_size[0] - new_width) // 2
-    y_offset = (screen.window_size[1] - new_height) // 2
+    screen.window.fill((0, 0, 0))
     screen.window.blit(scaled_surface, (x_offset, y_offset))
     pygame.display.flip()
     

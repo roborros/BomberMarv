@@ -47,7 +47,7 @@ BOSS_TAUNT_INTERVAL_MS = 15000
 # Uberboss after BomberMarv falls. Extra lives are revives, so 2 means 3 lives total.
 UBER_BOSS_NAME = "BomberTom"
 MARV_KILLER_TITLE = "MarvKiller"
-UBER_BOSS_QUOTE = "The butcher was practice, now you face me."
+UBER_BOSS_QUOTE = "Oh you got BomberMarv?! You thought this is the end??? You you will pay for this!"
 UBER_BOSS_COLOR = (36, 200, 84)
 UBER_BOSS_SPEED_MULTIPLIER = 2.0
 UBER_BOSS_EXTRA_LIVES = 2
