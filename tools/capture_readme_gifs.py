@@ -28,8 +28,6 @@ from PIL import Image  # noqa: E402
 
 from bm_classes import Bomb, Game, Player, PowerUp  # noqa: E402
 from bm_drawing import (  # noqa: E402
-    draw_boss_result_screen,
-    draw_champion_screen,
     draw_explosion_collision_debug,
     draw_game_prep,
     draw_game_screen,
@@ -985,72 +983,6 @@ def capture_win_and_champion() -> None:
     save_gif("win-screen.gif", frames)
     save_still("win-screen.png", frames[min(12, len(frames) - 1)])
 
-    game.game_state = "champion"
-    game.replay_loop_anchor_time = None
-    champ_frames = []
-    with patch("bm_drawing.time.time", _now):
-        for i in range(32):
-            fake_now[0] = i * 0.1
-            game.current_time = replay_t + i * 80
-            draw_champion_screen(surface, marv, game.players, game)
-            champ_frames.append(_surface_to_image(surface, 900))
-    save_gif("champion.gif", champ_frames)
-    save_still("champion.png", champ_frames[min(8, len(champ_frames) - 1)])
-
-
-def capture_boss() -> None:
-    board = empty_arena(
-        11,
-        extra_destructible=((3, 2), (4, 2), (6, 2), (7, 2), (2, 3), (8, 3), (2, 7), (8, 7), (3, 8), (7, 8)),
-        extra_pillars=classic_pillars(11) + [(5, 5)],
-    )
-    require_empty(board, [(1, 1), (9, 9)], "boss-demo")
-    game = Game()
-    champion = _local_player(1, 1, "Marv", colors[0])
-    champion.trophies = 3
-    game.init_boss_fight(champion)
-    game.board = board
-    game._set_arena_size(11)
-    for player, (x, y) in zip(game.players, ((1, 1), (9, 9))):
-        player.start_grid_x, player.start_grid_y = x, y
-        was_boss = getattr(player, "ai_role", "") == "boss"
-        fire, bombs, speed, lives = player.fire_power, player.bomb_capacity, player.speed, getattr(player, "boss_lives_remaining", 0)
-        player.reset()
-        player.pos[0] = x * CELL_SIZE + CELL_SIZE / 2
-        player.pos[1] = y * CELL_SIZE + CELL_SIZE / 2
-        if was_boss:
-            player.fire_power = fire
-            player.bomb_capacity = bombs
-            player.speed = speed
-            player.boss_lives_remaining = lives
-            player.ai_role = "boss"
-            player.is_ai = False
-    game.game_state = "boss_fight"
-    game.game_start_time = 0
-    game.round_start_time = 0
-    game.current_time = 0
-    assert_pieces_on_empty(game, "boss-demo")
-    surface = _surface_for(game)
-    boss = game.players[1]
-    start_x = float(boss.pos[0])
-    y_center = 9 * CELL_SIZE + CELL_SIZE / 2
-    frames = []
-    with patch("bm_classes.get_pressed_keys", return_value={}), patch(
-        "bm_classes.is_key_pressed", return_value=False
-    ):
-        for step in range(0, 3200, 16):
-            game.simulate(16, now_ms=step)
-            boss.is_ai = False
-            t = min(1.0, step / 2600)
-            boss.pos[0] = start_x - t * (5 * CELL_SIZE)
-            boss.pos[1] = y_center
-            if step % 40 == 0:
-                assert_sprites_clear_of_walls(game, f"boss-demo@{step}")
-                draw_game_screen(surface, game)
-                frames.append(_surface_to_image(surface))
-    save_gif("boss-fight.gif", frames, fps=14)
-    save_still("boss-fight.png", frames[min(18, len(frames) - 1)])
-
 
 def capture_leave_prompt() -> None:
     board = empty_arena(9, extra_destructible=((3, 3), (5, 5)))
@@ -1105,16 +1037,6 @@ def capture_review_stills() -> None:
     ui.blit(pygame.transform.smoothscale(board_surf, (nw, nh)), ((BASE_WIDTH - nw) // 2, (BASE_HEIGHT - nh) // 2))
     save_still("get-ready-window.png", _surface_to_image(ui, 900))
 
-    game.game_state = "boss_result"
-    game.boss_fight_winner = game.players[0]
-    marv = game.players[0]
-    marv.trophies = 3
-    marv.walls_destroyed = 9
-    marv.players_killed = 1
-    result = pygame.Surface((BASE_WIDTH, BASE_HEIGHT))
-    draw_boss_result_screen(result, marv, game.players, game)
-    save_still("boss-result.png", _surface_to_image(result, None))
-
 
 def main() -> int:
     _init_pygame()
@@ -1128,7 +1050,6 @@ def main() -> int:
     capture_chain_and_killbox()
     capture_corner_slide()
     capture_win_and_champion()
-    capture_boss()
     capture_leave_prompt()
     capture_review_stills()
     print("Done.", flush=True)

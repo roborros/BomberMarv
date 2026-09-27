@@ -10,14 +10,14 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-1.2.3-orange">
+  <img alt="version" src="https://img.shields.io/badge/version-1.2.4-orange">
   <img alt="python" src="https://img.shields.io/badge/python-3.11-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
 </p>
 
 ![Title screen](docs/media/title.gif)
 
-BomberMarv is built for a living-room LAN: up to eight players, CPU opponents, trophies, a boss fight against **BomberMarv** and then **BomberTom**, and a kill-cam on the win screen. The host simulation is authoritative. Phones and laptops only send input and draw the state they receive.
+BomberMarv is built for a living-room LAN: up to eight players, CPU opponents, trophies, and a kill-cam on the win screen. The host simulation is authoritative. Phones and laptops only send input and draw the state they receive.
 
 ## Download
 
@@ -130,29 +130,19 @@ Soft walls have a chance to spawn bomb/fire pickups (25% by default). Quad Damag
 
 ![Crushing walls](docs/media/crushing-walls.gif)
 
-When few players remain, indestructible walls crawl in clockwise and squeeze the arena. They never start before 120 seconds. By default a crowded match waits 120 seconds, a two-player start waits 180 seconds, and each new wall appears every 1.2 seconds. The boss fight waits 180 seconds and grows every 1.8 seconds. Those waits and the close speed are match settings. If more than two players are still alive and fewer than 15% of the soft walls remain, the walls start at 1.5 times that wait. At twice that wait they start even if the soft walls are still standing.
+When few players remain, indestructible walls crawl in clockwise and squeeze the arena. They never start before 120 seconds. By default a crowded match waits 120 seconds, a two-player start waits 180 seconds, and each new wall appears every 1.2 seconds. Those waits and the close speed are match settings. If more than two players are still alive and fewer than 15% of the soft walls remain, the walls start at 1.5 times that wait. At twice that wait they start even if the soft walls are still standing.
 
 ### CPU match
 
 ![AI gameplay](docs/media/gameplay.gif)
 
-CPU players hunt, dodge fuses, and plant. Each one rolls a style at the start of a series: cautious (one bomb, grabs bonuses, leaves if you get close), normal (bombs nearby players it can cut off, and spends extra bombs on bricks), or crazy (chases, plants whenever it can, and beelines Quad Damage). On a nearly cleared map they stop farming and try to cut the other players off. BomberMarv clears bricks and takes pickups while the maze is still up. Once you are close, or the map is open, he attacks harder, spends every bomb he is carrying, and cuts you off with his body. You can run a full match with zero humans, or mix one keyboard with a pack of AIs.
+CPU players hunt, dodge fuses, and plant. Each one rolls a style at the start of a series: cautious (one bomb, grabs bonuses, leaves if you get close), normal (bombs nearby players it can cut off, and spends extra bombs on bricks), or crazy (chases, plants whenever it can, and beelines Quad Damage). On a nearly cleared map they stop farming and try to cut the other players off. You can run a full match with zero humans, or mix one keyboard with a pack of AIs.
 
 ### Win screen, stats, and kill-cam
 
 ![Win screen](docs/media/win-screen.gif)
 
 Each round shows trophies, death time, flames, bombs, kills, walls exploded, pickups, Quad Damages, and cells walked. A looping kill-cam sits under the table.
-
-### Champion vs BomberMarv
-
-![Champion challenge](docs/media/champion.gif)
-
-First player to the trophy goal (1–5, default 3) becomes champion — human or CPU — and is invited to fight **BomberMarv**: faster, one extra life, starting fire 2 / bombs 2. He chases, plants, and body-blocks instead of waiting. He swings a cleaver as he walks, and about every 15 seconds he calls “Fresh meat!”
-
-The fight ends on a **You win** / **You lose** / **Draw** screen. Beating BomberMarv and pressing Enter starts **BomberTom**: twice the speed, three lives, fire 5, bombs 5, and a larger icon that pulses green. Enter on a loss or a draw returns to the lobby. Beating BomberTom opens a gold **MarvKiller** screen for the player who felled both bosses, and that title stays on their lobby row for the rest of the session. Starting with one local player, AI set to 0, and no browsers skips the trophy rounds and opens the BomberMarv fight.
-
-![Boss fight](docs/media/boss-fight.gif)
 
 ### Pause and leave
 
@@ -169,10 +159,7 @@ Esc during a round pauses the sim and asks whether to cancel the session. The ma
 3. **Get Ready** countdown, then play.
 4. Last player standing (or last team, if teams are on) wins the round and takes a trophy.
 5. Enter starts the next round. Stats accumulate until someone hits the trophy goal.
-6. Champion screen: **Enter** fights BomberMarv, **R** resets trophies and starts a new series.
-7. After BomberMarv or BomberTom, the result screen shows **You win**, **You lose**, or **Draw**.
-8. Enter after beating BomberMarv starts BomberTom. Enter after a loss or a draw returns to the lobby. Beating BomberTom grants **MarvKiller** and Enter returns to the lobby. **R** on that screen still resets the series.
-9. One local player, AI set to 0, and no browsers skips steps 3–6 and opens the BomberMarv fight.
+6. **R** resets trophies and starts a new series.
 
 ### Host lobby
 
@@ -209,15 +196,11 @@ Open them from the lobby with **S**, or move Left from **Start Game** and press 
 | Quad Damage speed | 1.5× | 1.0× – 2.5× |
 | Crushing walls, 3+ players | 120 s | 60 – 360 s, but never sooner than 120 s |
 | Crushing walls, 2 players | 180 s | 60 – 360 s, but never sooner than 120 s |
-| Crushing walls, boss | 180 s | 60 – 360 s, but never sooner than 120 s |
 | Walls close every | 1200 ms | 400 – 3000 ms |
-| Boss walls close every | 1800 ms | 400 – 4000 ms |
 | Loud hit size | 50 tiles | 10 – 200 tiles |
 | Loud hit window | 700 ms | 100 – 3000 ms |
 | Loud hit delay | 300 ms | 0 – 2000 ms |
 | Loud hit volume | 100% | 0 – 100% |
-
-Boss fights keep their own starting bombs, fire, and speed. These rows change everyone else.
 
 ### In-match keys (host window)
 
@@ -225,8 +208,8 @@ Boss fights keep their own starting bombs, fire, and speed. These rows change ev
 | --- | --- |
 | F11 | Fullscreen |
 | Esc | Pause / leave prompt |
-| Enter | Confirm leave, continue from win / champion, or leave a boss result for the next boss or the lobby |
-| R | Reset the series from the champion or boss-result screen |
+| Enter | Confirm leave, or continue from the win screen |
+| R | Reset the series |
 | Alt+K+L | Kill every opponent (host test cheat) |
 
 ### Local player controls (host keyboards)
@@ -258,7 +241,6 @@ In the browser lobby: type a display name, pick a free color slot, optionally ti
 - Bombs you just planted let you walk out of that cell; after you leave, the bomb blocks the tile.
 - Players block each other unless **Players block each other** is turned off in lobby settings. The collision circle is smaller than the drawn sprite. The setting is saved and still applies after a restart.
 - Team mode is opt-in from the lobby. Friendly fire is off unless you turn it on in match settings.
-- BomberMarv has one extra life. BomberTom has two. Spending a life leaves a short shield instead of a death. Beating both grants the title MarvKiller.
 - A blast covering enough cells inside the loud-hit window plays `mocny_stral`. The default is 50 cells inside 700 ms, then a 300 ms delay at full volume.
 
 ### Corner sliding, chain blasts, and the kill box
@@ -283,7 +265,6 @@ Defaults follow the roster. The host lobby can shift that default by ±2 / ±4 /
 | 3–4 players | 17×17 |
 | 5–6 players | 19×19 |
 | 7–8 players | 21×21 |
-| Boss fight | 15×15 |
 
 ### Network (players)
 
@@ -339,7 +320,7 @@ python tools/capture_readme_gifs.py
 | --- | --- |
 | `pyBomberMarv.py` | Host loop, pygame window, sim + render |
 | `ws_stream_server.py` | WebSocket + HTTP diagnostics (+ packaged web client) |
-| `bm_classes.py` | Players, bombs, rounds, lobby, boss |
+| `bm_classes.py` | Players, bombs, rounds, lobby |
 | `web_client/` | TypeScript browser client |
 | `docs/ARCHITECTURE.md` | Runtime diagram and design notes |
 | `docs/PROTOCOL.md` | Wire protocol v2 |
