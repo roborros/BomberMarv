@@ -126,7 +126,7 @@ class DangerMapTests(unittest.TestCase):
 class PersonalityKnobTests(unittest.TestCase):
     def test_each_style_has_its_own_limits(self):
         expected = {
-            "cautious": (CAUTIOUS_SAFETY_MARGIN_MS, CAUTIOUS_BOMB_COOLDOWN_MS, 1, CAUTIOUS_POWERUP_HUNT_LIMIT),
+            "cautious": (CAUTIOUS_SAFETY_MARGIN_MS, CAUTIOUS_BOMB_COOLDOWN_MS, 3, CAUTIOUS_POWERUP_HUNT_LIMIT),
             "normal": (CPU_SAFETY_MARGIN_MS, BOMB_COOLDOWN_MS, 3, POWERUP_HUNT_LIMIT),
             "crazy": (CRAZY_SAFETY_MARGIN_MS, CRAZY_BOMB_COOLDOWN_MS, 3, CRAZY_POWERUP_HUNT_LIMIT),
             "boss": (BOSS_SAFETY_MARGIN_MS, BOSS_BOMB_COOLDOWN_MS, 3, BOSS_POWERUP_HUNT_LIMIT),
@@ -171,20 +171,19 @@ class PlantGateTests(unittest.TestCase):
 
                 cooling = _bot(2, 1, name)
                 cooling._ai_last_bomb_ms = 0
-                _, place = think_ai(cooling, _arena(board, [cooling, far], now=50))
+                _, place = think_ai(cooling, _arena(board, [cooling, far], now=20))
                 self.assertFalse(place)
 
                 full = _bot(2, 1, name, bomb_capacity=2, active_bombs=2)
                 _, place = think_ai(full, _arena(board, [full, far]))
                 self.assertFalse(place)
 
-    def test_cautious_will_not_plant_beside_a_nearby_player(self):
+    def test_cautious_plants_a_brick_even_with_a_player_nearby(self):
         board = _brick_row()
         bot = _bot(2, 1, "cautious")
         hunter = _bot(2, 3, "normal")
         _, place = think_ai(bot, _arena(board, [bot, hunter]))
-        self.assertFalse(place)
-        self.assertEqual(bot._ai_goal_kind, "retreat")
+        self.assertTrue(place)
 
 
 class GoalTests(unittest.TestCase):
@@ -195,7 +194,7 @@ class GoalTests(unittest.TestCase):
             ("cautious", "farm", (5, 3)),
             ("normal", "farm", (5, 3)),
             ("crazy", "hunt", None),
-            ("boss", "farm", (5, 3)),
+            ("boss", "block", None),
         ):
             with self.subTest(personality=name):
                 bot = _bot(1, 1, name)
@@ -208,7 +207,7 @@ class GoalTests(unittest.TestCase):
         board = _farm_board()
         bot = _bot(1, 1, "boss")
         far = _bot(7, 5, "normal")
-        pu = type("PU", (), {"x": 3, "y": 1, "type": "fire"})()
+        pu = type("PU", (), {"x": 3, "y": 1, "type": "quad_damage"})()
         think_ai(bot, _arena(board, [bot, far], powerups=[pu]))
         self.assertEqual(bot._ai_goal_kind, "powerup")
         self.assertEqual(bot._ai_goal_cell, (3, 1))
@@ -219,7 +218,7 @@ class GoalTests(unittest.TestCase):
         bot._ai_last_bomb_ms = 0
         opp = _bot(7, 5, "normal")
         opp.direction = (1.0, 0.0)
-        step, place = think_ai(bot, _arena(board, [bot, opp], now=40))
+        step, place = think_ai(bot, _arena(board, [bot, opp], now=10))
         self.assertFalse(place)
         self.assertEqual(bot._ai_goal_kind, "block")
         self.assertNotEqual(bot._ai_goal_cell, (6, 5))

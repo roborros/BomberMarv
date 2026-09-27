@@ -424,7 +424,8 @@ if __name__ == "__main__":
             draw_game_screen(game_surface, theGame)
         elif theGame.game_state == "win":
             alive_players = [p for p in theGame.players if p.alive]
-            draw_stat_screen(game_surface, alive_players[0] if alive_players else None, theGame.players, theGame)
+            winner = alive_players[0] if len(alive_players) == 1 else None
+            draw_stat_screen(game_surface, winner, theGame.players, theGame)
         elif theGame.game_state == "champion":
             champ = theGame.champion_player() if hasattr(theGame, "champion_player") else None
             if champ is None:

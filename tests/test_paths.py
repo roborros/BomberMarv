@@ -9,6 +9,7 @@ from bm_paths import (
     app_root,
     detect_lan_ip,
     find_client_static_dir,
+    lan_join_label,
     list_lan_ips,
     resource_path,
 )
@@ -37,6 +38,12 @@ class PathTests(unittest.TestCase):
         self.assertTrue(_is_usable_lan_ip("192.168.1.20"))
         for ip in list_lan_ips():
             self.assertFalse(ip.startswith("127."))
+
+    def test_lan_join_label_includes_ip_and_port(self):
+        label = lan_join_label(8080)
+        self.assertTrue(label.startswith("http://"))
+        self.assertTrue(label.endswith(":8080"))
+        self.assertIn(detect_lan_ip(), label)
 
 
 if __name__ == "__main__":

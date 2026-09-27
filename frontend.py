@@ -3,6 +3,7 @@ Frontend module for handling all pygame/screen/window related functionality.
 This is the only module that should import pygame directly.
 """
 
+import math
 import os
 import pygame
 import sys
@@ -10,6 +11,70 @@ from typing import Optional, Tuple
 from event_abstraction import EventProcessor, GameCommandHandler
 from input_abstraction import note_key_event
 from bm_params import BASE_WIDTH, BASE_HEIGHT, INITIAL_WINDOW_SIZE
+
+
+def present_rect(
+    src_w: int, src_h: int, win_w: int, win_h: int, *, cover: bool,
+) -> Tuple[int, int, int, int]:
+    """Uniform scale of a fixed picture onto a window. Returns dest size and offset.
+
+    Cover grows until every edge of the window is filled, cropping the overflow.
+    Contain fits the whole picture and can leave a bar on the longer axis.
+    The source size is the game surface and is not changed here.
+    """
+    src_w = max(1, int(src_w))
+    src_h = max(1, int(src_h))
+    win_w = max(1, int(win_w))
+    win_h = max(1, int(win_h))
+    scale = (max if cover else min)(win_w / src_w, win_h / src_h)
+    dest_w = max(1, math.ceil(src_w * scale - 1e-9))
+    dest_h = max(1, math.ceil(src_h * scale - 1e-9))
+    if cover:
+        dest_w = max(dest_w, win_w)
+        dest_h = max(dest_h, win_h)
+    else:
+        dest_w = min(dest_w, win_w)
+        dest_h = min(dest_h, win_h)
+    offset_x = (win_w - dest_w) // 2
+    offset_y = (win_h - dest_h) // 2
+    return dest_w, dest_h, offset_x, offset_y
+
+
+def choose_desktop_size(sizes, info_w: int, info_h: int) -> Tuple[int, int]:
+    """Primary monitor size, then the display info, so fullscreen matches the screen."""
+    if sizes:
+        width, height = sizes[0]
+        if int(width) > 0 and int(height) > 0:
+            return int(width), int(height)
+    return max(1, int(info_w or 1)), max(1, int(info_h or 1))
+
+
+def desktop_size() -> Tuple[int, int]:
+    try:
+        sizes = pygame.display.get_desktop_sizes()
+    except (pygame.error, AttributeError):
+        sizes = ()
+    info = pygame.display.Info()
+    return choose_desktop_size(sizes, info.current_w, info.current_h)
+
+
+def _enable_dpi_awareness() -> None:
+    """Use real pixels so a fullscreen window can reach the edges of the monitor."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+    try:
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+        return
+    except (AttributeError, OSError):
+        pass
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except (AttributeError, OSError):
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except (AttributeError, OSError):
+            pass
 
 class FrontendScreen:
     """Handles all screen-related functionality"""
@@ -52,7 +117,8 @@ class FrontendWindow:
         """Toggle fullscreen mode and return new window size"""
         self.is_fullscreen = not self.is_fullscreen
         if self.is_fullscreen:
-            self.window = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+            width, height = desktop_size()
+            self.window = pygame.display.set_mode((width, height), pygame.FULLSCREEN)
         else:
             self.window = pygame.display.set_mode(INITIAL_WINDOW_SIZE, pygame.RESIZABLE)
         return self.window.get_size()
@@ -87,10 +153,10 @@ class FrontendRenderer:
         self.screen.update_window_size(current_window_size)
         
         surf_w, surf_h = self.screen.surface.get_size()
-        factor = min(self.screen.window_size[0] / surf_w, 
-                    self.screen.window_size[1] / surf_h)
-        new_width = int(surf_w * factor)
-        new_height = int(surf_h * factor)
+        win_w, win_h = self.screen.window_size
+        new_width, new_height, x_offset, y_offset = present_rect(
+            surf_w, surf_h, win_w, win_h, cover=self.window.is_fullscreen,
+        )
 
         if new_width <= 0 or new_height <= 0:
             return
@@ -108,17 +174,6 @@ class FrontendRenderer:
         else:
             scaled_surface = pygame.transform.scale(self.screen.surface, (new_width, new_height))
         self.window.window.fill((0, 0, 0))
-        x_offset = (self.screen.window_size[0] - new_width) // 2
-        y_offset = (self.screen.window_size[1] - new_height) // 2
-        
-        # Debug: Print scaling info (only once)
-        # if not hasattr(self, '_debug_printed'):
-        #     print(f"BASE_WIDTH: {BASE_WIDTH}, BASE_HEIGHT: {BASE_HEIGHT}")
-        #     print(f"Window size: {self.screen.window_size}")
-        #     print(f"Scaling factor: {factor}")
-        #     print(f"Scaled size: {new_width}x{new_height}")
-        #     print(f"Offsets: x={x_offset}, y={y_offset}")
-        #     self._debug_printed = True
         self.window.window.blit(scaled_surface, (x_offset, y_offset))
         self.window.flip_display()
 
@@ -160,7 +215,8 @@ class FrontendManager:
         self.game = game_instance
         self.should_quit = False
         
-        # Initialize pygame first
+        # Real pixels, then pygame, so fullscreen can use the whole monitor.
+        _enable_dpi_awareness()
         pygame.init()
         pygame.font.init()
         

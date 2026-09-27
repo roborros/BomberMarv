@@ -39,7 +39,13 @@ def build_replay_snapshot(game) -> dict:
     bombs_state = [{"x": b.x, "y": b.y, "start": int(b.start_time)} for b in game.bombs]
     explosions_state = []
     for e in game.explosions:
-        explosions_state.append({"cells": [tuple(c) for c in e.cells], "start": int(e.start_time), "qd": bool(e.quad_damage)})
+        explosions_state.append({
+            "cells": [tuple(c) for c in e.cells],
+            "start": int(e.start_time),
+            "qd": bool(e.quad_damage),
+            "bolt": bool(getattr(e, "lightning", False)),
+            "tint": getattr(e, "lightning_style", "") or "",
+        })
     powerups_state = [{"x": pu.x, "y": pu.y, "type": pu.type} for pu in game.powerups]
     board = [list(row) for row in game.board] if getattr(game, "board", None) is not None else None
     return {
@@ -88,6 +94,8 @@ def hydrate_replay_snapshot(snap: dict) -> dict:
             cells=[tuple(c) for c in e.get("cells", [])],
             start_time=e["start"],
             quad_damage=bool(e.get("qd")),
+            lightning=bool(e.get("bolt")),
+            lightning_style=e.get("tint") or "",
         )
         for e in snap.get("explosions", [])
         if e.get("cells")

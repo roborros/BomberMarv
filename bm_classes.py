@@ -456,6 +456,9 @@ class Explosion:
         self.start_time = start_time
         self.quad_damage = quad_damage
         self.owner = owner
+        from lightning import is_boss_lightning_owner, lightning_style_for
+        self.lightning = is_boss_lightning_owner(owner)
+        self.lightning_style = lightning_style_for(owner)
 
     def is_active(self, current_time):
         return current_time - self.start_time < bm_settings.explosion_duration_ms()
@@ -465,6 +468,8 @@ class Explosion:
             'cells': self.cells,
             'start_time': self.start_time,
             'quad_damage': self.quad_damage,
+            'lightning': bool(getattr(self, "lightning", False)),
+            'lightning_style': getattr(self, "lightning_style", "") or "",
             'owner_player_id': int(getattr(self.owner, "global_id", 0)) if self.owner is not None else None,
         }
 
@@ -928,7 +933,7 @@ class Game:
             player.speed = bm_settings.player_speed()
         self.destructible_at_round_start = self.count_destroyable_cells()
         self.game_start_time = self.current_time + 2000  # Add a 2-second freeze time
-        
+
         # Reset crushing walls state
         self.crushing_walls_active = False
         self.crushing_walls_last_time = 0
@@ -1962,6 +1967,8 @@ class Game:
             return
 
         last_player_row = self._prep_last_player_row()
+        if self.prep_editing_name and event.key in (Keys.UP, Keys.DOWN, Keys.LEFT, Keys.RIGHT, Keys.TAB):
+            self.prep_editing_name = False
         if not self.prep_editing_name and str(getattr(event, "unicode", "")).lower() == "s":
             self.prep_section = "settings"
             return
@@ -2047,9 +2054,14 @@ class Game:
                     return
                 player_info = all_players_info[player_index]
                 if event.key == Keys.ENTER:
-                    if player_info['type'] != 'ai':
-                        self.prep_editing_name = True
-                        self.prep_name_edit_index = player_index
+                    if player_info['type'] == 'ai':
+                        return
+                    if self.prep_editing_name and self.prep_name_edit_index == player_index:
+                        self.prep_editing_name = False
+                        return
+                    self.prep_editing_name = True
+                    self.prep_name_edit_index = player_index
+                    return
                 elif event.key == Keys.LEFT:
                     if player_info['type'] == 'local':
                         self.prep_player_colors[player_info['source']] = (self.prep_player_colors[player_info['source']] + 1) % len(colors)
@@ -2062,7 +2074,7 @@ class Game:
                     elif player_info['type'] == 'client':
                         current_color = self.prep_web_player_colors.get(player_info['id'], player_info['color'])
                         self.prep_web_player_colors[player_info['id']] = (current_color - 1) % len(colors)
-                elif str(getattr(event, "unicode", "")).lower() == "t":
+                elif not self.prep_editing_name and str(getattr(event, "unicode", "")).lower() == "t":
                     if player_info['type'] == 'local':
                         self.team_mode_enabled = True
                         source_idx = player_info['source']
@@ -2086,17 +2098,18 @@ class Game:
         
         # Handle text input when editing names
         if self.prep_editing_name and hasattr(event, 'unicode') and event.unicode:
-            # Get all players to find the one being edited
-            all_players_info = self.get_all_players_info()
-            if self.prep_name_edit_index < len(all_players_info):
-                player_info = all_players_info[self.prep_name_edit_index]
-                if player_info['type'] == 'local':
-                    if len(self.prep_player_names[player_info['source']]) < 15:
-                        self.prep_player_names[player_info['source']] += event.unicode
-                elif player_info['type'] != 'ai':
-                    current_name = self.prep_web_player_names.get(player_info['id'], player_info['name'])
-                    if len(current_name) < 15:
-                        self.prep_web_player_names[player_info['id']] = current_name + event.unicode
+            ch = event.unicode
+            if ch.isprintable() and ch not in "\r\n\t":
+                all_players_info = self.get_all_players_info()
+                if self.prep_name_edit_index < len(all_players_info):
+                    player_info = all_players_info[self.prep_name_edit_index]
+                    if player_info['type'] == 'local':
+                        if len(self.prep_player_names[player_info['source']]) < 15:
+                            self.prep_player_names[player_info['source']] += ch
+                    elif player_info['type'] != 'ai':
+                        current_name = self.prep_web_player_names.get(player_info['id'], player_info['name'])
+                        if len(current_name) < 15:
+                            self.prep_web_player_names[player_info['id']] = current_name + ch
         
         # Handle BACKSPACE when editing names
         if self.prep_editing_name and event.key == Keys.BACKSPACE:
@@ -2318,11 +2331,9 @@ class Game:
         self._tick_boss_taunt()
         
         alive_players = [p for p in self.players if p.alive]
-        alive_teams = {getattr(p, "team", 0) for p in alive_players}
+        # Keep going while two or more players are alive. Same team does not end the round.
         round_over = len(alive_players) <= 1
-        if self.team_mode_enabled:
-            round_over = round_over or len(alive_teams) <= 1
-        # If round appears to be over (0/1 alive or only one team alive), start a 0.5s hold if not started
+        # If round appears to be over (everyone dead, or one survivor), start a 0.5s hold if not started
         if round_over and self.post_win_target_state is None:
             if self.endgame_hold_until is None:
                 self.endgame_hold_until = self.current_time + 500  # 0.5 seconds
@@ -2343,27 +2354,16 @@ class Game:
                     self.post_win_target_state = "boss_result"
                     self.post_win_transition_time = self.current_time + ENDGAME_POST_DELAY_MS
                 else:
-                    recent_deaths = [t for t in self.death_events if t >= self.current_time - 500]
-                    if len(recent_deaths) >= 2 or len(alive_players) == 0:
-                        # Tie: no trophy assignment
-                        self.post_win_target_state = "win"
-                    else:
-                        # Winner is surviving player (or first player on surviving team)
-                        if alive_players:
-                            winner = alive_players[0]
-                            if self.team_mode_enabled and len(alive_teams) == 1:
-                                winner_team = next(iter(alive_teams))
-                                for player in alive_players:
-                                    if getattr(player, "team", 0) == winner_team:
-                                        winner = player
-                                        break
-                            winner.trophies += 1
-                            if winner.trophies >= self.trophy_threshold():
-                                self.post_win_target_state = "champion"
-                            else:
-                                self.post_win_target_state = "win"
+                    if len(alive_players) == 1:
+                        winner = alive_players[0]
+                        winner.trophies += 1
+                        if winner.trophies >= self.trophy_threshold():
+                            self.post_win_target_state = "champion"
                         else:
                             self.post_win_target_state = "win"
+                    else:
+                        # Everyone is dead: draw, no trophy.
+                        self.post_win_target_state = "win"
                     self.post_win_transition_time = self.current_time + ENDGAME_POST_DELAY_MS
                 # Prepare replay segment metadata: find last-dead player and replay window bounds
                 last_dead_time = None

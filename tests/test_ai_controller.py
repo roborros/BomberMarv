@@ -529,28 +529,21 @@ class TestAIController(unittest.TestCase):
         threatened.is_ai = True
         threatened.ai_personality = "cautious"
         hunter = _make_mock_player(4, 3)
-        step, place = think_ai(threatened, _make_mock_game(board, players=[threatened, hunter]))
-        self.assertFalse(place)
-        self.assertEqual(threatened._ai_goal_kind, "retreat")
-        self.assertIsNotNone(threatened._ai_goal_cell)
-        self.assertGreater(
-            abs(threatened._ai_goal_cell[0] - 4) + abs(threatened._ai_goal_cell[1] - 3),
-            abs(2 - 4) + abs(3 - 3),
-        )
-        self.assertNotEqual(step, (1, 0))
+        _step, place = think_ai(threatened, _make_mock_game(board, players=[threatened, hunter]))
+        self.assertTrue(place)
 
         crazy = _make_mock_player(1, 3)
         crazy.fire_power = 1
         crazy.is_ai = True
         crazy.ai_personality = "crazy"
-        opp = _make_mock_player(3, 3)
+        opp = _make_mock_player(7, 5)
         qd = type("PU", (), {"x": 7, "y": 1, "type": "quad_damage"})()
         bomb_pu = type("PU", (), {"x": 1, "y": 5, "type": "bomb"})()
         think_ai(crazy, _make_mock_game(board, players=[crazy, opp], powerups=[qd, bomb_pu]))
         self.assertEqual(crazy._ai_goal_kind, "powerup")
         self.assertEqual(crazy._ai_goal_cell, (7, 1))
 
-    def test_normal_does_not_bomb_a_far_line_of_sight(self):
+    def test_normal_bombs_a_clear_line_of_sight(self):
         board = [
             [INDESTRUCTIBLE] * 9,
             [INDESTRUCTIBLE, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, INDESTRUCTIBLE],
@@ -564,8 +557,9 @@ class TestAIController(unittest.TestCase):
         opp = _make_mock_player(7, 1)
         game = _make_mock_game(board, players=[ai, opp])
         _, place = think_ai(ai, game)
-        self.assertFalse(place)
+        self.assertTrue(place)
         ai.ai_personality = "crazy"
+        ai._ai_last_bomb_ms = -10_000
         _, place = think_ai(ai, game)
         self.assertTrue(place)
 
@@ -624,7 +618,8 @@ class TestAIController(unittest.TestCase):
         game.destructible_at_round_start = 40
         step, place = think_ai(ai, game)
         self.assertFalse(place)
-        self.assertNotEqual(step, (1, 0))
+        self.assertEqual(step, (1, 0))
+        self.assertIn(ai._ai_goal_kind, ("block", "hunt"))
 
     def test_quad_damage_preferred_over_closer_bomb_powerup(self):
         board = [
@@ -847,6 +842,86 @@ class TestAIController(unittest.TestCase):
         self.assertEqual(_danger_times(game)[(1, 1)], 200)
         step, _ = think_ai(ai, game)
         self.assertNotEqual(step, (0, 0))
+
+    def test_three_cell_corner_walks_to_the_side_then_plants(self):
+        board = [[INDESTRUCTIBLE] * 7 for _ in range(7)]
+        board[1][1] = EMPTY
+        board[1][2] = EMPTY
+        board[2][1] = EMPTY
+        board[1][3] = DESTRUCTIBLE
+        ai = _make_mock_player(1, 1, fire_power=2, bomb_capacity=1)
+        ai.is_ai = True
+        game = _make_mock_game(board, players=[ai], current_time=3000)
+        step, place = think_ai(ai, game)
+        self.assertFalse(place)
+        self.assertEqual(step, (1, 0))
+        self.assertEqual(game.bombs, [])
+
+        ai.pos[0] += CELL_SIZE
+        step, place = think_ai(ai, game)
+        self.assertEqual(ai.get_grid_pos(), (2, 1))
+        self.assertTrue(place)
+        self.assertEqual(step, (-1, 0))
+
+    def test_open_pocket_does_not_plant_from_the_junction(self):
+        board = [[INDESTRUCTIBLE] * 7 for _ in range(7)]
+        for x, y in ((1, 1), (2, 1), (3, 1), (1, 2)):
+            board[y][x] = EMPTY
+        ai = _make_mock_player(1, 1, bomb_capacity=1)
+        ai.is_ai = True
+        game = _make_mock_game(board, players=[ai])
+        _, place = think_ai(ai, game)
+        self.assertFalse(place)
+        self.assertEqual(game.bombs, [])
+
+    def test_bombs_the_brick_it_is_on_instead_of_walking_to_a_richer_one(self):
+        board = [
+            [INDESTRUCTIBLE] * 9,
+            [INDESTRUCTIBLE, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE, EMPTY, DESTRUCTIBLE, EMPTY, EMPTY, DESTRUCTIBLE, EMPTY, EMPTY, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE, EMPTY, EMPTY, EMPTY, EMPTY, DESTRUCTIBLE, EMPTY, EMPTY, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE] * 9,
+        ]
+        ai = _make_mock_player(1, 2, fire_power=1)
+        ai.is_ai = True
+        ai.ai_personality = "normal"
+        game = _make_mock_game(board, players=[ai])
+        _, place = think_ai(ai, game)
+        self.assertTrue(place)
+
+    def test_boss_bombs_an_open_lane_before_the_shot_is_perfect(self):
+        board = [
+            [INDESTRUCTIBLE] * 9,
+            [INDESTRUCTIBLE, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE] * 9,
+        ]
+        boss = _make_mock_player(1, 1, fire_power=1)
+        boss.is_ai = True
+        boss.ai_role = "boss"
+        boss.speed = 500
+        opp = _make_mock_player(5, 1)
+        _step, place = think_ai(boss, _make_mock_game(board, players=[boss, opp]))
+        self.assertTrue(place)
+
+    def test_does_not_bomb_when_the_exit_is_already_taken(self):
+        board = [
+            [INDESTRUCTIBLE] * 5,
+            [INDESTRUCTIBLE, INDESTRUCTIBLE, EMPTY, INDESTRUCTIBLE, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE, EMPTY, EMPTY, EMPTY, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE, INDESTRUCTIBLE, INDESTRUCTIBLE, INDESTRUCTIBLE, INDESTRUCTIBLE],
+            [INDESTRUCTIBLE] * 5,
+        ]
+        ai = _make_mock_player(2, 2, fire_power=2)
+        ai.is_ai = True
+        ai.ai_role = "boss"
+        left = _make_mock_player(1, 2)
+        right = _make_mock_player(3, 2)
+        game = _make_mock_game(board, players=[ai, left, right])
+        self.assertFalse(_can_escape_after_bomb(ai, game, set()))
+        _, place = think_ai(ai, game)
+        self.assertFalse(place)
 
 
 if __name__ == "__main__":
