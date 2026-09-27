@@ -139,11 +139,13 @@ def _zip_dist() -> None:
 def _build_web_client() -> None:
     bun = _resolve_bun()
     if bun:
+        _run([bun, "install", "--frozen-lockfile"], WEB)
         _run([bun, "run", "build"], WEB)
     else:
         npm = shutil.which("npm")
         if not npm:
             raise RuntimeError("Need bun or npm to build the web client before packaging")
+        _run([npm, "install"], WEB)
         _run([npm, "run", "build"], WEB)
     index = os.path.join(WEB, "dist", "index.html")
     if not os.path.isfile(index):
