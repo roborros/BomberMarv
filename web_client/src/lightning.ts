@@ -116,7 +116,6 @@ export function drawLightningExplosion(
     if (length < 8) continue
     const span = Math.hypot(dx, dy) || 1
     const tip: Point = [cx + (dx / span) * length, cy + (dy / span) * length]
-    const [px, py] = perp(tip[0] - cx, tip[1] - cy)
     const steps = Math.max(3, Math.floor(length / (cellSize * 0.85)))
     lanes.forEach((laneT, laneI) => {
       const color = palette[(bucket + armI + laneI) % palette.length]
