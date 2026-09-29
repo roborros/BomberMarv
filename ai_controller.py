@@ -721,15 +721,18 @@ def _open_lane_toward_opponent(player, game) -> bool:
     return False
 
 
-def _can_escape_after_bomb(player, game, danger: set = None) -> bool:
-    """True if a timed path reaches a stay-safe cell before our fuse ends."""
+def _can_escape_after_bomb(player, game, danger: set = None, origin: Coord = None) -> bool:
+    """True if a timed path from origin reaches a stay-safe cell before our fuse ends."""
     now = int(getattr(game, "current_time", 0))
     timer = _bomb_timer()
     times = _danger_times(game)
     if danger:
         for cell in danger:
             times[cell] = min(times.get(cell, now), now)
-    px, py = player.get_grid_pos()
+    if origin is None:
+        px, py = player.get_grid_pos()
+    else:
+        px, py = origin
     boom = now + timer
     for cell in _blast_cells(game.board, px, py, player.fire_power):
         times[cell] = min(times.get(cell, boom), boom)
@@ -1368,6 +1371,22 @@ def _farm_plan(
     )
     if not options:
         return None
+    # A richer cell that fills the only exit is not a plant. In a 3-cell corner
+    # the junction hits every brick and also every floor, so the bot used to
+    # pace back to it and never bomb the arm it can leave.
+    best_score = max(score for score, _dist, _cell in options)
+    plantable = [
+        item for item in options
+        if item[0] == best_score and _can_escape_after_bomb(player, game, origin=item[2])
+    ]
+    if not plantable:
+        plantable = [
+            item for item in options
+            if _can_escape_after_bomb(player, game, origin=item[2])
+        ]
+    if not plantable:
+        return None
+    options = plantable
     best_score = max(score for score, _dist, _cell in options)
     last = tuple(getattr(player, "_ai_last_dir", (0, 0)) or (0, 0))
     recent = getattr(player, "_ai_recent_cells", ()) or ()

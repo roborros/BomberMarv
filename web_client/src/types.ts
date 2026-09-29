@@ -34,6 +34,8 @@ export interface PlayerState {
     draw_scale?: number;
     voice_until?: number;
     cleaver_swing_until?: number;
+    pickup_message?: string;
+    pickup_message_until?: number;
 }
 
 export interface BombState {
@@ -111,6 +113,7 @@ export interface GameState {
         delay_ms: number
         volume: number
     }
+    blast_ms?: number
     result_prompt?: string
     leave_prompt?: {
         open: boolean

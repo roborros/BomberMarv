@@ -44,7 +44,8 @@ describe('netState', () => {
       local_player_count: 2,
       _sim_tick: 11,
       _net_metrics: { host_fps_5s: 60 },
-      leave_prompt: { open: true, choice: 'yes', title: 'Leave game?' }
+      leave_prompt: { open: true, choice: 'yes', title: 'Leave game?' },
+      blast_ms: 700
     })
     expect(merged.time).toBe(2000)
     expect(merged.boss_fight_winner?.name).toBe('Boss')
@@ -53,6 +54,7 @@ describe('netState', () => {
     expect(merged._net_metrics?.host_fps_5s).toBe(60)
     expect(merged.state).toBe('playing')
     expect(merged.leave_prompt).toEqual({ open: true, choice: 'yes', title: 'Leave game?' })
+    expect(merged.blast_ms).toBe(700)
   })
 
   it('merges player and board patches without replacing the whole lists', () => {

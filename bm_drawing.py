@@ -333,32 +333,48 @@ def _load_avatar_by_name(name, size):
         _AVATAR_CACHE[key] = None
         return None
 
+def _key_label(key):
+    key_names = {
+        pygame.K_w: "W", pygame.K_a: "A", pygame.K_s: "S", pygame.K_d: "D",
+        pygame.K_i: "I", pygame.K_j: "J", pygame.K_k: "K", pygame.K_l: "L",
+        pygame.K_f: "F", pygame.K_c: "C", pygame.K_v: "V", pygame.K_b: "B",
+        pygame.K_h: "H",
+        pygame.K_SPACE: "Space", pygame.K_LSHIFT: "Shift", pygame.K_RSHIFT: "RShift",
+        pygame.K_LCTRL: "Left Ctrl", pygame.K_RCTRL: "Right Ctrl",
+        pygame.K_UP: "↑", pygame.K_DOWN: "↓", pygame.K_LEFT: "←", pygame.K_RIGHT: "→",
+        pygame.K_HOME: "Home", pygame.K_END: "End", pygame.K_DELETE: "Del", pygame.K_PAGEDOWN: "PgDn",
+        pygame.K_BACKSPACE: "Backspace",
+        pygame.K_KP0: "Num 0", pygame.K_KP1: "Num 1", pygame.K_KP2: "Num 2", pygame.K_KP3: "Num 3",
+        pygame.K_KP5: "Num 5", pygame.K_KP7: "Num 7", pygame.K_KP8: "Num 8", pygame.K_KP9: "Num 9",
+        pygame.K_KP_DIVIDE: "Num /",
+    }
+    return key_names.get(key, "K%s" % key)
+
+
 def _format_controls(controls):
-    """Convert pygame key constants to readable control names"""
-    def key_to_name(key):
-        # Common key mappings
-        key_names = {
-            pygame.K_w: 'W', pygame.K_a: 'A', pygame.K_s: 'S', pygame.K_d: 'D',
-            pygame.K_i: 'I', pygame.K_j: 'J', pygame.K_k: 'K', pygame.K_l: 'L',
-            pygame.K_f: 'F', pygame.K_c: 'C', pygame.K_v: 'V', pygame.K_b: 'B',
-            pygame.K_SPACE: 'Space', pygame.K_LSHIFT: 'Shift', pygame.K_RSHIFT: 'RShift',
-            pygame.K_LCTRL: 'Ctrl', pygame.K_RCTRL: 'RCtrl',
-            pygame.K_UP: '↑', pygame.K_DOWN: '↓', pygame.K_LEFT: '←', pygame.K_RIGHT: '→',
-            pygame.K_HOME: 'Home', pygame.K_END: 'End', pygame.K_DELETE: 'Del', pygame.K_PAGEDOWN: 'PgDn',
-            pygame.K_BACKSPACE: 'Backspace',
-            pygame.K_KP0: 'KP0', pygame.K_KP1: 'KP1', pygame.K_KP2: 'KP2', pygame.K_KP3: 'KP3',
-            pygame.K_KP5: 'KP5', pygame.K_KP7: 'KP7', pygame.K_KP8: 'KP8', pygame.K_KP9: 'KP9',
-            pygame.K_KP_DIVIDE: 'KP/',
-        }
-        return key_names.get(key, f'K{key}')
-    
-    up = key_to_name(controls['up'])
-    down = key_to_name(controls['down'])
-    left = key_to_name(controls['left'])
-    right = key_to_name(controls['right'])
-    bomb = key_to_name(controls['bomb'])
-    
-    return f"{up}{down}{left}{right} + {bomb}"
+    """Convert pygame key constants to readable control names."""
+    move = " ".join(_key_label(controls[name]) for name in ("up", "left", "down", "right"))
+    return "%s + %s" % (move, _key_label(controls["bomb"]))
+
+
+READY_KEY_LINES = (
+    "Local   W A S D move   ·   Space bomb",
+    "Browser   Arrow keys move   ·   Space bomb",
+)
+
+
+def control_guide_rows():
+    """Seat, move keys, bomb key. Extra rows use the middle column as the action."""
+    from bm_params import controls_list
+    rows = []
+    for index, controls in enumerate(controls_list):
+        move = " ".join(_key_label(controls[name]) for name in ("up", "left", "down", "right"))
+        rows.append(("Player %d" % (index + 1), move, _key_label(controls["bomb"])))
+    rows.append(("Browser", "Arrow keys or W A S D", "Space or Enter"))
+    rows.append(("F11", "Fullscreen", ""))
+    rows.append(("Esc", "Pause a round. On the lobby, asks before quitting.", ""))
+    rows.append(("Enter", "Start the match and continue after a round", ""))
+    return rows
 
 def player_label_font_size(draw_radius):
     """Name labels scale with the avatar so they do not cover neighboring tiles."""
@@ -1631,9 +1647,8 @@ def draw_adjust_screen_size(screen):
     from frontend import present_rect
     surf_w, surf_h = screen.surface.get_size()
     win_w, win_h = screen.window_size
-    fullscreen = bool(getattr(getattr(screen, "window", None), "is_fullscreen", False))
     new_width, new_height, x_offset, y_offset = present_rect(
-        surf_w, surf_h, win_w, win_h, cover=fullscreen,
+        surf_w, surf_h, win_w, win_h, cover=False,
     )
     scaled_surface = pygame.transform.smoothscale(screen.surface, (new_width, new_height))
     screen.window.fill((0, 0, 0))
@@ -1641,8 +1656,8 @@ def draw_adjust_screen_size(screen):
     pygame.display.flip()
     
 def get_ready_banner_rect(sw, sh):
-    """Centered banner that stays off corner spawns."""
-    banner_h = max(56, min(120, int(sh * 0.10)))
+    """Centered banner that stays off corner spawns and fits the key lines."""
+    banner_h = max(108, min(240, int(sh * 0.20)))
     return pygame.Rect(0, (sh - banner_h) // 2, sw, banner_h)
 
 
@@ -1655,11 +1670,19 @@ def draw_get_ready(surface):
     surface.blit(overlay, banner.topleft)
     pygame.draw.line(surface, (212, 175, 55), (0, banner.top), (sw, banner.top), 2)
     pygame.draw.line(surface, (212, 175, 55), (0, banner.bottom - 1), (sw, banner.bottom - 1), 2)
-    size = max(28, min(64, int(banner.height * 0.48)))
-    font = pygame.font.SysFont("Comic Sans MS", size, bold=True)
-    start_text = font.render("Get Ready!", True, (236, 120, 168))
-    start_rect = start_text.get_rect(center=banner.center)
-    surface.blit(start_text, start_rect)
+    title_size = max(26, min(52, int(banner.height * 0.28)))
+    line_size = max(16, min(28, int(banner.height * 0.16)))
+    title_font = pygame.font.SysFont("Comic Sans MS", title_size, bold=True)
+    line_font = pygame.font.SysFont("arial", line_size, bold=True)
+    title = title_font.render("Get Ready!", True, (236, 120, 168))
+    title_rect = title.get_rect(midtop=(banner.centerx, banner.y + max(8, banner.height // 10)))
+    surface.blit(title, title_rect)
+    y = title_rect.bottom + max(6, banner.height // 18)
+    for line in READY_KEY_LINES:
+        text = line_font.render(line, True, (232, 238, 248))
+        rect = text.get_rect(midtop=(banner.centerx, y))
+        surface.blit(text, rect)
+        y = rect.bottom + 4
 
 
 def _get_lobby_backdrop(sw, sh):
@@ -1758,10 +1781,86 @@ def draw_settings_screen(surface, game):
         _blit_label(surface, row_font, value, value_color, rect.x + int(rect.width * 0.68), rect.y, rect.width * 0.32 - 18, rect.height)
 
 
+def draw_controls_screen(surface, game):
+    """Full-page key assignments for local seats and browser players."""
+    del game
+    _ensure_fonts_initialized()
+    sw, sh = surface.get_size()
+    surface.blit(_get_lobby_backdrop(sw, sh), (0, 0))
+    margin = max(28, int(sw * 0.04))
+    title_font = _ui_font(min(52, max(32, sh // 28)), bold=True)
+    hint_font = _ui_font(min(22, max(16, sh // 52)))
+    row_font = _ui_font(min(28, max(18, sh // 40)), bold=True)
+    sub_font = _ui_font(min(22, max(15, sh // 52)))
+    _blit_label(surface, title_font, "Keys", (238, 244, 255), margin, 28, sw - margin * 2, title_font.get_height() + 4, vcenter=False)
+    _blit_label(
+        surface, hint_font,
+        "Hold bomb to plant as you walk.  ·  Esc returns to the lobby",
+        (176, 190, 210), margin, 36 + title_font.get_height(), sw - margin * 2, hint_font.get_height() + 4, vcenter=False,
+    )
+    top = 36 + title_font.get_height() + hint_font.get_height() + 28
+    rows = control_guide_rows()
+    row_h = min(52, max(34, (sh - top - 28) // max(1, len(rows))))
+    for index, (who, move, bomb) in enumerate(rows):
+        rect = pygame.Rect(margin, top + index * row_h, sw - margin * 2, row_h - 6)
+        pygame.draw.rect(surface, (36, 44, 58), rect, border_radius=10)
+        pygame.draw.rect(surface, (90, 108, 132), rect, 1, border_radius=10)
+        _blit_label(surface, row_font, who, (255, 214, 120), rect.x + 18, rect.y, rect.width * 0.24, rect.height)
+        action = move if not bomb else "%s    ·    bomb %s" % (move, bomb)
+        _blit_label(surface, sub_font, action, (232, 238, 248), rect.x + int(rect.width * 0.26), rect.y, rect.width * 0.72 - 18, rect.height)
+
+
+def draw_quit_prompt(surface, game):
+    """Ask before closing the app from the lobby."""
+    if not getattr(game, "quit_prompt_open", False):
+        return
+    _ensure_fonts_initialized()
+    sw, sh = surface.get_size()
+    dim = pygame.Surface((sw, sh), pygame.SRCALPHA)
+    dim.fill((8, 10, 16, 180))
+    surface.blit(dim, (0, 0))
+    panel_w = min(720, max(420, int(sw * 0.52)))
+    panel_h = min(280, max(200, int(sh * 0.28)))
+    panel = pygame.Rect((sw - panel_w) // 2, (sh - panel_h) // 2, panel_w, panel_h)
+    pygame.draw.rect(surface, (28, 34, 46), panel, border_radius=16)
+    pygame.draw.rect(surface, (196, 209, 228), panel, 2, border_radius=16)
+    title_font = _ui_font(min(36, max(24, panel_h // 7)), bold=True)
+    hint_font = _ui_font(min(20, max(14, panel_h // 12)))
+    btn_font = _ui_font(min(28, max(18, panel_h // 8)), bold=True)
+    _blit_label(surface, title_font, "Exit BomberMarv?", (238, 244, 255), panel.x + 24, panel.y + 22, panel.width - 48, title_font.get_height() + 8)
+    _blit_label(
+        surface, hint_font, "Arrows select   ·   Enter confirm   ·   Esc stay",
+        (164, 178, 198), panel.x + 24, panel.y + 28 + title_font.get_height(), panel.width - 48, hint_font.get_height() + 6,
+    )
+    choice = getattr(game, "quit_prompt_choice", "no")
+    btn_w = min(160, max(110, int(panel_w * 0.28)))
+    btn_h = min(56, max(40, int(panel_h * 0.22)))
+    gap = 24
+    pair_w = btn_w * 2 + gap
+    btn_y = panel.bottom - btn_h - 28
+    no_rect = pygame.Rect(panel.centerx - pair_w // 2, btn_y, btn_w, btn_h)
+    yes_rect = pygame.Rect(no_rect.right + gap, btn_y, btn_w, btn_h)
+    for label, rect, selected in (("NO", no_rect, choice != "yes"), ("YES", yes_rect, choice == "yes")):
+        if selected:
+            fill = (86, 168, 118) if label == "NO" else (176, 72, 78)
+            text = (22, 32, 28) if label == "NO" else (255, 236, 236)
+            border = (230, 240, 232)
+        else:
+            fill = (46, 56, 70)
+            text = (210, 220, 232)
+            border = (90, 108, 132)
+        pygame.draw.rect(surface, fill, rect, border_radius=12)
+        pygame.draw.rect(surface, border, rect, 2 if selected else 1, border_radius=12)
+        _blit_label(surface, btn_font, label, text, rect.x, rect.y, rect.width, rect.height)
+
+
 def draw_game_prep(surface, Game):
     """Draw the host lobby screen with a clean split layout."""
     if getattr(Game, "prep_section", "") == "settings":
         draw_settings_screen(surface, Game)
+        return
+    if getattr(Game, "prep_section", "") == "controls":
+        draw_controls_screen(surface, Game)
         return
     _ensure_fonts_initialized()
     sw, sh = surface.get_size()
@@ -2052,12 +2151,14 @@ def draw_game_prep(surface, Game):
         f"{int(getattr(Game, 'prep_ai_count', 0) or 0)} AI   ·   "
         f"{arena_current}×{arena_current}   ·   first to {trophy_goal}"
     )
-    start_w = min(280, max(188, int(footer.width * 0.18)))
+    start_w = min(280, max(188, int(footer.width * 0.16)))
     start_h = min(58, footer.height - 24)
-    settings_w = min(220, max(150, int(footer.width * 0.14)))
+    settings_w = min(200, max(140, int(footer.width * 0.12)))
+    keys_w = min(160, max(110, int(footer.width * 0.10)))
     start_rect = pygame.Rect(footer.right - 16 - start_w, footer.y + (footer.height - start_h) // 2, start_w, start_h)
     settings_rect = pygame.Rect(start_rect.x - 12 - settings_w, start_rect.y, settings_w, start_h)
-    text_w = max(80, settings_rect.x - footer.x - 36)
+    keys_rect = pygame.Rect(settings_rect.x - 12 - keys_w, start_rect.y, keys_w, start_h)
+    text_w = max(80, keys_rect.x - footer.x - 36)
     _blit_label(surface, footer_font, totals_text, (232, 239, 250), footer.x + 22, footer.y + 16, text_w, footer_font.get_height() + 4, vcenter=False)
 
     settings_selected = (Game.prep_section == "settings_button")
@@ -2065,6 +2166,12 @@ def draw_game_prep(surface, Game):
     pygame.draw.rect(surface, settings_fill, settings_rect, border_radius=12)
     pygame.draw.rect(surface, (210, 220, 240), settings_rect, 2 if settings_selected else 1, border_radius=12)
     _blit_label(surface, footer_font, "SETTINGS", (236, 242, 255), settings_rect.x + 8, settings_rect.y, settings_rect.width - 16, settings_rect.height)
+
+    keys_selected = (Game.prep_section == "keys_button")
+    keys_fill = (86, 96, 132) if keys_selected else (48, 58, 76)
+    pygame.draw.rect(surface, keys_fill, keys_rect, border_radius=12)
+    pygame.draw.rect(surface, (210, 220, 240), keys_rect, 2 if keys_selected else 1, border_radius=12)
+    _blit_label(surface, footer_font, "KEYS", (236, 242, 255), keys_rect.x + 8, keys_rect.y, keys_rect.width - 16, keys_rect.height)
 
     start_selected = (Game.prep_section == 'start_game')
     if start_selected:
@@ -2078,7 +2185,7 @@ def draw_game_prep(surface, Game):
     pygame.draw.rect(surface, (210, 235, 214), start_rect, 1, border_radius=12)
     _blit_label(surface, footer_font, "START GAME", start_text_col, start_rect.x + 8, start_rect.y, start_rect.width - 16, start_rect.height)
 
-    help_text = "Arrows navigate  ·  Enter select/edit  ·  S or Settings opens rules  ·  Tab start  ·  Esc back"
+    help_text = "Arrows navigate  ·  Enter select  ·  K keys  ·  S settings  ·  Esc quit"
     _blit_label(surface, help_font, help_text, (160, 176, 198), footer.x + 22, footer.y + 20 + footer_font.get_height(), text_w, help_font.get_height() + 6, vcenter=False)
 
 

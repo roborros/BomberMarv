@@ -41,7 +41,7 @@ def present_rect(
 
 
 def choose_desktop_size(sizes, info_w: int, info_h: int) -> Tuple[int, int]:
-    """Primary monitor size, then the display info, so fullscreen matches the screen."""
+    """Primary monitor size, then the display info."""
     if sizes:
         width, height = sizes[0]
         if int(width) > 0 and int(height) > 0:
@@ -49,13 +49,32 @@ def choose_desktop_size(sizes, info_w: int, info_h: int) -> Tuple[int, int]:
     return max(1, int(info_w or 1)), max(1, int(info_h or 1))
 
 
-def desktop_size() -> Tuple[int, int]:
+def monitor_size(sizes, display_index, info_w: int, info_h: int) -> Tuple[int, int]:
+    """Resolution of the display the window is on, not a larger sibling monitor."""
+    try:
+        index = int(display_index)
+    except (TypeError, ValueError):
+        index = -1
+    if sizes and 0 <= index < len(sizes):
+        width, height = sizes[index]
+        if int(width) > 0 and int(height) > 0:
+            return int(width), int(height)
+    return max(1, int(info_w or 1)), max(1, int(info_h or 1))
+
+
+def current_monitor_size() -> Tuple[int, int]:
     try:
         sizes = pygame.display.get_desktop_sizes()
     except (pygame.error, AttributeError):
         sizes = ()
     info = pygame.display.Info()
-    return choose_desktop_size(sizes, info.current_w, info.current_h)
+    index = -1
+    try:
+        from pygame._sdl2 import video as sdl_video
+        index = int(sdl_video.Window.from_display_module().display_index)
+    except (pygame.error, AttributeError, TypeError, ValueError):
+        index = -1
+    return monitor_size(sizes, index, info.current_w, info.current_h)
 
 
 def _enable_dpi_awareness() -> None:
@@ -117,7 +136,7 @@ class FrontendWindow:
         """Toggle fullscreen mode and return new window size"""
         self.is_fullscreen = not self.is_fullscreen
         if self.is_fullscreen:
-            width, height = desktop_size()
+            width, height = current_monitor_size()
             self.window = pygame.display.set_mode((width, height), pygame.FULLSCREEN)
         else:
             self.window = pygame.display.set_mode(INITIAL_WINDOW_SIZE, pygame.RESIZABLE)
@@ -155,7 +174,7 @@ class FrontendRenderer:
         surf_w, surf_h = self.screen.surface.get_size()
         win_w, win_h = self.screen.window_size
         new_width, new_height, x_offset, y_offset = present_rect(
-            surf_w, surf_h, win_w, win_h, cover=self.window.is_fullscreen,
+            surf_w, surf_h, win_w, win_h, cover=False,
         )
 
         if new_width <= 0 or new_height <= 0:

@@ -200,6 +200,9 @@ class GameCommandHandler:
 
         if self._handle_leave_prompt(command):
             return True
+
+        if self._handle_quit_prompt(command):
+            return True
         
         # Game state commands
         if command == GameCommand.START_GAME:
@@ -368,3 +371,21 @@ class GameCommandHandler:
             if getattr(game, "game_state", None) in states:
                 return bool(game.open_leave_prompt())
         return False
+
+    def _handle_quit_prompt(self, command) -> bool:
+        game = self.game
+        if not getattr(game, "quit_prompt_open", False):
+            return False
+        if command in (
+            GameCommand.NAVIGATE_UP,
+            GameCommand.NAVIGATE_DOWN,
+            GameCommand.NAVIGATE_LEFT,
+            GameCommand.NAVIGATE_RIGHT,
+        ):
+            game.quit_prompt_choice = "yes" if getattr(game, "quit_prompt_choice", "no") == "no" else "no"
+            return True
+        if command == GameCommand.START_GAME:
+            return bool(game.confirm_quit_prompt())
+        if command == GameCommand.CANCEL_EDIT:
+            return bool(game.close_quit_prompt())
+        return True

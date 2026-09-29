@@ -422,6 +422,8 @@ class Player:
             'draw_scale': float(getattr(self, 'draw_scale', 1.0) or 1.0),
             'voice_until': int(getattr(self, 'voice_until', 0) or 0),
             'cleaver_swing_until': int(getattr(self, 'cleaver_swing_until', 0) or 0),
+            'pickup_message': getattr(self, 'pickup_message', '') or '',
+            'pickup_message_until': int(getattr(self, 'pickup_message_end_time', 0) or 0),
         }
 
 class Bomb:
@@ -583,6 +585,9 @@ class Game:
         self.leave_prompt_open = False
         self.leave_prompt_choice = "no"
         self.leave_prompt_paused_at = None
+        self.quit_prompt_open = False
+        self.quit_prompt_choice = "no"
+        self.quit_requested = False
         
         # Track if prep screen has been shown
         self.prep_screen_completed = False
@@ -1940,8 +1945,49 @@ class Game:
         while self.replay_buffer and self.replay_buffer[0][0] < min_time:
             self.replay_buffer.pop(0)
     
+    def open_quit_prompt(self):
+        self.quit_prompt_open = True
+        self.quit_prompt_choice = "no"
+        return True
+
+    def close_quit_prompt(self):
+        if not getattr(self, "quit_prompt_open", False):
+            return False
+        self.quit_prompt_open = False
+        self.quit_prompt_choice = "no"
+        return True
+
+    def confirm_quit_prompt(self):
+        if not getattr(self, "quit_prompt_open", False):
+            return False
+        if self.quit_prompt_choice != "yes":
+            return self.close_quit_prompt()
+        self.quit_prompt_open = False
+        self.quit_requested = True
+        frontend = getattr(self, "frontend", None)
+        if frontend is not None:
+            frontend.should_quit = True
+        return True
+
+    def _handle_quit_prompt_key(self, event):
+        if event.key in (Keys.LEFT, Keys.RIGHT, Keys.UP, Keys.DOWN):
+            self.quit_prompt_choice = "yes" if self.quit_prompt_choice == "no" else "no"
+            return True
+        if event.key == Keys.ENTER:
+            return self.confirm_quit_prompt()
+        if event.key == Keys.ESCAPE:
+            return self.close_quit_prompt()
+        return True
+
     def handle_prep_key_event(self, event):
         """Handle key events for game lobby navigation"""
+        if getattr(self, "quit_prompt_open", False):
+            self._handle_quit_prompt_key(event)
+            return
+        if self.prep_section == "controls":
+            if event.key == Keys.ESCAPE:
+                self.prep_section = "local_players"
+            return
         if self.prep_section == "settings":
             count = len(bm_settings.RULES) + 1
             if event.key == Keys.ESCAPE:
@@ -1969,7 +2015,11 @@ class Game:
         last_player_row = self._prep_last_player_row()
         if self.prep_editing_name and event.key in (Keys.UP, Keys.DOWN, Keys.LEFT, Keys.RIGHT, Keys.TAB):
             self.prep_editing_name = False
-        if not self.prep_editing_name and str(getattr(event, "unicode", "")).lower() == "s":
+        typed = str(getattr(event, "unicode", "")).lower()
+        if not self.prep_editing_name and typed == "k":
+            self.prep_section = "controls"
+            return
+        if not self.prep_editing_name and typed == "s":
             self.prep_section = "settings"
             return
         # Switch between sections
@@ -2089,8 +2139,19 @@ class Game:
         elif self.prep_section == "settings_button":
             if event.key == Keys.RIGHT:
                 self.prep_section = "start_game"
+            elif event.key == Keys.LEFT:
+                self.prep_section = "keys_button"
             elif event.key == Keys.ENTER:
                 self.prep_section = "settings"
+            elif event.key == Keys.UP:
+                self.prep_section = "local_players"
+                self.prep_cursor_row = last_player_row
+                self._sync_prep_cursor_col()
+        elif self.prep_section == "keys_button":
+            if event.key == Keys.RIGHT:
+                self.prep_section = "settings_button"
+            elif event.key == Keys.ENTER:
+                self.prep_section = "controls"
             elif event.key == Keys.UP:
                 self.prep_section = "local_players"
                 self.prep_cursor_row = last_player_row
@@ -2125,14 +2186,13 @@ class Game:
                     if len(current_name) > 0:
                         self.prep_web_player_names[player_info['id']] = current_name[:-1]
         
-        # ESC goes back to main menu
         if event.key == Keys.ESCAPE:
             if self.prep_editing_name:
                 self.prep_editing_name = False
-            elif self.prep_section == "settings_button":
+            elif self.prep_section in ("settings_button", "keys_button"):
                 self.prep_section = "local_players"
             else:
-                self.game_state = "startup"
+                self.open_quit_prompt()
                 
     def handle_web_key_event(self, event):
         # event: dict with 'type', 'key', 'code', 'ts', 'player_id', 'client_id'
@@ -2431,6 +2491,7 @@ class Game:
                 'delay_ms': int(bm_settings.get("big_blast_delay_ms")),
                 'volume': float(bm_settings.get("big_blast_volume")),
             },
+            'blast_ms': int(bm_settings.explosion_duration_ms()),
             'result_prompt': self.result_prompt(),
             'boss_fight_winner': self._serialize_boss_winner(),
             'leave_prompt': {

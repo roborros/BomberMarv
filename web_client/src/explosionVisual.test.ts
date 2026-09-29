@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { explosionArmFactor, explosionArmPixelLength, getExplosionActiveCells, isPlayerInPlannedBlast, plannedBlastCells } from './explosionVisual'
+import {
+  blastArmDirection,
+  blastArmSpriteOffset,
+  explosionArmFactor,
+  explosionArmPixelLength,
+  explosionDurationMs,
+  getExplosionActiveCells,
+  isPlayerInPlannedBlast,
+  paintBlastArm,
+  plannedBlastCells,
+  type BlastArmContext,
+} from './explosionVisual'
 
 describe('explosionVisual', () => {
   const explosion = {
@@ -48,5 +59,51 @@ describe('explosionVisual', () => {
     expect(isPlayerInPlannedBlast({ x: 550, y: 350 }, bombs, board)).toBe(true)
     expect(isPlayerInPlannedBlast({ x: 450, y: 450 }, bombs, board)).toBe(false)
     expect(isPlayerInPlannedBlast({ x: 850, y: 350 }, bombs, board)).toBe(false)
+  })
+
+  it('uses the host blast duration when the snapshot provides one', () => {
+    expect(explosionDurationMs(undefined)).toBe(400)
+    expect(explosionDurationMs(0)).toBe(400)
+    expect(explosionDurationMs(900)).toBe(900)
+    expect(explosionArmFactor(0, 450, 900)).toBe(1)
+  })
+})
+
+describe('blast arm direction', () => {
+  const directions = [
+    ['right', 1, 0, 240, 0],
+    ['left', -1, 0, -240, 0],
+    ['down', 0, 1, 0, 240],
+    ['up', 0, -1, 0, -240],
+  ] as const
+
+  it('keeps the bulky base on the center and the tip outward', () => {
+    for (const [name, dx, dy, tipX, tipY] of directions) {
+      expect(blastArmDirection(dx, dy)).toBe(name)
+      const base = blastArmSpriteOffset(name, 240, 1)
+      const tip = blastArmSpriteOffset(name, 240, 0)
+      expect(Math.hypot(base.x, base.y)).toBeLessThan(0.001)
+      expect(tip.x).toBeCloseTo(tipX, 4)
+      expect(tip.y).toBeCloseTo(tipY, 4)
+    }
+  })
+
+  it('paints every arm with the same length flip', () => {
+    const image = {} as CanvasImageSource
+    for (const [, dx, dy] of directions) {
+      const ops: string[] = []
+      const ctx: BlastArmContext = {
+        save: () => ops.push('save'),
+        restore: () => ops.push('restore'),
+        translate: () => ops.push('translate'),
+        rotate: () => ops.push('rotate'),
+        scale: (x, y) => ops.push(`scale ${x} ${y}`),
+        drawImage: (_image, x, y, w, h) => ops.push(`draw ${x} ${y} ${w} ${h}`),
+      }
+      paintBlastArm(ctx, image, 10, 20, dx, dy, 180.8, 90)
+      expect(ops).toContain('scale -1 1')
+      expect(ops).toContain('draw -180 -45 180 90')
+      expect(ops.at(-1)).toBe('restore')
+    }
   })
 })
