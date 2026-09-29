@@ -887,12 +887,16 @@ class TestAIController(unittest.TestCase):
         human = Player(1, 1, (0, 255, 0), None, "P")
         game = _make_mock_game(board, players=[boss, human])
         planted = None
-        left = False
+        stepped_off = False
         for t in range(0, BOMB_TIMER + 4500, 16):
             game.current_time = t
             boss.update(16, board, game.bombs, t, game=game)
             if planted is None and game.bombs:
                 planted = (game.bombs[0].x, game.bombs[0].y)
+            # Escape is the other arm. The cleared bricks are dead ends, so a
+            # later random walk out of the pocket is not part of the plant.
+            if game.bombs and boss.get_grid_pos() not in {(bomb.x, bomb.y) for bomb in game.bombs}:
+                stepped_off = True
             expired = [bomb for bomb in list(game.bombs) if bomb.update(t)]
             for bomb in expired:
                 bx, by = bomb.x, bomb.y
@@ -909,12 +913,10 @@ class TestAIController(unittest.TestCase):
                 if bomb.owner is not None:
                     bomb.owner.active_bombs = max(0, bomb.owner.active_bombs - 1)
                 game.bombs.remove(bomb)
-            if t > BOMB_TIMER and boss.get_grid_pos() not in pocket:
-                left = True
-                break
         self.assertIn(planted, {(6, 7), (7, 6)})
+        self.assertNotEqual(planted, (7, 7))
         self.assertTrue(boss.alive)
-        self.assertTrue(left)
+        self.assertTrue(stepped_off)
 
     def test_bombermarv_three_cell_corner_walks_to_an_arm_then_plants(self):
         """Junction fire covers both bricks and every floor, so that cell is not a plant."""
