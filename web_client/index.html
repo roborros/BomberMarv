@@ -26,7 +26,20 @@
       <div id="slot-container">
         <!-- Slots will be injected here -->
       </div>
+      <div class="lobby-actions">
+        <button type="button" id="keys-button" class="lobby-action">Keys</button>
+      </div>
       <div id="lobby-status">Connecting to server...</div>
+    </div>
+  </div>
+
+  <div id="keys-overlay" class="hidden">
+    <div class="keys-panel">
+      <p class="lobby-kicker">Key assignments</p>
+      <h1>Keys</h1>
+      <p id="keys-help">Hold bomb to plant as you walk. Esc returns to the lobby.</p>
+      <div id="keys-list"></div>
+      <button type="button" id="keys-back" class="lobby-action">Back to lobby</button>
     </div>
   </div>
 

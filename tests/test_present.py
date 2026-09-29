@@ -7,7 +7,7 @@ import pygame
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from frontend import choose_desktop_size, present_rect
+from frontend import choose_desktop_size, monitor_size, present_rect
 
 pygame.init()
 
@@ -79,6 +79,35 @@ class DesktopSizeTests(unittest.TestCase):
     def test_falls_back_to_display_info(self):
         self.assertEqual(choose_desktop_size((), 1366, 768), (1366, 768))
         self.assertEqual(choose_desktop_size([(0, 0)], 1280, 800), (1280, 800))
+
+    def test_fullscreen_uses_the_monitor_the_window_is_on(self):
+        sizes = [(1920, 1080), (1280, 720), (2560, 1440)]
+        self.assertEqual(monitor_size(sizes, 1, 800, 600), (1280, 720))
+        self.assertEqual(monitor_size(sizes, 2, 800, 600), (2560, 1440))
+        self.assertEqual(monitor_size(sizes, 9, 1366, 768), (1366, 768))
+
+    def test_fullscreen_fit_keeps_the_whole_picture_on_the_glass(self):
+        src = (1500, 1500)
+        screens = (
+            (1920, 1080),
+            (2560, 1440),
+            (3840, 2160),
+            (1280, 720),
+            (1280, 800),
+            (1024, 768),
+            (3440, 1440),
+            (1080, 1920),
+            (800, 600),
+        )
+        for win_w, win_h in screens:
+            with self.subTest(screen=(win_w, win_h)):
+                dest_w, dest_h, ox, oy = present_rect(*src, win_w, win_h, cover=False)
+                self.assertGreaterEqual(ox, 0)
+                self.assertGreaterEqual(oy, 0)
+                self.assertLessEqual(ox + dest_w, win_w)
+                self.assertLessEqual(oy + dest_h, win_h)
+                self.assertGreater(dest_w, 0)
+                self.assertGreater(dest_h, 0)
 
 
 if __name__ == "__main__":

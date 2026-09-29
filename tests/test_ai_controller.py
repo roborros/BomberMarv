@@ -863,6 +863,93 @@ class TestAIController(unittest.TestCase):
         self.assertTrue(place)
         self.assertEqual(step, (-1, 0))
 
+    def test_boss_two_brick_corner_plants_on_an_arm_instead_of_pacing(self):
+        """Fire that covers both bricks from the junction used to pace and never plant."""
+        from bm_classes import Player
+        from bm_params import BOSS_SPEED_MULTIPLIER, PLAYER_SPEED
+        from input_abstraction import Keys
+
+        I, E, D = INDESTRUCTIBLE, EMPTY, DESTRUCTIBLE
+        board = [[I] * 9 for _ in range(9)]
+        pocket = {(7, 7), (6, 7), (7, 6)}
+        for x, y in pocket:
+            board[y][x] = E
+        board[7][5] = D
+        board[5][7] = D
+        controls = {"up": Keys.W, "down": Keys.S, "left": Keys.A, "right": Keys.D, "bomb": Keys.SPACE}
+        boss = Player(7, 7, (40, 40, 40), controls, "BomberMarv")
+        boss.is_ai = True
+        boss.ai_role = "boss"
+        boss.ai_personality = "boss"
+        boss.fire_power = 2
+        boss.bomb_capacity = 2
+        boss.speed = int(PLAYER_SPEED * BOSS_SPEED_MULTIPLIER)
+        human = Player(1, 1, (0, 255, 0), None, "P")
+        game = _make_mock_game(board, players=[boss, human])
+        planted = None
+        left = False
+        for t in range(0, BOMB_TIMER + 4500, 16):
+            game.current_time = t
+            boss.update(16, board, game.bombs, t, game=game)
+            if planted is None and game.bombs:
+                planted = (game.bombs[0].x, game.bombs[0].y)
+            expired = [bomb for bomb in list(game.bombs) if bomb.update(t)]
+            for bomb in expired:
+                bx, by = bomb.x, bomb.y
+                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    for step in range(1, bomb.fire_power + 1):
+                        nx, ny = bx + dx * step, by + dy * step
+                        if not (0 <= ny < len(board) and 0 <= nx < len(board[0])):
+                            break
+                        if board[ny][nx] == I:
+                            break
+                        if board[ny][nx] == D:
+                            board[ny][nx] = E
+                            break
+                if bomb.owner is not None:
+                    bomb.owner.active_bombs = max(0, bomb.owner.active_bombs - 1)
+                game.bombs.remove(bomb)
+            if t > BOMB_TIMER and boss.get_grid_pos() not in pocket:
+                left = True
+                break
+        self.assertIn(planted, {(6, 7), (7, 6)})
+        self.assertTrue(boss.alive)
+        self.assertTrue(left)
+
+    def test_bombermarv_three_cell_corner_walks_to_an_arm_then_plants(self):
+        """Junction fire covers both bricks and every floor, so that cell is not a plant."""
+        from bm_params import BOSS_SPEED_MULTIPLIER, PLAYER_SPEED
+
+        board = [[INDESTRUCTIBLE] * 9 for _ in range(9)]
+        for x, y in ((7, 7), (6, 7), (7, 6)):
+            board[y][x] = EMPTY
+        board[7][5] = DESTRUCTIBLE
+        board[5][7] = DESTRUCTIBLE
+        boss = _make_mock_player(7, 7, fire_power=2, bomb_capacity=2)
+        boss.is_ai = True
+        boss.ai_role = "boss"
+        boss.ai_personality = "boss"
+        boss.speed = int(PLAYER_SPEED * BOSS_SPEED_MULTIPLIER)
+        human = _make_mock_player(1, 1)
+        game = _make_mock_game(board, players=[boss, human], current_time=3000)
+
+        self.assertFalse(_can_escape_after_bomb(boss, game))
+        self.assertTrue(_can_escape_after_bomb(boss, game, origin=(6, 7)))
+        self.assertTrue(_can_escape_after_bomb(boss, game, origin=(7, 6)))
+
+        step, place = think_ai(boss, game)
+        self.assertFalse(place)
+        self.assertIn(step, ((-1, 0), (0, -1)))
+        self.assertEqual(game.bombs, [])
+
+        boss.pos[0] += step[0] * CELL_SIZE
+        boss.pos[1] += step[1] * CELL_SIZE
+        arm = boss.get_grid_pos()
+        step_out, place = think_ai(boss, game)
+        self.assertIn(arm, {(6, 7), (7, 6)})
+        self.assertTrue(place)
+        self.assertEqual(step_out, (-step[0], -step[1]))
+
     def test_open_pocket_does_not_plant_from_the_junction(self):
         board = [[INDESTRUCTIBLE] * 7 for _ in range(7)]
         for x, y in ((1, 1), (2, 1), (3, 1), (1, 2)):

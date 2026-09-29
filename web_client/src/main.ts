@@ -56,6 +56,7 @@ import {
   shouldResetBigExplosionTracking,
   uniqueTilesInWindow
 } from './audioEvents'
+import { CONTROLS_HINT, KEY_GUIDE_ROWS, keyGuideAction } from './keysGuide'
 
 const PROTOCOL_VERSION = 2
 const INPUT_HEARTBEAT_MS = 120
@@ -87,11 +88,13 @@ const appDiv = document.querySelector<HTMLDivElement>('#app')
 if (!appDiv) throw new Error('Missing #app root element')
 appDiv.innerHTML = `
   <div id="game-container">
-    <canvas id="gameCanvas"></canvas>
+    <div id="game-stage">
+      <canvas id="gameCanvas"></canvas>
+    </div>
     <div id="debug-line">Waiting for game state...</div>
     <div id="state-only" class="hidden">Waiting for game to start...</div>
     <div id="controls-hint">
-      Controls: Arrow Keys to Move, Space to Place Bomb
+      ${CONTROLS_HINT}
     </div>
     <div id="status">Connecting...</div>
   </div>
@@ -106,8 +109,12 @@ const lobbyOverlay = document.getElementById('lobby-overlay')
 const slotContainer = document.getElementById('slot-container')
 const lobbyStatus = document.getElementById('lobby-status')
 const playerNameInput = document.querySelector<HTMLInputElement>('#player-name')
+const keysButton = document.getElementById('keys-button')
+const keysOverlay = document.getElementById('keys-overlay')
+const keysList = document.getElementById('keys-list')
+const keysBack = document.getElementById('keys-back')
 
-if (!canvas || !debugLine || !renderToggle || !stateOnly || !statusDiv || !lobbyOverlay || !slotContainer || !lobbyStatus || !playerNameInput) {
+if (!canvas || !debugLine || !renderToggle || !stateOnly || !statusDiv || !lobbyOverlay || !slotContainer || !lobbyStatus || !playerNameInput || !keysButton || !keysOverlay || !keysList || !keysBack) {
   throw new Error('Required DOM elements not found')
 }
 
@@ -120,6 +127,33 @@ const lobbyOverlayEl: HTMLElement = lobbyOverlay
 const slotContainerEl: HTMLElement = slotContainer
 const lobbyStatusEl: HTMLElement = lobbyStatus
 const playerNameInputEl: HTMLInputElement = playerNameInput
+const keysButtonEl: HTMLElement = keysButton
+const keysOverlayEl: HTMLElement = keysOverlay
+const keysListEl: HTMLElement = keysList
+const keysBackEl: HTMLElement = keysBack
+
+function showKeysScreen() {
+  keysOverlayEl.classList.remove('hidden')
+}
+
+function hideKeysScreen() {
+  keysOverlayEl.classList.add('hidden')
+}
+
+for (const row of KEY_GUIDE_ROWS) {
+  const item = document.createElement('div')
+  item.className = 'keys-row'
+  const who = document.createElement('span')
+  who.className = 'keys-who'
+  who.textContent = row.who
+  const action = document.createElement('span')
+  action.className = 'keys-action'
+  action.textContent = keyGuideAction(row)
+  item.append(who, action)
+  keysListEl.appendChild(item)
+}
+keysButtonEl.addEventListener('click', showKeysScreen)
+keysBackEl.addEventListener('click', hideKeysScreen)
 
 const renderer = new Renderer(canvasEl)
 const BENCH_MODE = new URLSearchParams(window.location.search).get('bench') === '1'
@@ -913,7 +947,33 @@ function maybeSendInput(force = false) {
   localInputTick += 1
 }
 
-window.addEventListener('keydown', (e) => updateKey(e.code, true))
+function isDocumentFullscreen(): boolean {
+  return document.fullscreenElement != null
+}
+
+async function toggleGameFullscreen() {
+  const root = document.documentElement
+  if (isDocumentFullscreen()) {
+    await document.exitFullscreen()
+    return
+  }
+  await root.requestFullscreen()
+}
+
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !keysOverlayEl.classList.contains('hidden')) {
+    e.preventDefault()
+    hideKeysScreen()
+    return
+  }
+  if (e.code === 'F11') {
+    e.preventDefault()
+    void toggleGameFullscreen().then(() => renderer.fitCanvasToViewport()).catch(() => renderer.fitCanvasToViewport())
+    return
+  }
+  updateKey(e.code, true)
+})
+document.addEventListener('fullscreenchange', () => renderer.fitCanvasToViewport())
 window.addEventListener('keyup', (e) => updateKey(e.code, false))
 
 function loop(ts: number) {

@@ -1,17 +1,17 @@
 import type { GameState, PlayerState, BombState, ExplosionState, PowerUpState } from './types';
 import { computeBoardSignature } from './boardHash';
-import { isPlayerInPlannedBlast, explosionArmPixelLength } from './explosionVisual';
+import { isPlayerInPlannedBlast, explosionArmPixelLength, explosionArmFactor, explosionDurationMs, paintBlastArm } from './explosionVisual';
 import { drawLightningExplosion } from './lightning';
 import { buildWinStatRows } from './winStats';
-import { computeCanvasBackingStore } from './canvasScale';
+import { canvasFitBox, computeCanvasBackingStore, visibleViewportSize } from './canvasScale';
 import { BOSS_COLOR, BOSS_NAME, BOSS_QUOTE, BOMBER_TOM_COLOR, BOMBER_TOM_NAME, BOMBER_TOM_QUOTE, MARV_KILLER_TITLE, bossResultTitle, championBossCardRect, inviteQuoteLines, isMarvKillerWin, marvKillerBannerRect, showsBomberTomInvite } from './championChallenge';
+import { READY_KEY_LINES } from './keysGuide';
 
 // Constants matching Python host rendering
 const CELL_SIZE = 100;
 const COLOR_BG = '#3C3C3C'; // (60, 60, 60)
 const COLOR_INDESTRUCTIBLE = '#787878'; // (120, 120, 120)
 const COLOR_DESTRUCTIBLE = '#C8C8C8'; // (200, 200, 200)
-const EXPLOSION_DURATION_MS = 400;
 const FLAME_ARM_THICKNESS_RATIO = 0.9;
 
 // Player colors - matching bm_params.py
@@ -61,6 +61,39 @@ export class Renderer {
         this.boardLayerCtx.imageSmoothingEnabled = true;
         this.loadSpriteAssets();
         window.addEventListener('resize', () => this.fitCanvasToViewport());
+        window.visualViewport?.addEventListener('resize', () => this.fitCanvasToViewport());
+        document.addEventListener('fullscreenchange', () => this.fitCanvasToViewport());
+        const stage = this.canvas.parentElement;
+        if (stage && typeof ResizeObserver !== 'undefined') {
+            const observer = new ResizeObserver(() => this.fitCanvasToViewport());
+            observer.observe(stage);
+        }
+    }
+
+    public fitCanvasToViewport() {
+        this.applyCanvasBacking();
+    }
+
+    private readCanvasViewport(): { width: number; height: number } {
+        const stage = this.canvas.parentElement;
+        const doc = document.documentElement;
+        const visual = window.visualViewport;
+        const viewport = visibleViewportSize({
+            innerWidth: window.innerWidth,
+            innerHeight: window.innerHeight,
+            clientWidth: doc.clientWidth,
+            clientHeight: doc.clientHeight,
+            visualWidth: visual?.width,
+            visualHeight: visual?.height,
+            screenWidth: window.screen?.width,
+            screenHeight: window.screen?.height,
+        });
+        return canvasFitBox({
+            stageWidth: stage?.clientWidth ?? 0,
+            stageHeight: stage?.clientHeight ?? 0,
+            viewport,
+            frame: 8,
+        });
     }
 
     public render(state: GameState, metrics?: { latency5sMs?: number; fps5s?: number; hostFps5s?: number; hostRenderFps5s?: number; renderPipelineP95Ms?: number; presentDelayP95Ms?: number; decodeP95Ms?: number; localCorrectionP95Px?: number; queueDelayP95Ms?: number; }): string {
@@ -92,10 +125,11 @@ export class Renderer {
         this.ctx.setTransform(this.worldToBackingX, 0, 0, this.worldToBackingY, 0, 0);
         this.ctx.imageSmoothingEnabled = true;
 
+        const blastMs = explosionDurationMs(state.blast_ms);
         state.powerups.forEach(p => this.drawPowerUp(p));
         state.bombs.forEach(b => this.drawBomb(b, state.time));
+        state.explosions.forEach(e => this.drawExplosion(e, state.time, blastMs));
         state.players.forEach(player => this.drawPlayer(player, state));
-        state.explosions.forEach(e => this.drawExplosion(e, state.time));
         if (state.state === 'get_ready') {
             this.drawGetReady();
         }
@@ -123,12 +157,15 @@ export class Renderer {
         if (this.width <= 0 || this.height <= 0) {
             return;
         }
+        const view = this.readCanvasViewport();
         const store = computeCanvasBackingStore({
             worldWidth: this.width,
             worldHeight: this.height,
-            viewportWidth: window.innerWidth,
-            viewportHeight: window.innerHeight,
+            viewportWidth: view.width,
+            viewportHeight: view.height,
             devicePixelRatio: window.devicePixelRatio || 1,
+            horizontalPad: 0,
+            verticalPad: 0,
         });
         this.lastCanvasScale = store.cssScale;
         this.worldToBackingX = store.worldToBackingX;
@@ -144,10 +181,6 @@ export class Renderer {
             this.ctx.imageSmoothingEnabled = true;
             this.boardLayerCtx.imageSmoothingEnabled = true;
         }
-    }
-
-    private fitCanvasToViewport() {
-        this.applyCanvasBacking();
     }
 
     private loadImage(src: string): HTMLImageElement {
@@ -210,8 +243,6 @@ export class Renderer {
     }
 
     private drawPlayer(player: PlayerState, state: GameState) {
-        if (!player.alive) return;
-
         const currentTimeMs = state.time;
         const PYTHON_CELL_SIZE = 100;
         const SCALE = CELL_SIZE / PYTHON_CELL_SIZE;
@@ -222,6 +253,17 @@ export class Renderer {
         const drawScale = player.draw_scale && player.draw_scale > 0 ? player.draw_scale : 1;
         const size = (PYTHON_CELL_SIZE * 0.85) * SCALE * drawScale; // PLAYER_DRAW_SCALE = 0.85
         const [dx, dy] = player.direction;
+
+        if (!player.alive) {
+            const fade = player.death_anim_time ?? 0;
+            if (fade <= 0) return;
+            const alpha = Math.max(0, Math.min(1, fade / 1000));
+            this.ctx.fillStyle = `rgba(255, 0, 0, ${alpha})`;
+            this.ctx.beginPath();
+            this.ctx.arc(px, py, size / 2, 0, Math.PI * 2);
+            this.ctx.fill();
+            return;
+        }
 
         if (player.sprite === 'brabi') {
             this.drawBrabiGlow(px, py, size / 2, currentTimeMs);
@@ -246,7 +288,11 @@ export class Renderer {
             avatarImg = this.avatarCache.get(avatarKey) ?? null;
         }
 
-        if (avatarImg && avatarImg.complete && avatarImg.naturalWidth > 0) {
+        const bodyColor = player.color
+            ? `rgb(${player.color[0]},${player.color[1]},${player.color[2]})`
+            : PLAYER_COLORS[player.id % PLAYER_COLORS.length];
+        const hasAvatar = !!(avatarImg && avatarImg.complete && avatarImg.naturalWidth > 0);
+        if (hasAvatar && avatarImg) {
             this.ctx.save();
             this.ctx.beginPath();
             this.ctx.arc(px, py, size / 2, 0, Math.PI * 2);
@@ -254,17 +300,26 @@ export class Renderer {
             this.ctx.drawImage(avatarImg, px - size / 2, py - size / 2, size, size);
             this.ctx.restore();
         } else {
-            const color = player.color ? `rgb(${player.color[0]},${player.color[1]},${player.color[2]})` : PLAYER_COLORS[player.id % PLAYER_COLORS.length];
-            this.ctx.fillStyle = color;
+            this.ctx.fillStyle = bodyColor;
             this.ctx.beginPath();
             this.ctx.arc(px, py, size / 2, 0, Math.PI * 2);
             this.ctx.fill();
         }
 
-        // Draw Outline
-        this.ctx.strokeStyle = '#222';
+        this.ctx.beginPath();
+        this.ctx.arc(px, py, size / 2, 0, Math.PI * 2);
+        this.ctx.strokeStyle = hasAvatar ? 'white' : bodyColor;
         this.ctx.lineWidth = 2;
         this.ctx.stroke();
+
+        if (player.color) {
+            const helmet = `rgb(${Math.min(player.color[0] + 30, 255)},${Math.min(player.color[1] + 30, 255)},${Math.min(player.color[2] + 30, 255)})`;
+            this.ctx.beginPath();
+            this.ctx.arc(px, py, size / 2, 0, Math.PI);
+            this.ctx.strokeStyle = helmet;
+            this.ctx.lineWidth = 3;
+            this.ctx.stroke();
+        }
 
         // Alternating feet (1.5x larger, animate only when moving)
         const isMoving = dx !== 0 || dy !== 0;
@@ -277,32 +332,33 @@ export class Renderer {
         this.ctx.fillRect(px - size / 4 - footSize / 2, py + size / 2 - footSize / 2 + legOffset, footSize, footSize);
         this.ctx.fillRect(px + size / 4 - footSize / 2, py + size / 2 - footSize / 2 - legOffset, footSize, footSize);
 
-        // Eyes (direction) - bigger when scared
-        const eyeOffX = dx * (size * 0.16);
-        const eyeOffY = dy * (size * 0.16);
+        // Eyes stay put. Pupils look along the movement direction.
         let eyeRadius = Math.max(4, size * 0.12);
         if (scared) eyeRadius *= 1.5;
-        const pupilRadius = Math.max(1.5, size * 0.05);
+        const pupilRadius = Math.max(1, size * 0.05);
         const eyeGap = size * 0.18;
+        const leftCx = px - eyeGap;
+        const rightCx = px + eyeGap;
+        const eyeCy = py - eyeGap * 0.7;
+        const pupilOff = Math.min(4, Math.max(0, eyeRadius - pupilRadius - 1));
 
         this.ctx.fillStyle = 'white';
         this.ctx.beginPath();
-        this.ctx.arc(px + eyeOffX - eyeGap, py + eyeOffY - eyeGap * 0.7, eyeRadius, 0, Math.PI * 2);
-        this.ctx.arc(px + eyeOffX + eyeGap, py + eyeOffY - eyeGap * 0.7, eyeRadius, 0, Math.PI * 2);
+        this.ctx.arc(leftCx, eyeCy, eyeRadius, 0, Math.PI * 2);
+        this.ctx.arc(rightCx, eyeCy, eyeRadius, 0, Math.PI * 2);
         this.ctx.fill();
 
-        // Pupils
         this.ctx.fillStyle = 'black';
         this.ctx.beginPath();
-        this.ctx.arc(px + eyeOffX - eyeGap + dx * 2, py + eyeOffY - eyeGap * 0.7 + dy * 2, pupilRadius, 0, Math.PI * 2);
-        this.ctx.arc(px + eyeOffX + eyeGap + dx * 2, py + eyeOffY - eyeGap * 0.7 + dy * 2, pupilRadius, 0, Math.PI * 2);
+        this.ctx.arc(leftCx + dx * pupilOff, eyeCy + dy * pupilOff, pupilRadius, 0, Math.PI * 2);
+        this.ctx.arc(rightCx + dx * pupilOff, eyeCy + dy * pupilOff, pupilRadius, 0, Math.PI * 2);
         this.ctx.fill();
 
         // Glasses when quad damage is active
         if (player.quad_damage) {
-            const leftEyeX = px + eyeOffX - eyeGap;
-            const rightEyeX = px + eyeOffX + eyeGap;
-            const eyeY = py + eyeOffY - eyeGap * 0.7;
+            const leftEyeX = leftCx;
+            const rightEyeX = rightCx;
+            const eyeY = eyeCy;
             const lensR = Math.max(8, eyeRadius * 1.8);
             const frameW = Math.max(2, lensR / 4);
             this.ctx.strokeStyle = 'rgb(0, 255, 255)';
@@ -363,15 +419,32 @@ export class Renderer {
             const nameSize = Math.max(13, Math.min(26, Math.floor(size * 0.26)));
             this.ctx.font = `${nameSize}px Arial`;
             this.ctx.textAlign = 'center';
-            this.ctx.fillText(player.name, px, py - size / 2 - 5);
+            this.ctx.textBaseline = 'middle';
+            this.ctx.fillText(player.name, px, py - size / 2 - Math.max(8, nameSize / 2));
+        }
+        const pickupUntil = player.pickup_message_until ?? 0;
+        if (player.pickup_message && pickupUntil > currentTimeMs) {
+            const msgSize = Math.max(13, Math.min(26, Math.floor((size + 8) * 0.26)));
+            this.ctx.font = `bold ${msgSize}px Arial`;
+            this.ctx.textAlign = 'center';
+            this.ctx.textBaseline = 'middle';
+            const msgY = py - size / 2 - msgSize - 18;
+            const width = this.ctx.measureText(player.pickup_message).width + 10;
+            const height = msgSize + 6;
+            this.ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+            this.ctx.fillRect(px - width / 2, msgY - height / 2, width, height);
+            this.ctx.fillStyle = 'rgb(255, 255, 0)';
+            this.ctx.fillText(player.pickup_message, px, msgY);
         }
         const voiceUntil = player.voice_until ?? 0;
         if (voiceUntil > currentTimeMs) {
             this.ctx.fillStyle = 'rgb(255, 230, 160)';
             this.ctx.font = `bold ${Math.max(16, Math.floor(size * 0.28))}px Arial`;
             this.ctx.textAlign = 'center';
+            this.ctx.textBaseline = 'alphabetic';
             this.ctx.fillText('Fresh meat!', px, py - size / 2 - 28);
         }
+        this.ctx.textBaseline = 'alphabetic';
     }
 
     private drawBrabiGlow(px: number, py: number, radius: number, now: number) {
@@ -504,8 +577,8 @@ export class Renderer {
 
         // Fuse (burning rope) near top-left
         const fuseOffset = bombRadius * 0.6;
-        const fuseX = cx - fuseOffset * 0.5;
-        const fuseY = cy - fuseOffset * 0.9;
+        const fuseX = cx;
+        const fuseY = cy - fuseOffset;
         const fuseRadius = Math.max(2, bombRadius / 3);
         this.ctx.fillStyle = 'rgb(255, 200, 150)';
         this.ctx.beginPath();
@@ -515,20 +588,12 @@ export class Renderer {
         this.ctx.stroke();
     }
 
-    private drawExplosion(explosion: ExplosionState, currentTimeMs: number) {
+    private drawExplosion(explosion: ExplosionState, currentTimeMs: number, durationMs: number) {
         if (!explosion.cells || explosion.cells.length === 0) {
             return;
         }
 
-        const norm = Math.min(1, Math.max(0, (currentTimeMs - explosion.start_time) / EXPLOSION_DURATION_MS));
-        let armFactor = 0;
-        if (norm < 0.2) {
-            armFactor = norm / 0.2;
-        } else if (norm <= 0.7) {
-            armFactor = 1;
-        } else {
-            armFactor = Math.max(0, 1 - ((norm - 0.7) / 0.3));
-        }
+        const armFactor = explosionArmFactor(explosion.start_time, currentTimeMs, durationMs);
 
         const [cx, cy] = explosion.cells[0];
         const centerPixelX = cx * CELL_SIZE + CELL_SIZE / 2;
@@ -585,18 +650,7 @@ export class Renderer {
         const drawArm = (dx: number, dy: number, length: number) => {
             if (length <= 0) return;
             if (armSprite && armSprite.complete && armSprite.naturalWidth > 0) {
-                this.ctx.save();
-                this.ctx.translate(centerPixelX, centerPixelY);
-                this.ctx.rotate(Math.atan2(dy, dx));
-                const isHorizontal = Math.abs(dx) > Math.abs(dy);
-                if (isHorizontal) {
-                    this.ctx.scale(-1, 1);
-                    this.ctx.drawImage(armSprite, -length, -thickness / 2, length, thickness);
-                } else {
-                    this.ctx.scale(1, -1);
-                    this.ctx.drawImage(armSprite, 0, -thickness / 2, length, thickness);
-                }
-                this.ctx.restore();
+                paintBlastArm(this.ctx, armSprite, centerPixelX, centerPixelY, dx, dy, length, thickness);
             } else {
                 this.ctx.fillStyle = explosion.quad_damage ? 'rgba(85, 255, 255, 0.75)' : 'rgba(255, 140, 65, 0.75)';
                 const x = dx >= 0 ? centerPixelX : centerPixelX - length;
@@ -615,50 +669,46 @@ export class Renderer {
         drawArm(1, 0, rightLength);
     }
 
+    private strokeCenteredRect(cx: number, cy: number, size: number, color: string, width: number) {
+        this.ctx.strokeStyle = color;
+        this.ctx.lineWidth = width;
+        this.ctx.strokeRect(cx - size / 2, cy - size / 2, size, size);
+    }
+
     private drawPowerUp(powerup: PowerUpState) {
         const px = powerup.x * CELL_SIZE;
         const py = powerup.y * CELL_SIZE;
         const cx = px + CELL_SIZE / 2;
         const cy = py + CELL_SIZE / 2;
-
-        // Teal border for all bonuses (cell-sized)
-        this.ctx.strokeStyle = 'rgb(0,255,255)';
-        this.ctx.lineWidth = 3;
-        this.ctx.strokeRect(px, py, CELL_SIZE, CELL_SIZE);
+        const icon = CELL_SIZE - 20;
+        const border = Math.floor(icon * 1.3);
 
         if (powerup.type === 'fire') {
-            const fireSize = CELL_SIZE / 1.3;
-            const fireOffset = (CELL_SIZE - fireSize) / 2;
+            this.strokeCenteredRect(cx, cy, border, 'rgb(0, 255, 255)', 4);
             if (this.fireIcon && this.fireIcon.complete && this.fireIcon.naturalWidth > 0) {
-                this.ctx.drawImage(this.fireIcon, px + fireOffset, py + fireOffset, fireSize, fireSize);
+                this.ctx.drawImage(this.fireIcon, cx - icon / 2, cy - icon / 2, icon, icon);
             } else {
                 this.ctx.fillStyle = 'orange';
                 this.ctx.beginPath();
-                this.ctx.arc(cx, cy, fireSize * 0.3, 0, Math.PI * 2);
+                this.ctx.arc(cx, cy, icon * 0.3, 0, Math.PI * 2);
                 this.ctx.fill();
-                this.ctx.fillStyle = 'white';
-                this.ctx.font = 'bold 28px Arial';
-                this.ctx.textAlign = 'center';
-                this.ctx.textBaseline = 'middle';
-                this.ctx.fillText('F', cx, cy);
             }
             return;
         }
 
         if (powerup.type === 'bomb') {
-            this.drawMiniBomb(cx, cy, CELL_SIZE * 0.25 * 1.3);
+            this.strokeCenteredRect(cx, cy, border, 'rgb(0, 255, 255)', 4);
+            this.drawMiniBomb(cx, cy, Math.floor(icon / 3));
             return;
         }
 
         if (powerup.type === 'quad' || powerup.type === 'quad_damage') {
-            const qdSize = CELL_SIZE - 20;
-            const qdOffset = (CELL_SIZE - qdSize) / 2;
             if (this.qdIcon && this.qdIcon.complete && this.qdIcon.naturalWidth > 0) {
-                this.ctx.drawImage(this.qdIcon, px + qdOffset, py + qdOffset, qdSize, qdSize);
+                this.ctx.drawImage(this.qdIcon, cx - icon / 2, cy - icon / 2, icon, icon);
             } else {
                 this.ctx.fillStyle = 'purple';
                 this.ctx.beginPath();
-                this.ctx.arc(cx, cy, CELL_SIZE * 0.3, 0, Math.PI * 2);
+                this.ctx.arc(cx, cy, icon * 0.3, 0, Math.PI * 2);
                 this.ctx.fill();
                 this.ctx.fillStyle = 'white';
                 this.ctx.font = 'bold 28px Arial';
@@ -669,21 +719,42 @@ export class Renderer {
             return;
         }
 
-        let color = 'yellow';
-        let text = '?';
-        if (powerup.type === 'kick') { color = 'green'; text = 'K'; }
-        else if (powerup.type === 'skull') { color = 'red'; text = 'S'; }
+        if (powerup.type === 'death_bonus') {
+            this.drawDeathBonus(cx, cy, icon);
+            return;
+        }
 
-        this.ctx.fillStyle = color;
+        this.ctx.fillStyle = 'yellow';
         this.ctx.beginPath();
         this.ctx.arc(cx, cy, CELL_SIZE * 0.3, 0, Math.PI * 2);
         this.ctx.fill();
-
         this.ctx.fillStyle = 'white';
         this.ctx.font = 'bold 28px Arial';
         this.ctx.textAlign = 'center';
         this.ctx.textBaseline = 'middle';
-        this.ctx.fillText(text, cx, cy);
+        this.ctx.fillText('?', cx, cy);
+    }
+
+    private drawDeathBonus(cx: number, cy: number, size: number) {
+        const border = Math.floor(size * 1.3);
+        this.strokeCenteredRect(cx, cy, border, 'rgb(255, 255, 0)', 4);
+        const skullR = size / 3;
+        this.ctx.fillStyle = 'rgb(230, 230, 230)';
+        this.ctx.beginPath();
+        this.ctx.arc(cx, cy, skullR, 0, Math.PI * 2);
+        this.ctx.fill();
+        this.ctx.strokeStyle = 'black';
+        this.ctx.lineWidth = 1;
+        this.ctx.stroke();
+        const eyeR = Math.max(2, skullR / 5);
+        const eyeOffset = skullR / 2;
+        this.ctx.fillStyle = 'black';
+        this.ctx.beginPath();
+        this.ctx.arc(cx - eyeOffset / 2, cy - eyeOffset / 3, eyeR, 0, Math.PI * 2);
+        this.ctx.arc(cx + eyeOffset / 2, cy - eyeOffset / 3, eyeR, 0, Math.PI * 2);
+        this.ctx.fill();
+        this.ctx.fillStyle = 'rgb(230, 230, 230)';
+        this.ctx.fillRect(cx - skullR / 2, cy + skullR / 3, skullR, skullR / 3);
     }
 
     private drawMiniBomb(cx: number, cy: number, bombRadius: number) {
@@ -695,8 +766,8 @@ export class Renderer {
         this.ctx.lineWidth = 1;
         this.ctx.stroke();
         const fuseOffset = bombRadius * 0.6;
-        const fuseX = cx - fuseOffset * 0.5;
-        const fuseY = cy - fuseOffset * 0.9;
+        const fuseX = cx;
+        const fuseY = cy - fuseOffset;
         const fuseRadius = Math.max(2, bombRadius / 3);
         this.ctx.fillStyle = 'rgb(255, 200, 150)';
         this.ctx.beginPath();
@@ -1159,7 +1230,7 @@ export class Renderer {
     }
 
     private drawGetReady() {
-        const bannerH = Math.max(56, Math.min(120, Math.floor(this.height * 0.10)));
+        const bannerH = Math.max(108, Math.min(240, Math.floor(this.height * 0.20)));
         const y = Math.floor((this.height - bannerH) / 2);
         this.ctx.save();
         this.ctx.fillStyle = 'rgba(12, 10, 18, 0.82)';
@@ -1168,11 +1239,20 @@ export class Renderer {
         this.ctx.fillRect(0, y, this.width, 2);
         this.ctx.fillRect(0, y + bannerH - 2, this.width, 2);
         this.ctx.textAlign = 'center';
-        this.ctx.textBaseline = 'middle';
-        const size = Math.max(28, Math.min(64, Math.floor(bannerH * 0.48)));
-        this.ctx.font = `bold ${size}px "Comic Sans MS", "Comic Sans", cursive`;
+        this.ctx.textBaseline = 'top';
+        const titleSize = Math.max(26, Math.min(52, Math.floor(bannerH * 0.28)));
+        this.ctx.font = `bold ${titleSize}px "Comic Sans MS", "Comic Sans", cursive`;
         this.ctx.fillStyle = 'rgb(236, 120, 168)';
-        this.ctx.fillText('Get Ready!', this.width / 2, y + bannerH / 2);
+        const titleY = y + Math.max(8, Math.floor(bannerH / 10));
+        this.ctx.fillText('Get Ready!', this.width / 2, titleY);
+        const lineSize = Math.max(16, Math.min(28, Math.floor(bannerH * 0.16)));
+        this.ctx.font = `bold ${lineSize}px Arial, sans-serif`;
+        this.ctx.fillStyle = 'rgb(232, 238, 248)';
+        let lineY = titleY + titleSize + Math.max(6, Math.floor(bannerH / 18));
+        for (const line of READY_KEY_LINES) {
+            this.ctx.fillText(line, this.width / 2, lineY);
+            lineY += lineSize + 4;
+        }
         this.ctx.restore();
     }
 

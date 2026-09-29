@@ -17,6 +17,7 @@ from bm_drawing import (
     draw_game_screen,
     draw_get_ready,
     draw_leave_prompt,
+    draw_quit_prompt,
     draw_stat_screen,
     draw_title_page,
 )
@@ -412,6 +413,7 @@ if __name__ == "__main__":
             )
         elif theGame.game_state == "game_prep":
             draw_game_prep(game_surface, theGame)
+            draw_quit_prompt(game_surface, theGame)
         elif theGame.game_state == "get_ready":
             draw_game_screen(game_surface, theGame)
             draw_get_ready(game_surface)

@@ -282,6 +282,11 @@ class PlayerBombTests(unittest.TestCase):
         self.assertEqual(data["owner_client_player_id"], 2)
         self.assertFalse(data["is_ai"])
         self.assertEqual(data["shield_until"], 0)
+        self.player.pickup_message = "+2 FLAMES"
+        self.player.pickup_message_end_time = 5000
+        labeled = self.player.to_dict()
+        self.assertEqual(labeled["pickup_message"], "+2 FLAMES")
+        self.assertEqual(labeled["pickup_message_until"], 5000)
 
 
 class ExplosionLogicTests(unittest.TestCase):
@@ -438,9 +443,10 @@ class GameStateTests(unittest.TestCase):
 
     def test_to_dict_has_protocol_fields(self):
         payload = self.game.to_dict()
-        for key in ("time", "state", "board", "players", "bombs", "explosions", "powerups", "crushing_walls", "local_player_count"):
+        for key in ("time", "state", "board", "players", "bombs", "explosions", "powerups", "crushing_walls", "local_player_count", "blast_ms"):
             self.assertIn(key, payload)
         self.assertEqual(payload["state"], "game_prep")
+        self.assertGreater(payload["blast_ms"], 0)
 
     def test_create_players_includes_registered_web_client(self):
         self.game.prep_num_players = 1

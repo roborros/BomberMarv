@@ -9,10 +9,103 @@ export function explosionArmPixelLength(armFactor: number, cellReach: number, ce
 }
 
 export function explosionArmFactor(startTime: number, currentTimeMs: number, durationMs = EXPLOSION_DURATION_MS): number {
-  const norm = Math.min(1, Math.max(0, (currentTimeMs - startTime) / durationMs))
+  const norm = Math.min(1, Math.max(0, (currentTimeMs - startTime) / Math.max(1, durationMs)))
   if (norm < 0.2) return norm / 0.2
   if (norm <= 0.7) return 1
   return Math.max(0, 1 - ((norm - 0.7) / 0.3))
+}
+
+export function explosionDurationMs(blastMs?: number, fallback = EXPLOSION_DURATION_MS): number {
+  if (blastMs === undefined || !Number.isFinite(blastMs) || blastMs <= 0) return fallback
+  return blastMs
+}
+
+export type BlastArmDirection = 'up' | 'down' | 'left' | 'right'
+
+export interface BlastArmPlacement {
+  rotation: number
+  scaleX: number
+  scaleY: number
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+/** Horizontal art: pointy tip on the left, bulky base on the right. */
+export function blastArmDirection(dx: number, dy: number): BlastArmDirection {
+  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? 'right' : 'left'
+  return dy >= 0 ? 'down' : 'up'
+}
+
+/**
+ * Rotate so local +x points outward, then flip the strip so the base (source right)
+ * sits on the blast center and the tip (source left) points outward.
+ * The same flip is used for every direction. A vertical-only Y flip parks the tip
+ * on the center and the base at the outer end.
+ */
+export function blastArmPlacement(direction: BlastArmDirection, length: number, thickness: number): BlastArmPlacement {
+  const rotation = direction === 'right' ? 0
+    : direction === 'down' ? Math.PI / 2
+      : direction === 'left' ? Math.PI
+        : -Math.PI / 2
+  return {
+    rotation,
+    scaleX: -1,
+    scaleY: 1,
+    x: -length,
+    y: -thickness / 2,
+    w: length,
+    h: thickness,
+  }
+}
+
+/** u=0 is the source tip (left), u=1 is the source base (right). v is across the strip. */
+export function blastArmSpriteOffset(
+  direction: BlastArmDirection,
+  length: number,
+  u: number,
+  v = 0,
+): { x: number; y: number } {
+  const place = blastArmPlacement(direction, length, 1)
+  const localX = place.scaleX * (place.x + u * place.w)
+  const localY = place.scaleY * v
+  const cos = Math.cos(place.rotation)
+  const sin = Math.sin(place.rotation)
+  return {
+    x: localX * cos - localY * sin,
+    y: localX * sin + localY * cos,
+  }
+}
+
+export interface BlastArmContext {
+  save(): void
+  restore(): void
+  translate(x: number, y: number): void
+  rotate(angle: number): void
+  scale(x: number, y: number): void
+  drawImage(image: CanvasImageSource, x: number, y: number, w: number, h: number): void
+}
+
+export function paintBlastArm(
+  ctx: BlastArmContext,
+  image: CanvasImageSource,
+  centerX: number,
+  centerY: number,
+  dx: number,
+  dy: number,
+  length: number,
+  thickness: number,
+): void {
+  const pxLength = Math.floor(length)
+  if (pxLength <= 0 || thickness <= 0) return
+  const place = blastArmPlacement(blastArmDirection(dx, dy), pxLength, thickness)
+  ctx.save()
+  ctx.translate(centerX, centerY)
+  ctx.rotate(place.rotation)
+  ctx.scale(place.scaleX, place.scaleY)
+  ctx.drawImage(image, place.x, place.y, place.w, place.h)
+  ctx.restore()
 }
 
 export function getExplosionActiveCells(

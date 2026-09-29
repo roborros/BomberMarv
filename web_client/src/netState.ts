@@ -43,6 +43,7 @@ export function mergeDelta(base: GameState, delta: GameStateDelta): GameState {
   if (delta.result_prompt !== undefined) merged.result_prompt = delta.result_prompt
   if (delta.leave_prompt !== undefined) merged.leave_prompt = { ...delta.leave_prompt }
   if (delta.ai_count !== undefined) merged.ai_count = delta.ai_count
+  if (delta.blast_ms !== undefined) merged.blast_ms = delta.blast_ms
   if (delta._net_metrics !== undefined) merged._net_metrics = { ...(merged._net_metrics ?? {}), ...delta._net_metrics }
   if (delta._host_published_at_ms !== undefined) merged._host_published_at_ms = delta._host_published_at_ms
   if (delta._sim_tick !== undefined) merged._sim_tick = delta._sim_tick
