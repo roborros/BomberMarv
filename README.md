@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-1.2.8-orange">
+  <img alt="version" src="https://img.shields.io/badge/version-1.2.9-orange">
   <img alt="python" src="https://img.shields.io/badge/python-3.11-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
 </p>
@@ -111,7 +111,7 @@ The host sets local player count, AI count, and trophies needed to become champi
 
 ![Bombs and explosions](docs/media/bombs.gif)
 
-Hold the bomb button to keep planting as you walk. Soft bricks pop, blasts chain through other bombs, and players get a scared look when they are standing in a planned blast. A soft brick stays solid until its flame pulls back. Players also bump into each other. A blast that covers 50 or more cells within 700 ms plays the loud hit (`mocny_stral`) 300 ms later, at full volume. Size, window, delay, and volume are match settings, and browsers use the same values.
+Hold the bomb button to keep planting as you walk. Soft bricks pop, blasts chain through other bombs, and players get a scared look when they are standing in a planned blast. A soft brick stays solid until its flame pulls back. Players also bump into each other. A blast that covers 100 or more cells within 700 ms plays the loud hit (`mocny_stral`) 300 ms later, at full volume. Size, window, delay, and volume are match settings, and browsers use the same values.
 
 ### Powerups
 
@@ -124,13 +124,13 @@ Hold the bomb button to keep planting as you walk. Soft bricks pop, blasts chain
 | Quad Damage | huge bombs, extra capacity, and a speed boost (20 seconds at the default settings) |
 | Death bonus | dropped where someone dies — random speed, fire, or bombs |
 
-Soft walls have a chance to spawn bomb/fire pickups (25% by default). Quad Damage can appear from 60 seconds into the round. Each tick after that has a 0.05% chance to drop one. Chance per tick, delay, duration, strength, and speed boost are all match settings.
+Soft walls have a chance to spawn bomb/fire pickups (25% by default). Quad Damage can appear from 60 seconds into the round. Each tick after that has a 0.2025% chance to drop one. Chance per tick, delay, duration, strength, and speed boost are all match settings.
 
 ### Crushing walls
 
 ![Crushing walls](docs/media/crushing-walls.gif)
 
-When few players remain, indestructible walls crawl in clockwise and squeeze the arena. They never start before 120 seconds. By default a crowded match waits 120 seconds, a two-player start waits 180 seconds, and each new wall appears every 1.2 seconds. Those waits and the close speed are match settings. If more than two players are still alive and fewer than 15% of the soft walls remain, the walls start at 1.5 times that wait. At twice that wait they start even if the soft walls are still standing.
+Indestructible walls crawl in clockwise and squeeze the arena. They start at 80 seconds in every match, including the boss fight. Player count and leftover soft walls do not move that time. Each new wall appears every 267 ms, or every 400 ms in a boss fight. The start time and the close speed are match settings.
 
 ### CPU match
 
@@ -189,14 +189,14 @@ Open them from the lobby with **S**, or move Left from **Start Game** and press 
 | Bomb fuse | 3 s | 1 – 8 s |
 | Blast duration | 400 ms | 200 – 1200 ms |
 | Powerup chance | 25% | 0 – 100% |
-| Quad Damage chance / tick | 0.05% | 0 – 1% |
+| Quad Damage chance / tick | 0.2025% | 0 – 1% |
 | Quad Damage delay | 60 s | 0 – 180 s |
 | Quad Damage time | 20 s | 5 – 60 s |
 | Quad Damage strength | +10 bombs and fire | +2 – +15 |
 | Quad Damage speed | 1.5× | 1.0× – 2.5× |
-| Crushing walls start | 120 s | 60 – 360 s, but never sooner than 120 s. Same for every player count and the boss fight. With no other condition, walls start at twice this (240 s). |
-| Walls close every | 1200 ms | 400 – 3000 ms |
-| Loud hit size | 50 tiles | 10 – 200 tiles |
+| Crushing walls start | 80 s | 60 – 360 s. Same second for every player count and the boss fight. |
+| Walls close every | 267 ms | 50 – 3000 ms. Boss fights default to 400 ms. |
+| Loud hit size | 100 tiles | 10 – 200 tiles |
 | Loud hit window | 700 ms | 100 – 3000 ms |
 | Loud hit delay | 300 ms | 0 – 2000 ms |
 | Loud hit volume | 100% | 0 – 100% |
@@ -240,7 +240,7 @@ In the browser lobby: type a display name and press **Log in**. The host assigns
 - Bombs you just planted let you walk out of that cell; after you leave, the bomb blocks the tile.
 - Players block each other unless **Players block each other** is turned off in lobby settings. The collision circle is smaller than the drawn sprite. The setting is saved and still applies after a restart.
 - Team mode is opt-in from the lobby. Friendly fire is off unless you turn it on in match settings.
-- A blast covering enough cells inside the loud-hit window plays `mocny_stral`. The default is 50 cells inside 700 ms, then a 300 ms delay at full volume.
+- A blast covering enough cells inside the loud-hit window plays `mocny_stral`. The default is 100 cells inside 700 ms, then a 300 ms delay at full volume.
 
 ### Corner sliding, chain blasts, and the kill box
 

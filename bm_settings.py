@@ -40,8 +40,8 @@ RULES = (
     ("quad_power", "Quad Damage strength", "int", QUAD_DAMAGE_POWER, 2, 15, 1),
     ("quad_speed", "Quad Damage speed", "float", QUAD_DAMAGE_SPEEDUP, 1.0, 2.5, 0.1),
     ("walls_delay_s", "Crushing walls start (s)", "int", CRUSHING_WALLS_DELAY, 60, 360, 10),
-    ("walls_growth_ms", "Walls close every (ms)", "int", CRUSHING_WALLS_GROWTH_INTERVAL_MS, 400, 3000, 200),
-    ("walls_boss_growth_ms", "Boss walls close every (ms)", "int", BOSS_CRUSHING_WALLS_GROWTH_INTERVAL_MS, 400, 4000, 200),
+    ("walls_growth_ms", "Walls close every (ms)", "int", CRUSHING_WALLS_GROWTH_INTERVAL_MS, 50, 3000, 50),
+    ("walls_boss_growth_ms", "Boss walls close every (ms)", "int", BOSS_CRUSHING_WALLS_GROWTH_INTERVAL_MS, 50, 4000, 50),
     ("big_blast_tiles", "Loud hit size (tiles)", "int", BIG_EXPLOSION_TILE_THRESHOLD, 10, 200, 5),
     ("big_blast_window_ms", "Loud hit window (ms)", "int", BIG_EXPLOSION_WINDOW_MS, 100, 3000, 100),
     ("big_blast_delay_ms", "Loud hit delay (ms)", "int", BIG_EXPLOSION_SOUND_DELAY_MS, 0, 2000, 50),
@@ -84,7 +84,7 @@ def _clamp(key, value):
         number = min(float(high), number)
     if kind == "int":
         return int(round(number))
-    return round(number, 4)
+    return round(number, 6)
 
 
 def set_value(key, value):
@@ -114,7 +114,7 @@ def is_default(key):
         return bool(value) == bool(default)
     if kind == "int":
         return int(value) == int(default)
-    return round(float(value), 4) == round(float(default), 4)
+    return round(float(value), 6) == round(float(default), 6)
 
 
 def format_value(key):
@@ -126,7 +126,7 @@ def format_value(key):
         if key in ("powerup_chance", "quad_chance", "big_blast_volume"):
             pct = float(value) * 100
             if key == "quad_chance":
-                return f"{pct:.2f}%"
+                return f"{pct:.4f}%"
             return f"{int(round(pct))}%"
         text = f"{float(value):.2f}".rstrip("0").rstrip(".")
         return text

@@ -1522,118 +1522,97 @@ class Game:
         player.pos = safe_pos
 
     def crushing_wall_delay_s(self):
-        """Seconds before walls may start. Same for every player count and the boss fight."""
-        return max(int(bm_settings.get("walls_delay_s")), int(CRUSHING_WALLS_MIN_START_S))
+        """Seconds before walls start. Same for every player count and the boss fight."""
+        return int(bm_settings.get("walls_delay_s"))
 
     def crushing_wall_start_seconds(self):
-        """(few players and few walls left, start with no other condition). Both use the shared delay."""
-        early = self.crushing_wall_delay_s()
-        return early, early * int(CRUSHING_WALLS_STALE_TIME_MULTIPLIER)
+        """One start time. Player count, leftover walls, and the boss fight do not change it."""
+        start = self.crushing_wall_delay_s()
+        return start, start
 
     def handle_crushing_walls(self):
         """Handle the crushing walls feature"""
         alive_players = [p for p in self.players if p.alive]
 
-        # Boss fight waits longer than a crowded round and grows more slowly.
         if self.game_state == "boss_fight":
             growth_interval_ms = int(bm_settings.get("walls_boss_growth_ms"))
         else:
             growth_interval_ms = int(bm_settings.get("walls_growth_ms"))
-        crushing_delay = self.crushing_wall_delay_s()
-        crushing_min_destroyable = CRUSHING_WALLS_MIN_DESTROYABLE
-        crushing_max_alive = CRUSHING_WALLS_MAX_ALIVE
         elapsed_ms = self.current_time - self.game_start_time
-        remaining = self.count_destroyable_cells()
-        few_alive = (
-            len(alive_players) <= crushing_max_alive
-            and elapsed_ms >= crushing_delay * 1000
-            and remaining < crushing_min_destroyable
-        )
-        start_soft = int(getattr(self, "destructible_at_round_start", 0) or 0)
-        walls_thin = (
-            start_soft > 0
-            and remaining < start_soft * CRUSHING_WALLS_STALE_WALL_FRACTION
-        )
-        crowded = (
-            len(alive_players) > crushing_max_alive
-            and elapsed_ms >= crushing_delay * CRUSHING_WALLS_CROWDED_TIME_MULTIPLIER * 1000
-            and walls_thin
-        )
-        overtime = elapsed_ms >= crushing_delay * CRUSHING_WALLS_STALE_TIME_MULTIPLIER * 1000
+        if elapsed_ms < self.crushing_wall_delay_s() * 1000:
+            return
 
-        if few_alive or crowded or overtime:
-            
-            if not self.crushing_walls_active:
-                # Initialize crushing walls
-                self.crushing_walls_active = True
-                self.crushing_walls_pattern = self.generate_clockwise_pattern()
-                self.crushing_walls_index = 0
+        if not self.crushing_walls_active:
+            # Initialize crushing walls
+            self.crushing_walls_active = True
+            self.crushing_walls_pattern = self.generate_clockwise_pattern()
+            self.crushing_walls_index = 0
+            self.crushing_walls_last_time = self.current_time
+            return
+
+        # Add new walls at configured interval
+        if self.current_time - self.crushing_walls_last_time >= growth_interval_ms:
+            if self.crushing_walls_index < len(self.crushing_walls_pattern):
+                x, y = self.crushing_walls_pattern[self.crushing_walls_index]
+
+                # Check if there's a player in this cell and push them away BEFORE placing the wall
+                for player in alive_players:
+                    self.push_player_away_from_cell(player, x, y)
+
+                # Double-check: make sure no players are still in this cell after pushing
+                players_still_in_cell = []
+                for player in alive_players:
+                    if player.get_grid_pos() == (x, y):
+                        players_still_in_cell.append(player)
+
+                # If players are still in the cell, try to move them to any adjacent empty cell
+                for player in players_still_in_cell:
+                    for dx, dy in [(0, -1), (1, 0), (0, 1), (-1, 0)]:  # Up, Right, Down, Left
+                        adj_x, adj_y = x + dx, y + dy
+                        if (0 <= adj_x < self.grid_width and 0 <= adj_y < self.grid_height and
+                            self.board[adj_y][adj_x] == EMPTY):
+                            # Move player to adjacent empty cell
+                            player.pos = np.array([
+                                adj_x * CELL_SIZE + CELL_SIZE // 2,
+                                adj_y * CELL_SIZE + CELL_SIZE // 2
+                            ], dtype=np.float64)
+                            break
+
+                # Replace whatever is in the cell with an indestructible wall
+                self.board[y][x] = INDESTRUCTIBLE
+
+                # Remove any powerups in this cell
+                self.powerups = [pu for pu in self.powerups if not (pu.x == x and pu.y == y)]
+
+                # Remove any bombs in this cell (they explode immediately).
+                # owner can be missing; do not touch active_bombs in that case.
+                crush_explosions = []
+                for bomb in self.bombs[:]:
+                    if bomb.x == x and bomb.y == y:
+                        exp = self._detonate_bomb(bomb)
+                        if exp is None:
+                            continue
+                        self.explosions.append(exp)
+                        crush_explosions.append(exp)
+                self._register_new_explosions(crush_explosions)
+
+                self.crushing_walls_index += 1
                 self.crushing_walls_last_time = self.current_time
-                return
-            
-            # Add new walls at configured interval
-            if self.current_time - self.crushing_walls_last_time >= growth_interval_ms:
-                if self.crushing_walls_index < len(self.crushing_walls_pattern):
-                    x, y = self.crushing_walls_pattern[self.crushing_walls_index]
-                    
-                    # Check if there's a player in this cell and push them away BEFORE placing the wall
-                    for player in alive_players:
-                        self.push_player_away_from_cell(player, x, y)
-                    
-                    # Double-check: make sure no players are still in this cell after pushing
-                    players_still_in_cell = []
-                    for player in alive_players:
-                        if player.get_grid_pos() == (x, y):
-                            players_still_in_cell.append(player)
-                    
-                    # If players are still in the cell, try to move them to any adjacent empty cell
-                    for player in players_still_in_cell:
-                        for dx, dy in [(0, -1), (1, 0), (0, 1), (-1, 0)]:  # Up, Right, Down, Left
-                            adj_x, adj_y = x + dx, y + dy
-                            if (0 <= adj_x < self.grid_width and 0 <= adj_y < self.grid_height and 
-                                self.board[adj_y][adj_x] == EMPTY):
-                                # Move player to adjacent empty cell
-                                player.pos = np.array([
-                                    adj_x * CELL_SIZE + CELL_SIZE // 2,
-                                    adj_y * CELL_SIZE + CELL_SIZE // 2
-                                ], dtype=np.float64)
-                                break
-                    
-                    # Replace whatever is in the cell with an indestructible wall
-                    self.board[y][x] = INDESTRUCTIBLE
-                    
-                    # Remove any powerups in this cell
-                    self.powerups = [pu for pu in self.powerups if not (pu.x == x and pu.y == y)]
-                    
-                    # Remove any bombs in this cell (they explode immediately).
-                    # owner can be missing; do not touch active_bombs in that case.
-                    crush_explosions = []
-                    for bomb in self.bombs[:]:
-                        if bomb.x == x and bomb.y == y:
-                            exp = self._detonate_bomb(bomb)
-                            if exp is None:
-                                continue
-                            self.explosions.append(exp)
-                            crush_explosions.append(exp)
-                    self._register_new_explosions(crush_explosions)
-                    
-                    self.crushing_walls_index += 1
-                    self.crushing_walls_last_time = self.current_time
 
-                    # If walls filled all empty space, all remaining players die (draw)
-                    if self.count_empty_cells() == 0:
-                        for player in alive_players:
-                            if player.alive:
-                                player.alive = False
-                                player.death_animation_time = 1000
-                                self.death_events.append(self.current_time)
-                                player.death_time_ms = self.current_time
-                                if hasattr(self, 'round_start_time') and self.round_start_time:
-                                    player.death_time_rel_ms = max(0, self.current_time - self.round_start_time)
-                                player.fire_power_at_death = player.fire_power
-                                player.bomb_capacity_at_death = player.bomb_capacity
-                                death_sound.play()
-                                self._queue_kill_cam(player)
+                # If walls filled all empty space, all remaining players die (draw)
+                if self.count_empty_cells() == 0:
+                    for player in alive_players:
+                        if player.alive:
+                            player.alive = False
+                            player.death_animation_time = 1000
+                            self.death_events.append(self.current_time)
+                            player.death_time_ms = self.current_time
+                            if hasattr(self, 'round_start_time') and self.round_start_time:
+                                player.death_time_rel_ms = max(0, self.current_time - self.round_start_time)
+                            player.fire_power_at_death = player.fire_power
+                            player.bomb_capacity_at_death = player.bomb_capacity
+                            death_sound.play()
+                            self._queue_kill_cam(player)
 
     def get_explosion_cells(self, bomb):
         return planned_blast_cells(

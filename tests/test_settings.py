@@ -223,9 +223,9 @@ class EverySettingTests(unittest.TestCase):
         for count, state in ((2, "playing"), (4, "playing"), (2, "boss_fight")):
             game.starting_player_count = count
             game.game_state = state
-            self.assertEqual(game.crushing_wall_start_seconds(), (120, 240))
+            self.assertEqual(game.crushing_wall_start_seconds(), (80, 80))
         walls = game.to_dict()["crushing_walls"]
-        self.assertEqual((walls["early_s"], walls["late_s"]), (120, 240))
+        self.assertEqual((walls["early_s"], walls["late_s"]), (80, 80))
 
     def test_aftergame_rows_follow_trophy_count(self):
         from bm_drawing import _players_by_trophies

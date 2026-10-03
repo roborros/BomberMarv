@@ -943,7 +943,7 @@ class GameStateTests(unittest.TestCase):
         self.game.handle_crushing_walls()
         self.assertGreater(self.game.crushing_walls_index, 0)
 
-    def test_crushing_walls_two_player_start_waits_120s(self):
+    def test_crushing_walls_two_player_start_waits_80s(self):
         self.game.board = open_board(7, 7)
         self.game.grid_width = 7
         self.game.grid_height = 7
@@ -953,14 +953,14 @@ class GameStateTests(unittest.TestCase):
         self.game.starting_player_count = 2
         self.game.game_state = "playing"
         self.game.game_start_time = 0
-        self.game.current_time = 119_000
+        self.game.current_time = 79_000
         self.game.handle_crushing_walls()
         self.assertFalse(self.game.crushing_walls_active)
-        self.game.current_time = 120_000
+        self.game.current_time = 80_000
         self.game.handle_crushing_walls()
         self.assertTrue(self.game.crushing_walls_active)
 
-    def test_crushing_walls_not_before_120s(self):
+    def test_crushing_walls_not_before_80s(self):
         self.game.board = open_board(7, 7)
         self.game.grid_width = 7
         self.game.grid_height = 7
@@ -970,14 +970,14 @@ class GameStateTests(unittest.TestCase):
         self.game.starting_player_count = 3
         self.game.game_state = "playing"
         self.game.game_start_time = 0
-        self.game.current_time = 119_000
+        self.game.current_time = 79_000
         self.game.handle_crushing_walls()
         self.assertFalse(self.game.crushing_walls_active)
-        self.game.current_time = 120_000
+        self.game.current_time = 80_000
         self.game.handle_crushing_walls()
         self.assertTrue(self.game.crushing_walls_active)
 
-    def test_boss_crushing_walls_wait_120s(self):
+    def test_boss_crushing_walls_wait_80s(self):
         self.game.board = open_board(7, 7)
         self.game.grid_width = 7
         self.game.grid_height = 7
@@ -988,14 +988,14 @@ class GameStateTests(unittest.TestCase):
         self.game.destructible_at_round_start = 0
         self.game.game_state = "boss_fight"
         self.game.game_start_time = 0
-        self.game.current_time = 119_000
+        self.game.current_time = 79_000
         self.game.handle_crushing_walls()
         self.assertFalse(self.game.crushing_walls_active)
-        self.game.current_time = 120_000
+        self.game.current_time = 80_000
         self.game.handle_crushing_walls()
         self.assertTrue(self.game.crushing_walls_active)
 
-    def test_stale_map_starts_walls_after_double_timer(self):
+    def test_walls_start_at_80s_with_a_full_board(self):
         board = open_board(9, 9)
         for y in range(2, 6):
             for x in range(2, 6):
@@ -1014,25 +1014,10 @@ class GameStateTests(unittest.TestCase):
         self.game.game_state = "playing"
         self.game.game_start_time = 0
         self.game.crushing_walls_active = False
-        self.game.current_time = 120_000
+        self.game.current_time = 79_000
         self.game.handle_crushing_walls()
         self.assertFalse(self.game.crushing_walls_active)
-        # 16 of 100 is not under 15%, so 1.5x (180s) still waits.
-        self.game.current_time = 180_000
-        self.game.handle_crushing_walls()
-        self.assertFalse(self.game.crushing_walls_active)
-        board[2][2] = EMPTY
-        board[2][3] = EMPTY
-        self.game.current_time = 179_000
-        self.game.handle_crushing_walls()
-        self.assertFalse(self.game.crushing_walls_active)
-        self.game.current_time = 180_000
-        self.game.handle_crushing_walls()
-        self.assertTrue(self.game.crushing_walls_active)
-        board[2][2] = DESTRUCTIBLE
-        board[2][3] = DESTRUCTIBLE
-        self.game.crushing_walls_active = False
-        self.game.current_time = 240_000
+        self.game.current_time = 80_000
         self.game.handle_crushing_walls()
         self.assertTrue(self.game.crushing_walls_active)
 
@@ -1369,11 +1354,12 @@ class GameStateTests(unittest.TestCase):
         self.assertLess(banner.bottom, 1700)
         self.assertEqual(banner.width, 1900)
 
-    def test_player_name_font_stays_smaller_than_a_cell(self):
+    def test_player_name_font_is_twice_as_large(self):
         from bm_drawing import player_label_font_size
         size = player_label_font_size(42)
-        self.assertGreaterEqual(size, 13)
-        self.assertLessEqual(size, 26)
+        self.assertEqual(size, 42)
+        self.assertGreaterEqual(size, 26)
+        self.assertLessEqual(size, 52)
 
 
 class GameSimulateTests(unittest.TestCase):
