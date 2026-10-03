@@ -167,13 +167,43 @@ class PlayerBombTests(unittest.TestCase):
         self.assertGreater(self.player.animation_time, 0)
         self.assertGreater(self.player.direction[0], 0)
 
-    def test_web_arrow_moves_client_player(self):
+    def test_local_player_one_moves_with_arrows_and_wasd(self):
+        from bm_params import controls_list
+        self.player.controls = controls_list[0]
+        start_x = float(self.player.pos[0])
+        with patch("bm_classes.is_key_pressed", side_effect=lambda k: k == Keys.RIGHT), patch(
+            "bm_classes.get_pressed_keys", return_value={}
+        ):
+            self.player.update(50, self.board, [], 0)
+        self.assertGreater(self.player.pos[0], start_x)
+        arrow_x = float(self.player.pos[0])
+        with patch("bm_classes.is_key_pressed", side_effect=lambda k: k == Keys.D), patch(
+            "bm_classes.get_pressed_keys", return_value={}
+        ):
+            self.player.update(50, self.board, [], 50)
+        self.assertGreater(self.player.pos[0], arrow_x)
+
+    def test_every_client_moves_with_wasd_or_arrows_and_plants_with_space(self):
         self.player.controls = None
-        start_x = self.player.pos[0]
+        start_y = float(self.player.pos[1])
         with patch("bm_classes.is_key_pressed", return_value=False), patch(
             "bm_classes.get_pressed_keys", return_value={}
         ):
-            self.player.update(50, self.board, [], 0, web_keys={"arrowright"})
+            self.player.update(50, self.board, [], 0, web_keys={"w"})
+        self.assertLess(self.player.pos[1], start_y)
+        start_x = float(self.player.pos[0])
+        bombs = []
+        with patch("bm_classes.is_key_pressed", return_value=False), patch(
+            "bm_classes.get_pressed_keys", return_value={}
+        ):
+            self.player.update(16, self.board, bombs, 16, web_keys={"d", "space"})
+        self.assertEqual(len(bombs), 1)
+        self.assertGreater(self.player.pos[0], start_x)
+        start_x = float(self.player.pos[0])
+        with patch("bm_classes.is_key_pressed", return_value=False), patch(
+            "bm_classes.get_pressed_keys", return_value={}
+        ):
+            self.player.update(50, self.board, [], 32, web_keys={"arrowright"})
         self.assertGreater(self.player.pos[0], start_x)
 
     def test_wall_blocks_movement(self):
@@ -437,15 +467,16 @@ class GameStateTests(unittest.TestCase):
         silence_sounds()
         self.game = Game()
 
-    def test_starts_in_prep(self):
-        self.assertEqual(self.game.game_state, "game_prep")
+    def test_starts_on_the_startup_screen(self):
+        self.assertEqual(self.game.game_state, "startup")
         self.assertGreaterEqual(len(self.game.players), 1)
+        self.assertGreaterEqual(len(self.game.startup_jumps), 2)
 
     def test_to_dict_has_protocol_fields(self):
         payload = self.game.to_dict()
         for key in ("time", "state", "board", "players", "bombs", "explosions", "powerups", "crushing_walls", "local_player_count", "blast_ms"):
             self.assertIn(key, payload)
-        self.assertEqual(payload["state"], "game_prep")
+        self.assertEqual(payload["state"], "startup")
         self.assertGreater(payload["blast_ms"], 0)
 
     def test_create_players_includes_registered_web_client(self):
@@ -856,7 +887,7 @@ class GameStateTests(unittest.TestCase):
         self.game.handle_crushing_walls()
         self.assertGreater(self.game.crushing_walls_index, 0)
 
-    def test_crushing_walls_two_player_start_waits_180s(self):
+    def test_crushing_walls_two_player_start_waits_120s(self):
         self.game.board = open_board(7, 7)
         self.game.grid_width = 7
         self.game.grid_height = 7
@@ -866,10 +897,10 @@ class GameStateTests(unittest.TestCase):
         self.game.starting_player_count = 2
         self.game.game_state = "playing"
         self.game.game_start_time = 0
-        self.game.current_time = 179_000
+        self.game.current_time = 119_000
         self.game.handle_crushing_walls()
         self.assertFalse(self.game.crushing_walls_active)
-        self.game.current_time = 180_000
+        self.game.current_time = 120_000
         self.game.handle_crushing_walls()
         self.assertTrue(self.game.crushing_walls_active)
 
@@ -890,7 +921,7 @@ class GameStateTests(unittest.TestCase):
         self.game.handle_crushing_walls()
         self.assertTrue(self.game.crushing_walls_active)
 
-    def test_boss_crushing_walls_wait_180s(self):
+    def test_boss_crushing_walls_wait_120s(self):
         self.game.board = open_board(7, 7)
         self.game.grid_width = 7
         self.game.grid_height = 7
@@ -901,13 +932,10 @@ class GameStateTests(unittest.TestCase):
         self.game.destructible_at_round_start = 0
         self.game.game_state = "boss_fight"
         self.game.game_start_time = 0
+        self.game.current_time = 119_000
+        self.game.handle_crushing_walls()
+        self.assertFalse(self.game.crushing_walls_active)
         self.game.current_time = 120_000
-        self.game.handle_crushing_walls()
-        self.assertFalse(self.game.crushing_walls_active)
-        self.game.current_time = 179_000
-        self.game.handle_crushing_walls()
-        self.assertFalse(self.game.crushing_walls_active)
-        self.game.current_time = 180_000
         self.game.handle_crushing_walls()
         self.assertTrue(self.game.crushing_walls_active)
 

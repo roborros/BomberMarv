@@ -1,8 +1,10 @@
 import type { ExplosionState, GameState, PlayerState } from './types'
 
-export const BIG_EXPLOSION_TILE_THRESHOLD = 50
+export const BIG_EXPLOSION_TILE_THRESHOLD = 125
 export const BIG_EXPLOSION_WINDOW_MS = 700
 export const BIG_EXPLOSION_VOLUME = 1
+export const BIG_EXPLOSION_COOLDOWN_MS = 5000
+export const BIG_EXPLOSION_SOUND_COUNT = 5
 
 export type AudioCue = 'explosion' | 'explosion_qd' | 'death' | 'qd' | 'bonus' | 'big_explosion'
 
@@ -41,6 +43,27 @@ export function uniqueTilesInWindow(
     for (const [x, y] of ev.cells) tiles.add(`${x}:${y}`)
   }
   return tiles.size
+}
+
+export function bigExplosionReady(lastTriggerMs: number | null | undefined, nowMs: number, cooldownMs = BIG_EXPLOSION_COOLDOWN_MS): boolean {
+  if (lastTriggerMs == null) return true
+  return nowMs - lastTriggerMs >= cooldownMs
+}
+
+export function bigExplosionSoundIndex(roll: number, count = BIG_EXPLOSION_SOUND_COUNT): number {
+  const index = Math.floor(roll * count)
+  if (index < 0) return 0
+  if (index >= count) return count - 1
+  return index
+}
+
+export function formatMatchClock(elapsedMs: number): string {
+  return String(Math.max(0, Math.floor(elapsedMs / 1000)))
+}
+
+export function formatCrushingWallStart(earlyS?: number, lateS?: number, active = false): string {
+  if (active || earlyS == null || lateS == null) return ''
+  return `(cw start: ${earlyS}s/${lateS}s)`
 }
 
 export function crossedBigExplosionThreshold(wasOver: boolean, tileCount: number, threshold = BIG_EXPLOSION_TILE_THRESHOLD): boolean {

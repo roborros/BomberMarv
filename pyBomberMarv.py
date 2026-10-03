@@ -397,19 +397,15 @@ if __name__ == "__main__":
         theGame.handle_window_events()
         game_surface = frontend.screen.get_surface()
         if theGame.game_state == "startup":
+            from startup_load import startup_load_percent
             elapsed = theGame.current_time - theGame.startup_start_time
-            if elapsed < 2000:
-                alpha = 255
-            elif elapsed < 2800:
-                alpha = max(0, int(255 * (2800 - elapsed) / 800))
-            else:
-                alpha = 0
             draw_title_page(
                 game_surface,
-                alpha,
+                alpha=255,
                 show_game_name=True,
                 players=theGame.players,
-                show_start_hint=int(elapsed) >= 2200,
+                show_start_hint=False,
+                loading_percent=startup_load_percent(elapsed, getattr(theGame, "startup_jumps", ())),
             )
         elif theGame.game_state == "game_prep":
             draw_game_prep(game_surface, theGame)

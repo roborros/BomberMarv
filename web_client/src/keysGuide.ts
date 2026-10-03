@@ -1,10 +1,10 @@
 export const READY_KEY_LINES = [
-  'Local   W A S D move   ·   Space bomb',
-  'Browser   Arrow keys move   ·   Space bomb',
+  'Local   W A S D or arrows move   ·   Space bomb',
+  'Browser   W A S D or arrows move   ·   Space bomb',
 ] as const
 
 export const CONTROLS_HINT =
-  'Local: W A S D move, Space bomb.  Browser: Arrow keys or W A S D, Space or Enter bomb.'
+  'Local player 1 and every browser: W A S D or arrow keys, Space bomb.'
 
 export interface KeyGuideRow {
   who: string
@@ -14,7 +14,7 @@ export interface KeyGuideRow {
 
 /** Local seats match bm_params.controls_list. Browser rows match web_client/src/input.ts. */
 export const KEY_GUIDE_ROWS: KeyGuideRow[] = [
-  { who: 'Player 1', move: 'W A S D', bomb: 'Space' },
+  { who: 'Player 1', move: 'W A S D or arrows', bomb: 'Space' },
   { who: 'Player 2', move: 'I J K L', bomb: 'Left Ctrl' },
   { who: 'Player 3', move: 'F C V B', bomb: 'H' },
   { who: 'Player 4', move: 'Num 5 Num 1 Num 2 Num 3', bomb: 'Right Ctrl' },

@@ -22,6 +22,7 @@ export function cloneState(state: GameState): GameState {
 export function mergeDelta(base: GameState, delta: GameStateDelta): GameState {
   const merged = cloneState(base)
   if (delta.time !== undefined) merged.time = delta.time
+  if (delta.round_start_ms !== undefined) merged.round_start_ms = delta.round_start_ms
   if (delta.state !== undefined) merged.state = delta.state
   if (delta.board !== undefined) merged.board = delta.board.map((row) => [...row])
   else if (delta.board_patches !== undefined) merged.board = applyBoardPatches(merged.board, delta.board_patches)

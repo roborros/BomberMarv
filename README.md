@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-1.2.6-orange">
+  <img alt="version" src="https://img.shields.io/badge/version-1.2.7-orange">
   <img alt="python" src="https://img.shields.io/badge/python-3.11-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
 </p>
@@ -194,8 +194,7 @@ Open them from the lobby with **S**, or move Left from **Start Game** and press 
 | Quad Damage time | 20 s | 5 – 60 s |
 | Quad Damage strength | +10 bombs and fire | +2 – +15 |
 | Quad Damage speed | 1.5× | 1.0× – 2.5× |
-| Crushing walls, 3+ players | 120 s | 60 – 360 s, but never sooner than 120 s |
-| Crushing walls, 2 players | 180 s | 60 – 360 s, but never sooner than 120 s |
+| Crushing walls start | 120 s | 60 – 360 s, but never sooner than 120 s. Same for every player count and the boss fight. With no other condition, walls start at twice this (240 s). |
 | Walls close every | 1200 ms | 400 – 3000 ms |
 | Loud hit size | 50 tiles | 10 – 200 tiles |
 | Loud hit window | 700 ms | 100 – 3000 ms |
@@ -216,7 +215,7 @@ Open them from the lobby with **S**, or move Left from **Start Game** and press 
 
 | Player | Move | Bomb |
 | --- | --- | --- |
-| 1 | WASD | Space |
+| 1 | WASD or arrows | Space |
 | 2 | I J K L | Left Ctrl |
 | 3 | F / C / V / B | H |
 | 4 | Numpad 5 / 1 / 2 / 3 | Right Ctrl |
@@ -229,7 +228,7 @@ Hold bomb to plant a trail as you enter empty cells. You cannot stack two bombs 
 
 | Key | Action |
 | --- | --- |
-| Arrow keys | Move |
+| Arrow keys or W A S D | Move |
 | Space | Bomb |
 | Enter | Start / continue, matching the host |
 

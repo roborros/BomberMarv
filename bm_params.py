@@ -6,7 +6,7 @@ import math
 
 
 
-VERSION = "v1.2.6"
+VERSION = "v1.2.7"
 
 # --- Configurable Constants ---
 NUM_PLAYERS = 1  # Default players (min 1, max 8)
@@ -55,10 +55,10 @@ UBER_BOSS_START_FIRE_POWER = 5
 UBER_BOSS_START_BOMB_CAPACITY = 5
 UBER_BOSS_DRAW_SCALE = 1.5
 UBER_BOSS_GLOW_PERIOD_MS = 1400
-BOSS_CRUSHING_WALLS_DELAY = 180      # Delay before crushing walls in boss fight (seconds)
-BOSS_CRUSHING_WALLS_GROWTH_INTERVAL_MS = 1800  # Slower squeeze than a normal round
+BOSS_CRUSHING_WALLS_DELAY = 120      # Same start as every other game
+BOSS_CRUSHING_WALLS_GROWTH_INTERVAL_MS = 1200  # 1.5x the old squeeze, still slower than a normal round
 
-QUAD_DAMAGE_PROBABILITY = 0.0005 # Chance to spawn a Quad Damage powerup
+QUAD_DAMAGE_PROBABILITY = 0.000675  # Chance per tick; 35% above the previous 0.0005 default
 QUAD_DAMAGE_TIME = 20 # Duration of Quad Damage effect (s)
 QUAD_DAMAGE_POWER = 10    # Powerup bonus to bomb capacity and fire power
 QUAD_DAMAGE_DELAY = 60  # Earliest Quad Damage can appear (s); probability is unchanged
@@ -66,11 +66,11 @@ QUAD_DAMAGE_SPEEDUP = 1.5  # Speedup
 
 # Crushing walls feature (endgame walls)
 CRUSHING_WALLS_MIN_START_S = 120        # Never start sooner than this after game_start_time
-CRUSHING_WALLS_DELAY = 120              # Delay before crushing walls activate (seconds)
-CRUSHING_WALLS_2P_DELAY = 180           # Soonest start when the round began with 2 players
+CRUSHING_WALLS_DELAY = 120              # Shared start for every player count and the boss fight
+CRUSHING_WALLS_2P_DELAY = 120           # Same start; player count does not change it
 CRUSHING_WALLS_MIN_DESTROYABLE = 500      # Start once fewer than this many soft walls remain
 CRUSHING_WALLS_MAX_ALIVE = 2              # Max alive players to allow activation (<= triggers)
-CRUSHING_WALLS_GROWTH_INTERVAL_MS = 1200  # Interval between new walls once active (ms)
+CRUSHING_WALLS_GROWTH_INTERVAL_MS = 800  # 1.5x faster than the previous 1200ms step
 # More than two players still alive, and fewer than 15% of the soft walls remain.
 CRUSHING_WALLS_STALE_WALL_FRACTION = 0.15
 CRUSHING_WALLS_CROWDED_TIME_MULTIPLIER = 1.5
@@ -163,11 +163,23 @@ BOMB_TIMER = 3000
 EXPLOSION_DURATION = 400
 BOSS_SHIELD_DURATION_MS = EXPLOSION_DURATION + 200  # i-frames after spending an extra life
 
-# Play mocny_stral.mp3 once unique explosion tiles in this window reach the threshold.
-BIG_EXPLOSION_TILE_THRESHOLD = 50
+# Play one of the mocny_stral variants once unique tiles in this window reach the threshold.
+BIG_EXPLOSION_TILE_THRESHOLD = 125  # 2.5x the previous 50-tile loud hit
 BIG_EXPLOSION_WINDOW_MS = 700
 BIG_EXPLOSION_SOUND_DELAY_MS = 300
 BIG_EXPLOSION_VOLUME = 1.0
+BIG_EXPLOSION_COOLDOWN_MS = 5000
+MOCNY_STRAL_VARIANTS = 5
+
+
+def format_match_clock(elapsed_ms) -> str:
+    """Elapsed round time in whole seconds."""
+    return str(max(0, int(elapsed_ms) // 1000))
+
+
+def format_crushing_wall_start(early_s, late_s) -> str:
+    """XX is few players and few soft walls left; YY is the start with no other condition."""
+    return f"(cw start: {int(early_s)}s/{int(late_s)}s)"
 
 # Explosion collision: inner 70% of a flaming cell. Flame art stops at the
 # last cell's center; the hit rect is that same inner 70% square.
@@ -235,7 +247,10 @@ colors = [
 FPS = 60
 
 controls_list = [
-    {'up': pygame.K_w, 'down': pygame.K_s, 'left': pygame.K_a, 'right': pygame.K_d, 'bomb': pygame.K_SPACE},
+    {
+        'up': pygame.K_w, 'down': pygame.K_s, 'left': pygame.K_a, 'right': pygame.K_d, 'bomb': pygame.K_SPACE,
+        'also': {'up': pygame.K_UP, 'down': pygame.K_DOWN, 'left': pygame.K_LEFT, 'right': pygame.K_RIGHT},
+    },
     {'up': pygame.K_i, 'down': pygame.K_k, 'left': pygame.K_j, 'right': pygame.K_l, 'bomb': pygame.K_LCTRL},
     {'up': pygame.K_f , 'down': pygame.K_v, 'left': pygame.K_c, 'right': pygame.K_b, 'bomb': pygame.K_h},
     {'up': pygame.K_KP5, 'down': pygame.K_KP2, 'left': pygame.K_KP1, 'right': pygame.K_KP3, 'bomb': pygame.K_RCTRL},

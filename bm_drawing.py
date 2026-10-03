@@ -354,12 +354,14 @@ def _key_label(key):
 def _format_controls(controls):
     """Convert pygame key constants to readable control names."""
     move = " ".join(_key_label(controls[name]) for name in ("up", "left", "down", "right"))
+    if controls.get("also"):
+        move = "%s or arrows" % move
     return "%s + %s" % (move, _key_label(controls["bomb"]))
 
 
 READY_KEY_LINES = (
-    "Local   W A S D move   ·   Space bomb",
-    "Browser   Arrow keys move   ·   Space bomb",
+    "Local   W A S D or arrows move   ·   Space bomb",
+    "Browser   W A S D or arrows move   ·   Space bomb",
 )
 
 
@@ -369,7 +371,7 @@ def control_guide_rows():
     rows = []
     for index, controls in enumerate(controls_list):
         move = " ".join(_key_label(controls[name]) for name in ("up", "left", "down", "right"))
-        rows.append(("Player %d" % (index + 1), move, _key_label(controls["bomb"])))
+        rows.append(("Player %d" % (index + 1), move + (" or arrows" if controls.get("also") else ""), _key_label(controls["bomb"])))
     rows.append(("Browser", "Arrow keys or W A S D", "Space or Enter"))
     rows.append(("F11", "Fullscreen", ""))
     rows.append(("Esc", "Pause a round. On the lobby, asks before quitting.", ""))
@@ -416,13 +418,64 @@ def draw_brick_pattern(rect, surface):
             x += brick_width  # <-- increment x to avoid infinite loop
             
             
-def draw_title_page(surface, alpha=255, show_game_name=True, players=None, show_start_hint=False):
+def _draw_startup_logo(surface, sw, sh, alpha):
+    """Large centered logo for the loading screen. Returns the bottom edge."""
+    logo_image = _get_image_asset("logo_image")
+    if logo_image is None:
+        return int(sh * 0.28)
+    src_w, src_h = logo_image.get_size()
+    scale = min((sw * 0.72) / max(1, src_w), (sh * 0.5) / max(1, src_h))
+    logo_w = max(1, int(src_w * scale))
+    logo_h = max(1, int(src_h * scale))
+    logo_scaled = pygame.transform.smoothscale(logo_image, (logo_w, logo_h))
+    logo_scaled.set_alpha(alpha)
+    top = max(12, int(sh * 0.04))
+    rect = logo_scaled.get_rect(midtop=(sw // 2, top))
+    surface.blit(logo_scaled, rect)
+    return rect.bottom
+
+
+def _draw_loading_bar(surface, sw, sh, percent):
+    percent = max(0, min(100, int(percent)))
+    bar_w = min(sw - 80, max(280, int(sw * 0.46)))
+    bar_h = max(16, min(28, sh // 28))
+    x = (sw - bar_w) // 2
+    y = sh - max(92, sh // 7)
+    track = pygame.Rect(x, y, bar_w, bar_h)
+    pygame.draw.rect(surface, (28, 30, 36), track, border_radius=6)
+    fill_w = int(bar_w * percent / 100)
+    if fill_w > 0:
+        pygame.draw.rect(surface, (240, 196, 60), (x, y, fill_w, bar_h), border_radius=6)
+    pygame.draw.rect(surface, (210, 214, 222), track, 2, border_radius=6)
+    label_font = pygame.font.SysFont("arial", max(16, min(28, sh // 28)))
+    label = label_font.render(f"{percent}%", True, (255, 255, 255))
+    surface.blit(label, label.get_rect(midtop=(sw // 2, y + bar_h + 8)))
+    hint_font = pygame.font.SysFont("arial", max(15, min(24, sh // 36)))
+    hint = hint_font.render("Enter or Esc", True, (198, 204, 214))
+    surface.blit(hint, hint.get_rect(midtop=(sw // 2, y + bar_h + 8 + label.get_height() + 4)))
+
+
+def draw_title_page(surface, alpha=255, show_game_name=True, players=None, show_start_hint=False, loading_percent=None):
     # Ensure fonts are initialized
     _ensure_fonts_initialized()
     
     sw, sh = surface.get_size()
     
-    surface.fill(COLOR_BG) 
+    surface.fill(COLOR_BG)
+
+    if loading_percent is not None:
+        hero_bottom = _draw_startup_logo(surface, sw, sh, alpha)
+        if show_game_name:
+            name_size = max(32, min(72, sh // 12))
+            name_font = pygame.font.SysFont("Comic Sans MS", name_size)
+            game_name_text = name_font.render("BomberMarv", True, (255, 255, 255))
+            name_y = min(hero_bottom + name_size // 2 + 6, sh - max(150, sh // 5))
+            surface.blit(game_name_text, game_name_text.get_rect(center=(sw // 2, name_y)))
+        _draw_loading_bar(surface, sw, sh, loading_percent)
+        version_font = pygame.font.SysFont("arial", max(18, min(48, sh // 20)))
+        version_text = version_font.render(VERSION, True, (255, 255, 255))
+        surface.blit(version_text, version_text.get_rect(bottomright=(sw - 10, sh - 10)))
+        return
     
     logo_image = _get_image_asset("logo_image")
     if logo_image is not None:
@@ -995,7 +1048,7 @@ def draw_controls(surface, players):
     surface.blit(header, header.get_rect(center=(sw // 2, y)))
     y += title_font.get_height() + 8
     if not roster:
-        line = row_font.render("P1  WASD  +  Space", True, (200, 210, 224))
+        line = row_font.render("P1  WASD or arrows  +  Space", True, (200, 210, 224))
         surface.blit(line, line.get_rect(center=(sw // 2, y)))
         return
     gap = row_font.get_height() + 6
@@ -1044,7 +1097,7 @@ def draw_stat_screen(surface, winner, players, game=None, heading=None, heading_
     _ensure_fonts_initialized()
     sw, sh = surface.get_size()
     draw_title_page(surface, alpha=255, show_game_name=False)
-    players = list(players or [])
+    players = _players_by_trophies(players)
     n_players = max(1, len(players))
 
     death_vals = []
@@ -1608,6 +1661,40 @@ def draw_game_screen(surface, theGame):
     )
     if SHOW_PLAYER_DIRECTIONS:
         draw_player_directions(surface, theGame.players, theGame)
+    draw_match_timer(surface, theGame)
+
+
+def _players_by_trophies(players):
+    """Aftergame rows, most trophies first. Equal counts keep their previous order."""
+    return sorted(list(players or []), key=lambda player: -int(getattr(player, "trophies", 0) or 0))
+
+
+def draw_match_timer(surface, game):
+    """Seconds clock in the bottom-right, with the crushing-wall start times on its left."""
+    if getattr(game, "game_state", None) not in ("playing", "boss_fight", "get_ready"):
+        return
+    start = getattr(game, "round_start_time", None)
+    if start is None:
+        return
+    label = format_match_clock(int(game.current_time) - int(start))
+    hint = ""
+    if not getattr(game, "crushing_walls_active", False) and hasattr(game, "crushing_wall_start_seconds"):
+        early_s, late_s = game.crushing_wall_start_seconds()
+        hint = format_crushing_wall_start(early_s, late_s)
+    sw, sh = surface.get_size()
+    font = pygame.font.Font(None, max(18, min(32, sh // 28)))
+    text = font.render(label, True, (242, 244, 248))
+    pad = max(8, sh // 80)
+    shadow = font.render(label, True, (12, 14, 18))
+    origin = text.get_rect(bottomright=(sw - pad, sh - pad))
+    surface.blit(shadow, origin.move(1, 1))
+    surface.blit(text, origin)
+    if hint:
+        hint_text = font.render(hint, True, (210, 214, 222))
+        hint_shadow = font.render(hint, True, (12, 14, 18))
+        hint_origin = hint_text.get_rect(bottomright=(origin.left - 10, origin.bottom))
+        surface.blit(hint_shadow, hint_origin.move(1, 1))
+        surface.blit(hint_text, hint_origin)
         
         
 # Draw player direction vectors and highlight the cell the player is pointing at

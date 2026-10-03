@@ -203,6 +203,10 @@ class GameCommandHandler:
 
         if self._handle_quit_prompt(command):
             return True
+
+        if command == GameCommand.CANCEL_EDIT and getattr(self.game, "game_state", None) == "startup":
+            self.game.game_state = "game_prep"
+            return True
         
         # Game state commands
         if command == GameCommand.START_GAME:

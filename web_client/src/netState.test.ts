@@ -45,9 +45,11 @@ describe('netState', () => {
       _sim_tick: 11,
       _net_metrics: { host_fps_5s: 60 },
       leave_prompt: { open: true, choice: 'yes', title: 'Leave game?' },
-      blast_ms: 700
+      blast_ms: 700,
+      round_start_ms: 1500
     })
     expect(merged.time).toBe(2000)
+    expect(merged.round_start_ms).toBe(1500)
     expect(merged.boss_fight_winner?.name).toBe('Boss')
     expect(merged.local_player_count).toBe(2)
     expect(merged._sim_tick).toBe(11)
