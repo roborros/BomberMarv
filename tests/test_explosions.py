@@ -31,7 +31,7 @@ from bm_params import (
 
 class TestBigExplosionWindow(unittest.TestCase):
     def test_defaults_are_50_tiles_in_700ms(self):
-        self.assertEqual(BIG_EXPLOSION_TILE_THRESHOLD, 125)
+        self.assertEqual(BIG_EXPLOSION_TILE_THRESHOLD, 100)
         self.assertEqual(BIG_EXPLOSION_WINDOW_MS, 700)
         self.assertEqual(BIG_EXPLOSION_VOLUME, 1.0)
 

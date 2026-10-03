@@ -47,7 +47,7 @@ describe('audioEvents', () => {
   })
 
   it('crosses the big-explosion threshold once', () => {
-    expect(BIG_EXPLOSION_TILE_THRESHOLD).toBe(125)
+    expect(BIG_EXPLOSION_TILE_THRESHOLD).toBe(100)
     expect(BIG_EXPLOSION_VOLUME).toBe(1)
     expect(crossedBigExplosionThreshold(false, BIG_EXPLOSION_TILE_THRESHOLD)).toBe(true)
     expect(crossedBigExplosionThreshold(false, BIG_EXPLOSION_TILE_THRESHOLD - 1)).toBe(false)
@@ -81,7 +81,7 @@ describe('audioEvents', () => {
     expect(bigExplosionSoundIndex(0)).toBe(0)
     expect(bigExplosionSoundIndex(0.99)).toBe(4)
     expect(formatMatchClock(65000)).toBe('65')
-    expect(formatCrushingWallStart(180, 360)).toBe('(cw start: 180s/360s)')
+    expect(formatCrushingWallStart(180, 360)).toBe('(cw start: 180s)')
     expect(formatCrushingWallStart(180, 360, true)).toBe('')
   })
 })

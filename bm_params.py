@@ -6,7 +6,7 @@ import math
 
 
 
-VERSION = "v1.2.8"
+VERSION = "v1.2.9"
 
 # --- Configurable Constants ---
 NUM_PLAYERS = 1  # Default players (min 1, max 8)
@@ -55,26 +55,26 @@ UBER_BOSS_START_FIRE_POWER = 5
 UBER_BOSS_START_BOMB_CAPACITY = 5
 UBER_BOSS_DRAW_SCALE = 1.5
 UBER_BOSS_GLOW_PERIOD_MS = 1400
-BOSS_CRUSHING_WALLS_DELAY = 120      # Same start as every other game
-BOSS_CRUSHING_WALLS_GROWTH_INTERVAL_MS = 1200  # 1.5x the old squeeze, still slower than a normal round
+BOSS_CRUSHING_WALLS_DELAY = 80       # Same start as every other game
+BOSS_CRUSHING_WALLS_GROWTH_INTERVAL_MS = 400  # 3x faster than the previous 1200ms boss step
 
-QUAD_DAMAGE_PROBABILITY = 0.000675  # Chance per tick; 35% above the previous 0.0005 default
+QUAD_DAMAGE_PROBABILITY = 0.002025  # Chance per tick; 3x the previous 0.000675 default
 QUAD_DAMAGE_TIME = 20 # Duration of Quad Damage effect (s)
 QUAD_DAMAGE_POWER = 10    # Powerup bonus to bomb capacity and fire power
 QUAD_DAMAGE_DELAY = 60  # Earliest Quad Damage can appear (s); probability is unchanged
 QUAD_DAMAGE_SPEEDUP = 1.5  # Speedup
 
 # Crushing walls feature (endgame walls)
-CRUSHING_WALLS_MIN_START_S = 120        # Never start sooner than this after game_start_time
-CRUSHING_WALLS_DELAY = 120              # Shared start for every player count and the boss fight
-CRUSHING_WALLS_2P_DELAY = 120           # Same start; player count does not change it
-CRUSHING_WALLS_MIN_DESTROYABLE = 500      # Start once fewer than this many soft walls remain
-CRUSHING_WALLS_MAX_ALIVE = 2              # Max alive players to allow activation (<= triggers)
-CRUSHING_WALLS_GROWTH_INTERVAL_MS = 800  # 1.5x faster than the previous 1200ms step
-# More than two players still alive, and fewer than 15% of the soft walls remain.
+CRUSHING_WALLS_MIN_START_S = 80         # Default start after game_start_time
+CRUSHING_WALLS_DELAY = 80               # Shared start for every player count and the boss fight
+CRUSHING_WALLS_2P_DELAY = 80            # Same start; player count does not change it
+CRUSHING_WALLS_MIN_DESTROYABLE = 500      # Kept for older callers; start no longer uses it
+CRUSHING_WALLS_MAX_ALIVE = 2              # Kept for older callers; start no longer uses it
+CRUSHING_WALLS_GROWTH_INTERVAL_MS = 267  # 3x faster than the previous 800ms step
+# AI still treats a map as open once fewer than 15% of the soft walls remain.
 CRUSHING_WALLS_STALE_WALL_FRACTION = 0.15
 CRUSHING_WALLS_CROWDED_TIME_MULTIPLIER = 1.5
-# After twice the wait, the walls start even if the soft walls are still up.
+# Unused by the wall start. Walls begin at the shared delay in every match.
 CRUSHING_WALLS_STALE_TIME_MULTIPLIER = 2
 
 # Lobby rows (local players section)
@@ -164,7 +164,7 @@ EXPLOSION_DURATION = 400
 BOSS_SHIELD_DURATION_MS = EXPLOSION_DURATION + 200  # i-frames after spending an extra life
 
 # Play one of the mocny_stral variants once unique tiles in this window reach the threshold.
-BIG_EXPLOSION_TILE_THRESHOLD = 125  # 2.5x the previous 50-tile loud hit
+BIG_EXPLOSION_TILE_THRESHOLD = 100  # Loud hit once this many unique tiles are covered
 BIG_EXPLOSION_WINDOW_MS = 700
 BIG_EXPLOSION_SOUND_DELAY_MS = 300
 BIG_EXPLOSION_VOLUME = 1.0
@@ -177,9 +177,9 @@ def format_match_clock(elapsed_ms) -> str:
     return str(max(0, int(elapsed_ms) // 1000))
 
 
-def format_crushing_wall_start(early_s, late_s) -> str:
-    """XX is few players and few soft walls left; YY is the start with no other condition."""
-    return f"(cw start: {int(early_s)}s/{int(late_s)}s)"
+def format_crushing_wall_start(start_s, _late_s=None) -> str:
+    """Walls start at this second in every match."""
+    return f"(cw start: {int(start_s)}s)"
 
 # Explosion collision: inner 70% of a flaming cell. Flame art stops at the
 # last cell's center; the hit rect is that same inner 70% square.

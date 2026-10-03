@@ -449,7 +449,7 @@ export class Renderer {
 
         if (player.name) {
             this.ctx.fillStyle = 'white';
-            const nameSize = Math.max(13, Math.min(26, Math.floor(size * 0.26)));
+            const nameSize = 2 * Math.max(13, Math.min(26, Math.floor(size * 0.26)));
             this.ctx.font = `${nameSize}px Arial`;
             this.ctx.textAlign = 'center';
             this.ctx.textBaseline = 'middle';

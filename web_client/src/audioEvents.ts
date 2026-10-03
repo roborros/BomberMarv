@@ -1,6 +1,6 @@
 import type { ExplosionState, GameState, PlayerState } from './types'
 
-export const BIG_EXPLOSION_TILE_THRESHOLD = 125
+export const BIG_EXPLOSION_TILE_THRESHOLD = 100
 export const BIG_EXPLOSION_WINDOW_MS = 700
 export const BIG_EXPLOSION_VOLUME = 1
 export const BIG_EXPLOSION_COOLDOWN_MS = 5000
@@ -61,9 +61,9 @@ export function formatMatchClock(elapsedMs: number): string {
   return String(Math.max(0, Math.floor(elapsedMs / 1000)))
 }
 
-export function formatCrushingWallStart(earlyS?: number, lateS?: number, active = false): string {
-  if (active || earlyS == null || lateS == null) return ''
-  return `(cw start: ${earlyS}s/${lateS}s)`
+export function formatCrushingWallStart(startS?: number, _lateS?: number, active = false): string {
+  if (active || startS == null) return ''
+  return `(cw start: ${startS}s)`
 }
 
 export function crossedBigExplosionThreshold(wasOver: boolean, tileCount: number, threshold = BIG_EXPLOSION_TILE_THRESHOLD): boolean {

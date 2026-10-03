@@ -421,8 +421,8 @@ def control_guide_rows():
     return rows
 
 def player_label_font_size(draw_radius):
-    """Name labels scale with the avatar so they do not cover neighboring tiles."""
-    return max(13, min(26, int(max(8, draw_radius) * 0.52)))
+    """Name labels scale with the avatar. Twice the previous size, still inside one tile."""
+    return 2 * max(13, min(26, int(max(8, draw_radius) * 0.52)))
 
 
 def _player_label_font(draw_radius, bold=False):
