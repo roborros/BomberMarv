@@ -15,7 +15,7 @@
     <div class="lobby-content">
       <p id="lobby-kicker" class="lobby-kicker">First to 3 trophies</p>
       <h1>Join Lobby</h1>
-      <p id="lobby-help">Pick a display name, choose a color slot, then join. Match stats accumulate until someone claims the trophy goal set by the host.</p>
+      <p id="lobby-help">Pick a display name and log in. The host assigns your player. Only logged-in browsers play.</p>
       <div class="lobby-controls-row">
         <input id="player-name" type="text" maxlength="20" placeholder="Display name" />
         <label id="render-toggle-wrap">
@@ -23,10 +23,8 @@
           Show game screen
         </label>
       </div>
-      <div id="slot-container">
-        <!-- Slots will be injected here -->
-      </div>
       <div class="lobby-actions">
+        <button type="button" id="login-button" class="lobby-action login-button">Log in</button>
         <button type="button" id="keys-button" class="lobby-action">Keys</button>
       </div>
       <div id="lobby-status">Connecting to server...</div>

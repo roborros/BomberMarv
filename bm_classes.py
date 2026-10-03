@@ -709,46 +709,68 @@ class Game:
             })
             global_player_id += 1
         
-        # Add client players
+        # Logged-in browsers only. The seat number is the player id the server assigned.
         if hasattr(self, '_cached_status') and self._cached_status:
-            status_data = self._cached_status
+            status_data = self._cached_status if isinstance(self._cached_status, dict) else {}
             clients = status_data.get('clients', {})
-            players = status_data.get('players', {})
-            
-            for client_id, client_info in clients.items():
-                if len(all_players) >= MAX_PLAYERS:
-                    break
-                if client_info.get('registered', False):
-                    client_players = client_info.get('players', [])
-                    display_name = client_info.get('display_name')
-                    for player_id in client_players:
-                        if len(all_players) >= MAX_PLAYERS:
-                            break
-                        # Use stored name and color if available, otherwise use defaults
-                        default_name = str(display_name).strip() if display_name else f"Client {client_id} P{player_id}"
-                        stored_name = self.prep_web_player_names.get(global_player_id, default_name)
-                        stored_color = self.prep_web_player_colors.get(global_player_id, global_player_id % len(colors))
-                        
-                        all_players.append({
-                            'id': global_player_id,
-                            'name': stored_name,
-                            'title': self._roster_title(stored_name),
-                            'color': stored_color,
-                            'team': (global_player_id - 1) % 2,
-                            'type': 'client',
-                            'source': (client_id, player_id),  # Client and player ID
-                            'controls': None  # Client players don't use local controls
-                        })
-                        global_player_id += 1
+            taken_seats = {player['id'] for player in all_players}
+            pending = []
+            if isinstance(clients, dict):
+                for client_id, client_info in clients.items():
+                    if not isinstance(client_info, dict) or not client_info.get('registered'):
+                        continue
+                    raw_players = client_info.get('players') or []
+                    if isinstance(raw_players, (str, bytes)) or not isinstance(raw_players, (list, tuple)):
+                        continue
+                    seat = None
+                    for raw_seat in raw_players:
+                        try:
+                            candidate = int(raw_seat)
+                        except (TypeError, ValueError):
+                            continue
+                        if candidate < 1 or candidate > MAX_PLAYERS or candidate in taken_seats:
+                            continue
+                        seat = candidate
+                        break
+                    if seat is None:
+                        continue
+                    pending.append((seat, str(client_id), client_id, client_info))
+            pending.sort(key=lambda item: (item[0], item[1]))
+            for seat, _sort_key, client_id, client_info in pending:
+                if len(all_players) >= MAX_PLAYERS or seat in taken_seats:
+                    continue
+                taken_seats.add(seat)
+                display_name = client_info.get('display_name')
+                default_name = str(display_name).strip() if display_name else f"Client {client_id} P{seat}"
+                stored_name = self.prep_web_player_names.get(seat, default_name)
+                stored_color = self.prep_web_player_colors.get(seat, seat % len(colors))
+                try:
+                    color_idx = int(stored_color)
+                except (TypeError, ValueError):
+                    color_idx = seat % len(colors)
+                all_players.append({
+                    'id': seat,
+                    'name': stored_name,
+                    'title': self._roster_title(stored_name),
+                    'color': color_idx,
+                    'team': (seat - 1) % 2,
+                    'type': 'client',
+                    'source': (client_id, seat),
+                    'controls': None,
+                })
 
         used_names = {p['name'] for p in all_players}
         human_count = len(all_players)
         ai_count = min(int(getattr(self, "prep_ai_count", 0) or 0), MAX_PLAYERS - human_count)
+        next_id = max((player['id'] for player in all_players), default=0) + 1
+        taken_ids = {player['id'] for player in all_players}
         ai_names = self._ensure_ai_names(ai_count, used_names)
         ai_styles = list(getattr(self, "prep_ai_personalities", []) or [])
         for slot in range(max(0, ai_count)):
+            while next_id in taken_ids:
+                next_id += 1
             all_players.append({
-                'id': global_player_id,
+                'id': next_id,
                 'name': ai_names[slot],
                 'title': self._roster_title(ai_names[slot]),
                 'color': (human_count + slot) % len(colors),
@@ -758,7 +780,8 @@ class Game:
                 'controls': None,
                 'personality': ai_styles[slot] if slot < len(ai_styles) else None,
             })
-            global_player_id += 1
+            taken_ids.add(next_id)
+            next_id += 1
         
         return all_players
 
@@ -1582,15 +1605,16 @@ class Game:
                     # Remove any powerups in this cell
                     self.powerups = [pu for pu in self.powerups if not (pu.x == x and pu.y == y)]
                     
-                    # Remove any bombs in this cell (they explode immediately)
+                    # Remove any bombs in this cell (they explode immediately).
+                    # owner can be missing; do not touch active_bombs in that case.
                     crush_explosions = []
                     for bomb in self.bombs[:]:
                         if bomb.x == x and bomb.y == y:
-                            exp = Explosion(self.get_explosion_cells(bomb), self.current_time, bomb.quad_damage, owner=bomb.owner)
+                            exp = self._detonate_bomb(bomb)
+                            if exp is None:
+                                continue
                             self.explosions.append(exp)
                             crush_explosions.append(exp)
-                            bomb.owner.active_bombs -= 1
-                            self.bombs.remove(bomb)
                     self._register_new_explosions(crush_explosions)
                     
                     self.crushing_walls_index += 1

@@ -36,6 +36,19 @@ class LobbySignatureTests(unittest.TestCase):
         sig = build_status_signature(status)
         self.assertEqual(len(sig[0]), 1)
 
+    def test_mixed_slot_values_still_sort(self):
+        status = {
+            "clients": {
+                "10": {"registered": True, "slot": None, "display_name": "A"},
+                "2": {"registered": True, "slot": 4, "display_name": "B"},
+                "3": "not-a-client",
+            },
+            "slots": {1: False, "8": True},
+        }
+        sig = build_status_signature(status)
+        self.assertIsNotNone(sig)
+        self.assertEqual(len(sig[0]), 2)
+
     def test_slot_change_changes_signature(self):
         a = {"clients": {}, "slots": {1: False}}
         b = {"clients": {}, "slots": {1: True}}

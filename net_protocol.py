@@ -11,6 +11,7 @@ MSG_CLIENT_ID = "client_id"
 MSG_REQUEST_SLOT_LIST = "request_slot_list"
 MSG_SLOT_LIST = "slot_list"
 MSG_SELECT_SLOT = "select_slot"
+MSG_LOGIN = "login"
 MSG_REGISTRATION_CONFIRMED = "registration_confirmed"
 MSG_REGISTRATION_REJECTED = "registration_rejected"
 MSG_GAME_INPUT = "game_input"
@@ -65,6 +66,7 @@ ALLOWED_CLIENT_MESSAGES = {
     MSG_HELLO,
     MSG_REQUEST_SLOT_LIST,
     MSG_SELECT_SLOT,
+    MSG_LOGIN,
     MSG_GAME_INPUT,
     MSG_PING,
     MSG_SET_NAME,
@@ -120,7 +122,7 @@ def validate_client_message(data: Any) -> Optional[str]:
                 value = input_frame.get(key_name)
                 if value not in (0, 1, True, False):
                     return f"game_input.input_frame.{key_name} must be 0 or 1"
-    if message_type in (MSG_SELECT_SLOT, MSG_SET_NAME):
+    if message_type in (MSG_SELECT_SLOT, MSG_LOGIN, MSG_SET_NAME):
         name = data.get("name")
         if name is not None:
             if not isinstance(name, str):

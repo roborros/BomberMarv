@@ -34,6 +34,7 @@ from net_protocol import (
     MSG_REGISTRATION_REJECTED,
     MSG_REQUEST_SLOT_LIST,
     MSG_REQUEST_KEYFRAME,
+    MSG_LOGIN,
     MSG_SELECT_SLOT,
     MSG_SET_NAME,
     MSG_SLOT_LIST,
@@ -206,6 +207,55 @@ def classify_broadcast_for_client(
     )
 
 
+# websockets pauses the writer at this high-water mark (its default write_limit).
+# A send that crosses it awaits drain(), which stalls every other client.
+WS_OUTBOUND_BUFFER_LIMIT = 2**15
+RTC_OUTBOUND_BUFFER_LIMIT = 256_000
+
+
+class OutboundCongested(Exception):
+    """This client is not reading. Drop the frame instead of blocking the broadcast."""
+
+
+def _ws_write_high_water(websocket) -> int:
+    limits = getattr(websocket, "write_limit", None)
+    if isinstance(limits, tuple) and limits and limits[0]:
+        try:
+            return max(1, int(limits[0]))
+        except (TypeError, ValueError):
+            pass
+    if isinstance(limits, int) and limits > 0:
+        return limits
+    return WS_OUTBOUND_BUFFER_LIMIT
+
+
+def outbound_is_congested(websocket, rtc_channel, transport_active, extra_bytes: int = 0) -> bool:
+    """True when another send would wait on a full TCP or WebRTC buffer."""
+    if str(transport_active) == "rtc" and rtc_channel is not None and getattr(rtc_channel, "readyState", "") == "open":
+        try:
+            buffered = int(getattr(rtc_channel, "bufferedAmount", 0) or 0)
+        except (TypeError, ValueError):
+            buffered = 0
+        if buffered <= 0:
+            return False
+        return buffered + max(0, int(extra_bytes)) > RTC_OUTBOUND_BUFFER_LIMIT
+    if getattr(websocket, "paused", False):
+        return True
+    transport = getattr(websocket, "transport", None)
+    getter = getattr(transport, "get_write_buffer_size", None)
+    if not callable(getter):
+        return False
+    try:
+        queued = int(getter())
+    except (TypeError, ValueError):
+        return False
+    # An empty socket can take one frame even if that frame is large. Skipping
+    # it here would mean a big keyframe is never sent.
+    if queued <= 0:
+        return False
+    return queued + max(0, int(extra_bytes)) > _ws_write_high_water(websocket)
+
+
 def setup_logging(logfile: str) -> logging.Logger:
     logger = logging.getLogger("ws_stream_server")
     if logger.handlers:
@@ -269,6 +319,7 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
         "broadcast_key_frames": 0,
         "broadcast_keepalive_frames": 0,
         "broadcast_metrics_frames": 0,
+        "broadcast_congested_skips": 0,
         "broadcast_wakeup_signals": 0,
         "status_queue_sent": 0,
         "status_queue_dropped": 0,
@@ -445,6 +496,108 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                         slot_reasons[key] = "remote"
         return {"slots": slots_dict, "slot_reasons": slot_reasons, "trophy_win_threshold": trophy_win_threshold}
 
+    def _blank_keys() -> Dict[str, int]:
+        return {"up": 0, "down": 0, "left": 0, "right": 0, "bomb": 0}
+
+    def _local_player_count() -> int:
+        with state_lock:
+            state = latest_game_state if isinstance(latest_game_state, dict) else None
+        if not state:
+            return 0
+        try:
+            count = int(state.get("local_player_count", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, min(max(slots.keys(), default=8), count))
+
+    def _release_seat_locked(seat: int, owner_id: int) -> None:
+        if slots.get(seat) == owner_id:
+            slots[seat] = None
+        occupant = players.get(seat)
+        if isinstance(occupant, dict) and occupant.get("client_id") == owner_id:
+            players.pop(seat, None)
+
+    def _next_free_seat_locked(local_taken: int) -> Optional[int]:
+        for seat in sorted(seat_id for seat_id in slots.keys() if isinstance(seat_id, int)):
+            if seat <= local_taken:
+                continue
+            if slots.get(seat) is None:
+                return seat
+        return None
+
+    def allocate_login(owner_id: int, name: str):
+        """Give this connection the lowest free seat. The browser does not choose the id."""
+        local_taken = _local_player_count()
+        clean_name = name.strip()[:20] if name else ""
+        with slots_lock:
+            with tracking_lock:
+                cdata = clients.get(owner_id)
+                if not isinstance(cdata, dict):
+                    return False, "unknown client", None, False
+                current = cdata.get("slot")
+                if (
+                    cdata.get("registered")
+                    and isinstance(current, int)
+                    and current > local_taken
+                    and slots.get(current) == owner_id
+                ):
+                    if clean_name:
+                        cdata["display_name"] = clean_name
+                    cdata["players"] = [current]
+                    occupant = players.get(current)
+                    if not isinstance(occupant, dict) or occupant.get("client_id") != owner_id:
+                        players[current] = {"client_id": owner_id, "keys": _blank_keys()}
+                    return True, f"already player {current}", current, False
+                if isinstance(current, int):
+                    _release_seat_locked(current, owner_id)
+                chosen = _next_free_seat_locked(local_taken)
+                if chosen is None:
+                    cdata["registered"] = False
+                    cdata["slot"] = None
+                    cdata["players"] = []
+                    return False, "lobby is full", None, False
+                slots[chosen] = owner_id
+                cdata["slot"] = chosen
+                cdata["registered"] = True
+                cdata["last_state_seq"] = -1
+                cdata["force_keyframe"] = True
+                cdata["players"] = [chosen]
+                if clean_name:
+                    cdata["display_name"] = clean_name
+                players[chosen] = {"client_id": owner_id, "keys": _blank_keys()}
+                return True, f"joined as player {chosen}", chosen, True
+
+    def reconcile_remote_seats():
+        """Move logged-in browsers off seats the host reserved for local players."""
+        local_taken = _local_player_count()
+        notices = []
+        with slots_lock:
+            with tracking_lock:
+                for seat, owner_id in list(slots.items()):
+                    if owner_id is None or not isinstance(seat, int) or seat > local_taken:
+                        continue
+                    _release_seat_locked(seat, owner_id)
+                    cdata = clients.get(owner_id)
+                    if not isinstance(cdata, dict):
+                        continue
+                    chosen = _next_free_seat_locked(local_taken)
+                    ws = cdata.get("websocket")
+                    if chosen is None:
+                        cdata["registered"] = False
+                        cdata["slot"] = None
+                        cdata["players"] = []
+                        notices.append((owner_id, ws, False, "lobby is full", None))
+                        continue
+                    slots[chosen] = owner_id
+                    cdata["slot"] = chosen
+                    cdata["registered"] = True
+                    cdata["players"] = [chosen]
+                    cdata["last_state_seq"] = -1
+                    cdata["force_keyframe"] = True
+                    players[chosen] = {"client_id": owner_id, "keys": _blank_keys()}
+                    notices.append((owner_id, ws, True, f"joined as player {chosen}", chosen))
+        return notices
+
     async def send_json(ws, payload: Dict[str, Any]) -> None:
         raw = json.dumps(payload, separators=(",", ":"))
         await ws.send(raw)
@@ -542,20 +695,17 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                     "right": int(frame["keys"]["right"]),
                     "bomb": int(frame["keys"]["bomb"]),
                 }
-                if player_id not in players:
-                    if cdata.get("players") and player_id not in cdata.get("players", []):
-                        metrics["input_player_id_rejected"] += 1
+                assigned_ids = set()
+                for raw_id in cdata.get("players") or []:
+                    try:
+                        assigned_ids.add(int(raw_id))
+                    except (TypeError, ValueError):
                         continue
-                    players[player_id] = {
-                        "client_id": client_id,
-                        "keys": {"up": 0, "down": 0, "left": 0, "right": 0, "bomb": 0},
-                    }
-                    if player_id not in cdata.get("players", []):
-                        cdata["players"].append(player_id)
-                elif cdata.get("players") and player_id not in cdata.get("players", []):
+                owner = players.get(player_id)
+                if player_id not in assigned_ids or not isinstance(owner, dict) or owner.get("client_id") != client_id:
                     metrics["input_player_id_rejected"] += 1
                     continue
-                players[player_id]["keys"] = dict(keys_state)
+                owner["keys"] = dict(keys_state)
 
                 if tick_id is None:
                     if client_strict_mode:
@@ -714,9 +864,11 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
             ),
         )
 
-    async def send_gameplay_frame(websocket, rtc_channel, transport_active, ws_codec, rtc_codec, payload_dict) -> tuple:
-        ws_payload = encode_payload(payload_dict, ws_codec)
-        sent_bytes = len(ws_payload) if isinstance(ws_payload, (bytes, bytearray)) else len(str(ws_payload))
+    async def send_gameplay_frame(websocket, rtc_channel, transport_active, ws_codec, rtc_codec, payload_dict, encoded=None) -> tuple:
+        pending = encoded
+        extra_bytes = len(pending) if isinstance(pending, (bytes, bytearray, str)) else 0
+        if outbound_is_congested(websocket, rtc_channel, transport_active, extra_bytes):
+            raise OutboundCongested()
         used_rtc = False
         if transport_active == "rtc" and rtc_channel is not None and getattr(rtc_channel, "readyState", "") == "open":
             rtc_payload = encode_payload(payload_dict, rtc_codec) if rtc_codec == "msgpack" else encode_payload(payload_dict, "json")
@@ -727,6 +879,8 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
             used_rtc = True
             sent_bytes = len(rtc_payload) if isinstance(rtc_payload, (bytes, bytearray)) else len(str(rtc_payload))
         else:
+            ws_payload = encoded if encoded is not None else encode_payload(payload_dict, ws_codec)
+            sent_bytes = len(ws_payload) if isinstance(ws_payload, (bytes, bytearray)) else len(str(ws_payload))
             await websocket.send(ws_payload)
         return sent_bytes, used_rtc
 
@@ -792,35 +946,40 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
             server_timestamp = wall_clock_ms()
             send_plan: List[Dict[str, Any]] = []
             total_payload_bytes = 0
-            for recipient in recipients:
-                payload_dict, kind = classify_broadcast_for_client(
-                    current_state=gameplay_state,
-                    last_full_state=last_full_state,
-                    current_seq=current_seq,
-                    last_broadcast_seq=last_broadcast_seq,
-                    client_last_seq=int(recipient["last_state_seq"]),
-                    delta_chain_count=int(recipient.get("delta_chain_count", 0)),
-                    max_delta_chain=max_delta_chain,
-                    force_keyframe_global=force_keyframe,
-                    force_keyframe_client=bool(recipient.get("force_keyframe")),
-                    keyframe_interval_seq=keyframe_interval_seq,
-                    server_timestamp=server_timestamp,
-                )
-                payload = encode_payload(payload_dict, str(recipient.get("codec", "json")))
-                send_plan.append(
-                    {
-                        "client_id": recipient["client_id"],
-                        "websocket": recipient["websocket"],
-                        "transport_active": recipient.get("transport_active", "ws"),
-                        "rtc_codec": recipient.get("rtc_codec", "json"),
-                        "rtc_state_channel": recipient.get("rtc_state_channel"),
-                        "codec": recipient.get("codec", "json"),
-                        "payload": payload,
-                        "payload_dict": payload_dict,
-                        "kind": kind,
-                    }
-                )
-                total_payload_bytes += len(payload) if isinstance(payload, (bytes, bytearray)) else len(str(payload))
+            try:
+                for recipient in recipients:
+                    payload_dict, kind = classify_broadcast_for_client(
+                        current_state=gameplay_state,
+                        last_full_state=last_full_state,
+                        current_seq=current_seq,
+                        last_broadcast_seq=last_broadcast_seq,
+                        client_last_seq=int(recipient["last_state_seq"]),
+                        delta_chain_count=int(recipient.get("delta_chain_count", 0)),
+                        max_delta_chain=max_delta_chain,
+                        force_keyframe_global=force_keyframe,
+                        force_keyframe_client=bool(recipient.get("force_keyframe")),
+                        keyframe_interval_seq=keyframe_interval_seq,
+                        server_timestamp=server_timestamp,
+                    )
+                    payload = encode_payload(payload_dict, str(recipient.get("codec", "json")))
+                    send_plan.append(
+                        {
+                            "client_id": recipient["client_id"],
+                            "websocket": recipient["websocket"],
+                            "transport_active": recipient.get("transport_active", "ws"),
+                            "rtc_codec": recipient.get("rtc_codec", "json"),
+                            "rtc_state_channel": recipient.get("rtc_state_channel"),
+                            "codec": recipient.get("codec", "json"),
+                            "payload": payload,
+                            "payload_dict": payload_dict,
+                            "kind": kind,
+                        }
+                    )
+                    total_payload_bytes += len(payload) if isinstance(payload, (bytes, bytearray)) else len(str(payload))
+            except Exception:
+                logger.exception("Broadcast encode failed")
+                add_sample("broadcast_loop_duration_samples_ms", (time.perf_counter() - loop_started) * 1000.0)
+                continue
 
             if total_payload_bytes:
                 add_sample("broadcast_payload_bytes_samples", total_payload_bytes / max(1, len(send_plan)))
@@ -835,6 +994,7 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                         str(item.get("codec", "json")),
                         str(item.get("rtc_codec", "json")),
                         item["payload_dict"],
+                        item.get("payload"),
                     )
                     if used_rtc:
                         metrics["broadcast_frames_rtc"] += 1
@@ -844,6 +1004,9 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                         metrics["broadcast_bytes_ws"] += sent_bytes
                     item["sent_bytes"] = sent_bytes
                     results.append(None)
+                except OutboundCongested:
+                    metrics["broadcast_congested_skips"] += 1
+                    results.append(OutboundCongested())
                 except Exception as exc:
                     results.append(exc)
             send_ms = (time.perf_counter() - send_started) * 1000.0
@@ -938,9 +1101,31 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                 except Exception:
                     pass
 
+    async def _notify_seat_changes(notices) -> None:
+        for owner_id, ws, ok_move, move_message, move_seat in notices:
+            if ws is None:
+                continue
+            try:
+                if ok_move and move_seat is not None:
+                    await send_json(
+                        ws,
+                        envelope(
+                            MSG_REGISTRATION_CONFIRMED,
+                            client_id=owner_id,
+                            slot=move_seat,
+                            player_ids=[move_seat],
+                            message=move_message,
+                        ),
+                    )
+                elif not ok_move:
+                    await send_json(ws, envelope(MSG_REGISTRATION_REJECTED, message=move_message))
+            except Exception:
+                pass
+
     async def status_snapshot_loop():
         while True:
             await asyncio.sleep(1.0)
+            await _notify_seat_changes(reconcile_remote_seats())
             enqueue_status_snapshot()
 
     async def handle_client(websocket):
@@ -1065,66 +1250,34 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                     await broadcast_slot_list()
                     continue
 
-                if msg_type == MSG_SELECT_SLOT:
-                    requested_slot = data["slot"]
-                    requested_name = str(data.get("name", "")).strip()
-                    success = False
-                    message = "invalid slot"
-                    with slots_lock:
-                        if requested_slot in slots:
-                            local_taken = 0
-                            with state_lock:
-                                if latest_game_state:
-                                    try:
-                                        local_taken = int(latest_game_state.get("local_player_count", 0))
-                                    except Exception:
-                                        local_taken = 0
-                            if requested_slot <= local_taken:
-                                message = "slot taken by local player"
-                            elif slots[requested_slot] is None:
-                                current_slot = None
-                                with tracking_lock:
-                                    current_slot = clients.get(client_id, {}).get("slot")
-                                if current_slot:
-                                    slots[current_slot] = None
-                                slots[requested_slot] = client_id
-                                success = True
-                                message = f"joined slot {requested_slot}"
-                            else:
-                                message = "slot already taken"
-                    if not success:
+                if msg_type in (MSG_LOGIN, MSG_SELECT_SLOT):
+                    # select_slot is accepted from older pages, but the requested number is ignored.
+                    requested_name = str(data.get("name", "") or "").strip()
+                    await _notify_seat_changes(reconcile_remote_seats())
+                    ok, message, seat, created = allocate_login(client_id, requested_name)
+                    if not ok or seat is None:
                         await send_json(websocket, envelope(MSG_REGISTRATION_REJECTED, message=message))
                         slot_info = build_slot_list()
                         await send_json(websocket, envelope(MSG_SLOT_LIST, **slot_info))
                         enqueue_status_snapshot()
                         await broadcast_slot_list()
                         continue
-                    with tracking_lock:
-                        clients[client_id]["slot"] = requested_slot
-                        clients[client_id]["registered"] = True
-                        clients[client_id]["last_state_seq"] = -1
-                        if requested_name:
-                            clients[client_id]["display_name"] = requested_name[:20]
-                        clients[client_id]["players"] = [requested_slot]
-                        players[requested_slot] = {
-                            "client_id": client_id,
-                            "keys": {"up": 0, "down": 0, "left": 0, "right": 0, "bomb": 0},
-                        }
-                    enqueue_input_event(
-                        {
-                            "type": "player_joined",
-                            "client_id": client_id,
-                            "slot": requested_slot,
-                            "ws_received_timestamp": int(time.time() * 1000),
-                        }
-                    )
+                    if created:
+                        enqueue_input_event(
+                            {
+                                "type": "player_joined",
+                                "client_id": client_id,
+                                "slot": seat,
+                                "ws_received_timestamp": int(time.time() * 1000),
+                            }
+                        )
                     await send_json(
                         websocket,
                         envelope(
                             MSG_REGISTRATION_CONFIRMED,
                             client_id=client_id,
-                            slot=requested_slot,
-                            player_ids=[requested_slot],
+                            slot=seat,
+                            player_ids=[seat],
                             message=message,
                         ),
                     )
@@ -1295,7 +1448,7 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
         index_path = os.path.join(static_dir, "index.html")
 
         async def handle_index(_request):
-            return web.FileResponse(index_path)
+            return web.FileResponse(index_path, headers={"Cache-Control": "no-cache"})
 
         async def handle_asset(request):
             rel = request.match_info["tail"]
@@ -1307,7 +1460,8 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                 inside = False
             if not inside or not os.path.isfile(full):
                 raise web.HTTPNotFound()
-            return web.FileResponse(full)
+            headers = {"Cache-Control": "no-cache"} if full.lower().endswith(".html") else None
+            return web.FileResponse(full, headers=headers)
 
         app.router.add_get("/", handle_index)
         app.router.add_get("/{tail:.*}", handle_asset)

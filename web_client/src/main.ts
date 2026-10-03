@@ -38,7 +38,6 @@ import {
   applyKeepalive,
   resolveLocalPredictionTargetIndex as findLocalPredictionIndex,
   shouldDropSnapshot,
-  slotButtonLabel,
   SNAPSHOT_BUFFER_LIMIT,
   trimSnapshotBuffer,
   updateServerClockOffset
@@ -109,7 +108,7 @@ const renderToggle = document.querySelector<HTMLInputElement>('#render-toggle')
 const stateOnly = document.querySelector<HTMLDivElement>('#state-only')
 const statusDiv = document.querySelector<HTMLDivElement>('#status')
 const lobbyOverlay = document.getElementById('lobby-overlay')
-const slotContainer = document.getElementById('slot-container')
+const loginButton = document.getElementById('login-button')
 const lobbyStatus = document.getElementById('lobby-status')
 const playerNameInput = document.querySelector<HTMLInputElement>('#player-name')
 const keysButton = document.getElementById('keys-button')
@@ -117,7 +116,7 @@ const keysOverlay = document.getElementById('keys-overlay')
 const keysList = document.getElementById('keys-list')
 const keysBack = document.getElementById('keys-back')
 
-if (!canvas || !debugLine || !renderToggle || !stateOnly || !statusDiv || !lobbyOverlay || !slotContainer || !lobbyStatus || !playerNameInput || !keysButton || !keysOverlay || !keysList || !keysBack) {
+if (!canvas || !debugLine || !renderToggle || !stateOnly || !statusDiv || !lobbyOverlay || !loginButton || !lobbyStatus || !playerNameInput || !keysButton || !keysOverlay || !keysList || !keysBack) {
   throw new Error('Required DOM elements not found')
 }
 
@@ -127,7 +126,7 @@ const renderToggleEl: HTMLInputElement = renderToggle
 const stateOnlyEl: HTMLDivElement = stateOnly
 const statusDivEl: HTMLDivElement = statusDiv
 const lobbyOverlayEl: HTMLElement = lobbyOverlay
-const slotContainerEl: HTMLElement = slotContainer
+const loginButtonEl: HTMLButtonElement = loginButton as HTMLButtonElement
 const lobbyStatusEl: HTMLElement = lobbyStatus
 const playerNameInputEl: HTMLInputElement = playerNameInput
 const keysButtonEl: HTMLElement = keysButton
@@ -191,7 +190,7 @@ let rtcStateChannel: RTCDataChannel | null = null
 let rtcRetryTimer: ReturnType<typeof setTimeout> | null = null
 let transportActive: 'ws' | 'rtc' = 'ws'
 let rtcFallbackEvents = 0
-let pendingSlotSelection: number | null = null
+let loginPending = false
 let currentPlayerName = ''
 let renderEnabled = false
 let latencySamples5s: Array<{ ts: number; value: number }> = []
@@ -588,28 +587,34 @@ function getRenderDelayMs(): number {
   return result.delay
 }
 
-function renderSlots(msg: SlotListMessage) {
-  slotContainerEl.innerHTML = ''
-  const keys = Object.keys(msg.slots).sort((a, b) => Number(a) - Number(b))
-  for (const key of keys) {
-    const i = Number(key)
-    const isTaken = msg.slots[key] === true
-    const reason = msg.slot_reasons?.[key]
-    const btn = document.createElement('button')
-    btn.className = `slot-btn ${isTaken ? 'taken' : ''}`
-    btn.dataset.slot = key
-    btn.disabled = isTaken
-    const label = slotButtonLabel(isTaken, reason)
-    btn.innerHTML = `<span class="slot-id">P${i}</span><span class="slot-label">${label}</span>`
-    slotContainerEl.appendChild(btn)
-  }
+function applyLobbyInfo(msg: SlotListMessage) {
   const threshold = msg.trophy_win_threshold ?? 3
   const kicker = document.getElementById('lobby-kicker')
   const help = document.getElementById('lobby-help')
   if (kicker) kicker.textContent = `First to ${threshold} trophies`
   if (help) {
-    help.textContent = `Pick a display name, choose a color slot, then join. Match stats accumulate until someone claims ${threshold} trophies.`
+    help.textContent = `Pick a display name and log in. The host assigns your player. Match stats accumulate until someone claims ${threshold} trophies.`
   }
+  const seats = Object.values(msg.slots || {})
+  const free = seats.filter((taken) => !taken).length
+  if (!isRegistered && !loginPending) {
+    loginButtonEl.disabled = seats.length > 0 && free === 0
+    if (loginButtonEl.disabled) {
+      lobbyStatusEl.textContent = 'Lobby is full'
+    }
+  }
+}
+
+function requestLogin() {
+  if (loginButtonEl.disabled && !loginPending) return
+  currentPlayerName = getPlayerName()
+  loginPending = true
+  loginButtonEl.disabled = true
+  if (currentPlayerName) {
+    sendMessage({ type: 'set_name', protocol: PROTOCOL_VERSION, name: currentPlayerName })
+  }
+  sendMessage({ type: 'login', protocol: PROTOCOL_VERSION, name: currentPlayerName })
+  lobbyStatusEl.textContent = 'Logging in...'
 }
 
 function getPlayerName(): string {
@@ -676,28 +681,36 @@ function handleServerMessage(msg: ServerMessage) {
   }
 
   if (msg.type === 'slot_list') {
-    renderSlots(msg)
+    applyLobbyInfo(msg)
     return
   }
 
   if (msg.type === 'registration_confirmed') {
     const confirmed = msg as RegistrationConfirmedMessage
+    const wasRegistered = isRegistered
     isRegistered = true
-    pendingSlotSelection = confirmed.slot
+    loginPending = false
+    loginButtonEl.disabled = false
     playerIds = confirmed.player_ids || []
-    localVisualOffset = { x: 0, y: 0 }
-    localPredictionErrorPx = []
-    localPredictionTargetKey = null
-    localLastAuthPos = null
-    lobbyOverlayEl.classList.add('hidden')
+    if (!wasRegistered) {
+      localVisualOffset = { x: 0, y: 0 }
+      localPredictionErrorPx = []
+      localPredictionTargetKey = null
+      localLastAuthPos = null
+      lobbyOverlayEl.classList.add('hidden')
+    }
     statusDivEl.textContent = `Playing as P${confirmed.slot}`
     return
   }
 
   if (msg.type === 'registration_rejected') {
     const rejected = msg as RegistrationRejectedMessage
+    loginPending = false
+    isRegistered = false
+    playerIds = []
     lobbyStatusEl.textContent = `Error: ${rejected.message}`
     lobbyOverlayEl.classList.remove('hidden')
+    loginButtonEl.disabled = false
     sendMessage({ type: 'request_slot_list', protocol: PROTOCOL_VERSION })
     return
   }
@@ -800,8 +813,8 @@ function connectWebSocket() {
     wsCodec = 'json'
     latestHudMetrics = undefined
     statusDivEl.textContent = 'Connected. Waiting for lobby...'
-    lobbyStatusEl.textContent = 'Connected. Requesting slots...'
-    if (pendingSlotSelection === null) {
+    lobbyStatusEl.textContent = 'Connected. Log in to play.'
+    if (!isRegistered) {
       lobbyOverlayEl.classList.remove('hidden')
     }
     snapshotBuffer = []
@@ -829,8 +842,8 @@ function connectWebSocket() {
       sendMessage({ type: 'set_name', protocol: PROTOCOL_VERSION, name: currentPlayerName })
     }
     sendMessage({ type: 'request_slot_list', protocol: PROTOCOL_VERSION })
-    if (pendingSlotSelection !== null) {
-      sendMessage({ type: 'select_slot', slot: pendingSlotSelection, protocol: PROTOCOL_VERSION, name: currentPlayerName })
+    if (loginPending) {
+      requestLogin()
     }
     startHeartbeat()
   }
@@ -845,6 +858,10 @@ function connectWebSocket() {
   ws.onclose = () => {
     statusDivEl.textContent = 'Disconnected. Reconnecting...'
     isRegistered = false
+    playerIds = []
+    if (!loginPending) loginButtonEl.disabled = false
+    lobbyOverlayEl.classList.remove('hidden')
+    lobbyStatusEl.textContent = 'Disconnected. Reconnecting...'
     closeRtcPeer()
     if (pingTimer) {
       clearInterval(pingTimer)
@@ -868,19 +885,15 @@ function connectWebSocket() {
   }
 }
 
-slotContainerEl.addEventListener('click', (e) => {
-  const target = (e.target as HTMLElement).closest('.slot-btn')
-  if (!target) return
-  const slot = (target as HTMLElement).dataset.slot
-  if (!slot) return
-  const parsed = parseInt(slot, 10)
-  pendingSlotSelection = parsed
-  currentPlayerName = getPlayerName()
-  if (currentPlayerName) {
-    sendMessage({ type: 'set_name', protocol: PROTOCOL_VERSION, name: currentPlayerName })
+loginButtonEl.addEventListener('click', () => {
+  requestLogin()
+})
+
+playerNameInputEl.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault()
+    requestLogin()
   }
-  sendMessage({ type: 'select_slot', slot: parsed, protocol: PROTOCOL_VERSION, name: currentPlayerName })
-  lobbyStatusEl.textContent = `Joining slot ${slot}...`
 })
 
 playerNameInputEl.addEventListener('change', () => {
