@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-1.2.7-orange">
+  <img alt="version" src="https://img.shields.io/badge/version-1.2.8-orange">
   <img alt="python" src="https://img.shields.io/badge/python-3.11-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
 </p>
@@ -67,7 +67,7 @@ For the Windows exe you only need the unzipped folder on the host.
    ```
 
 4. On the host, use the pygame window (lobby → Start Game).
-5. On phones/laptops, open the LAN URL, pick a name and a color slot, then wait for the host to start.
+5. On phones/laptops, open the LAN URL, type a name, press Log in, then wait for the host to start.
 
 To run the host without Vite (pygame only):
 
@@ -232,7 +232,7 @@ Hold bomb to plant a trail as you enter empty cells. You cannot stack two bombs 
 | Space | Bomb |
 | Enter | Start / continue, matching the host |
 
-In the browser lobby: type a display name, pick a free color slot, optionally tick **Show game screen**. The canvas interpolates other players and predicts your own movement a little so Wi-Fi jitter hurts less.
+In the browser lobby: type a display name and press **Log in**. The host assigns a free seat. Optionally tick **Show game screen**. The canvas interpolates other players and predicts your own movement a little so Wi-Fi jitter hurts less.
 
 ### Combat rules
 
