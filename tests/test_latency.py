@@ -73,6 +73,21 @@ class LatencyMetricsTests(unittest.TestCase):
         self.assertNotIn("_hud_metrics", gameplay)
         self.assertEqual(hud["host_fps_5s"], 60)
 
+    def test_prepare_wire_state_detaches_live_board_and_blasts(self):
+        board = [[0, 1], [1, 0]]
+        cells = [(2, 3)]
+        payload = {
+            "state": "playing",
+            "board": board,
+            "explosions": [{"cells": cells, "start_time": 10, "quad_damage": False}],
+        }
+        wire = prepare_wire_state(payload, wall_ms=50, sim_tick=4)
+        board[0][0] = 9
+        cells.append((4, 5))
+        self.assertEqual(wire["board"], [[0, 1], [1, 0]])
+        self.assertEqual(wire["explosions"][0]["cells"], [[2, 3]])
+        self.assertIsNot(wire["board"], board)
+
     def test_hud_metrics_interval_and_honest_labels(self):
         self.assertTrue(should_attach_hud_metrics(0, -1))
         self.assertFalse(should_attach_hud_metrics(100, 0, interval_ms=HUD_METRICS_INTERVAL_MS))

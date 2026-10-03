@@ -15,6 +15,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from net_protocol import PROTOCOL_VERSION
 from ws_stream_server import (
     HTTP_SERVER_VERSION,
+    RTC_OUTBOUND_BUFFER_LIMIT,
+    WS_OUTBOUND_BUFFER_LIMIT,
     WS_SERVER_VERSION,
     _percentile,
     build_state_delta,
@@ -22,6 +24,7 @@ from ws_stream_server import (
     decode_client_payload,
     decode_server_payload,
     encode_gameplay_payload,
+    outbound_is_congested,
     run_server_with_queue,
 )
 
@@ -47,7 +50,40 @@ def _wait_http(url: str, timeout=6.0):
     raise TimeoutError(f"HTTP {url} not ready: {last_error}")
 
 
+class _WriteTransport:
+    def __init__(self, size):
+        self._size = size
+
+    def get_write_buffer_size(self):
+        return self._size
+
+
+class _Socket:
+    def __init__(self, size):
+        self.transport = _WriteTransport(size)
+
+
+class _RtcChannel:
+    def __init__(self, amount, ready="open"):
+        self.bufferedAmount = amount
+        self.readyState = ready
+
+
 class WsHelperTests(unittest.TestCase):
+    def test_outbound_congestion_uses_socket_and_rtc_buffers(self):
+        self.assertFalse(outbound_is_congested(_Socket(0), None, "ws"))
+        self.assertFalse(outbound_is_congested(_Socket(WS_OUTBOUND_BUFFER_LIMIT), None, "ws"))
+        self.assertTrue(outbound_is_congested(_Socket(WS_OUTBOUND_BUFFER_LIMIT + 1), None, "ws"))
+        self.assertTrue(outbound_is_congested(_Socket(WS_OUTBOUND_BUFFER_LIMIT - 20), None, "ws", extra_bytes=21))
+        self.assertFalse(outbound_is_congested(_Socket(0), None, "ws", extra_bytes=10**7))
+        paused = _Socket(0)
+        paused.paused = True
+        self.assertTrue(outbound_is_congested(paused, None, "ws"))
+        self.assertFalse(outbound_is_congested(_Socket(0), _RtcChannel(0), "rtc"))
+        self.assertTrue(outbound_is_congested(_Socket(0), _RtcChannel(RTC_OUTBOUND_BUFFER_LIMIT + 1), "rtc"))
+        self.assertFalse(outbound_is_congested(_Socket(0), _RtcChannel(0, ready="closed"), "rtc"))
+        self.assertTrue(outbound_is_congested(_Socket(WS_OUTBOUND_BUFFER_LIMIT + 1), _RtcChannel(0, ready="closed"), "rtc"))
+
     def test_percentile_empty_and_order(self):
         self.assertEqual(_percentile([], 50), 0.0)
         self.assertEqual(_percentile([1, 2, 3, 4, 5], 0), 1.0)
@@ -267,7 +303,8 @@ class WsServerIntegrationTests(unittest.TestCase):
                 while confirmed["type"] == "slot_list":
                     confirmed = json.loads(await asyncio.wait_for(ws.recv(), 3))
                 self.assertEqual(confirmed["type"], "registration_confirmed")
-                self.assertEqual(confirmed["player_ids"], [1])
+                self.assertEqual(confirmed["player_ids"], [confirmed["slot"]])
+                player_id = int(confirmed["slot"])
 
                 await ws.send(
                     json.dumps(
@@ -275,8 +312,8 @@ class WsServerIntegrationTests(unittest.TestCase):
                             "type": "game_input",
                             "protocol": PROTOCOL_VERSION,
                             "tick_id": 5,
-                            "input": [client_id, 1, 1, 0, 0, 0, 0],
-                            "input_frame": {"player_id": 1, "up": 1, "down": 0, "left": 0, "right": 0, "bomb": 0},
+                            "input": [client_id, player_id, 1, 0, 0, 0, 0],
+                            "input_frame": {"player_id": player_id, "up": 1, "down": 0, "left": 0, "right": 0, "bomb": 0},
                         }
                     )
                 )
@@ -328,31 +365,94 @@ class WsServerIntegrationTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_taken_slot_is_rejected(self):
+    async def _login(self, ws, name, message_type="login", slot=None):
+        import asyncio
+
+        payload = {"type": message_type, "protocol": PROTOCOL_VERSION, "name": name}
+        if slot is not None:
+            payload["slot"] = slot
+        await ws.send(json.dumps(payload))
+        msg = json.loads(await asyncio.wait_for(ws.recv(), 3))
+        while msg["type"] == "slot_list":
+            msg = json.loads(await asyncio.wait_for(ws.recv(), 3))
+        return msg
+
+    def test_same_requested_id_gets_distinct_seats(self):
         import asyncio
         import websockets
 
         async def scenario():
             uri = f"ws://127.0.0.1:{self.ws_port}"
-            async with websockets.connect(uri) as first:
+            async with websockets.connect(uri) as first, websockets.connect(uri) as second:
                 await asyncio.wait_for(first.recv(), 3)
+                await asyncio.wait_for(second.recv(), 3)
                 await first.send(json.dumps({"type": "hello", "protocol": PROTOCOL_VERSION}))
+                await second.send(json.dumps({"type": "hello", "protocol": PROTOCOL_VERSION}))
                 await asyncio.wait_for(first.recv(), 3)
-                await first.send(json.dumps({"type": "select_slot", "protocol": PROTOCOL_VERSION, "slot": 6, "name": "First"}))
-                msg = json.loads(await asyncio.wait_for(first.recv(), 3))
-                while msg["type"] == "slot_list":
-                    msg = json.loads(await asyncio.wait_for(first.recv(), 3))
-                self.assertEqual(msg["type"], "registration_confirmed")
+                await asyncio.wait_for(second.recv(), 3)
+                first_msg = await self._login(first, "First", message_type="select_slot", slot=6)
+                second_msg = await self._login(second, "Second", message_type="select_slot", slot=6)
+                self.assertEqual(first_msg["type"], "registration_confirmed")
+                self.assertEqual(second_msg["type"], "registration_confirmed")
+                self.assertNotEqual(first_msg["player_ids"], second_msg["player_ids"])
+                self.assertEqual(first_msg["player_ids"], [first_msg["slot"]])
+                self.assertEqual(second_msg["player_ids"], [second_msg["slot"]])
 
-                async with websockets.connect(uri) as second:
-                    await asyncio.wait_for(second.recv(), 3)
-                    await second.send(json.dumps({"type": "hello", "protocol": PROTOCOL_VERSION}))
-                    await asyncio.wait_for(second.recv(), 3)
-                    await second.send(json.dumps({"type": "select_slot", "protocol": PROTOCOL_VERSION, "slot": 6}))
-                    rejected = json.loads(await asyncio.wait_for(second.recv(), 3))
-                    while rejected["type"] == "slot_list":
-                        rejected = json.loads(await asyncio.wait_for(second.recv(), 3))
-                    self.assertEqual(rejected["type"], "registration_rejected")
+        asyncio.run(scenario())
+
+    def test_login_assigns_unique_ids_and_ignores_guests(self):
+        import asyncio
+        import websockets
+
+        async def scenario():
+            uri = f"ws://127.0.0.1:{self.ws_port}"
+            async with websockets.connect(uri) as guest:
+                await asyncio.wait_for(guest.recv(), 3)
+                await guest.send(json.dumps({"type": "hello", "protocol": PROTOCOL_VERSION}))
+                await asyncio.wait_for(guest.recv(), 3)
+                await guest.send(
+                    json.dumps(
+                        {
+                            "type": "game_input",
+                            "protocol": PROTOCOL_VERSION,
+                            "input_frame": {"player_id": 1, "up": 1, "down": 0, "left": 0, "right": 0, "bomb": 0},
+                        }
+                    )
+                )
+                rejected = json.loads(await asyncio.wait_for(guest.recv(), 3))
+                while rejected["type"] == "slot_list":
+                    rejected = json.loads(await asyncio.wait_for(guest.recv(), 3))
+                self.assertEqual(rejected["type"], "registration_rejected")
+
+                opened = [guest]
+                assigned = []
+                full = None
+                try:
+                    for index in range(9):
+                        ws = await websockets.connect(uri, close_timeout=0.2)
+                        opened.append(ws)
+                        await asyncio.wait_for(ws.recv(), 3)
+                        await ws.send(json.dumps({"type": "hello", "protocol": PROTOCOL_VERSION}))
+                        hello = json.loads(await asyncio.wait_for(ws.recv(), 3))
+                        while hello["type"] != "hello_ack":
+                            hello = json.loads(await asyncio.wait_for(ws.recv(), 3))
+                        msg = await self._login(ws, f"Player{index}")
+                        if msg["type"] == "registration_rejected":
+                            full = msg
+                            break
+                        self.assertEqual(msg["type"], "registration_confirmed")
+                        assigned.append(int(msg["slot"]))
+                        again = await self._login(ws, f"Player{index}")
+                        self.assertEqual(again["type"], "registration_confirmed")
+                        self.assertEqual(int(again["slot"]), int(msg["slot"]))
+                finally:
+                    for ws in opened[1:]:
+                        await ws.close()
+                self.assertIsNotNone(full)
+                self.assertIn("full", str(full.get("message", "")).lower())
+                self.assertEqual(len(assigned), len(set(assigned)))
+                self.assertGreaterEqual(len(assigned), 1)
+                self.assertTrue(all(1 <= seat <= 8 for seat in assigned))
 
         asyncio.run(scenario())
 

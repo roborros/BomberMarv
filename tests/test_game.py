@@ -494,6 +494,44 @@ class GameStateTests(unittest.TestCase):
         self.assertFalse(web.is_local)
         self.assertEqual(int(web.client_id), 4)
 
+    def test_six_logged_in_clients_can_focus_start(self):
+        import pygame
+        from bm_drawing import draw_game_prep
+
+        pygame.font.init()
+
+        self.game.game_state = "game_prep"
+        self.game.prep_num_players = 1
+        self.game.prep_ai_count = 0
+        clients = {}
+        for index in range(6):
+            seat = index + 2
+            clients[str(100 + index)] = {
+                "registered": True,
+                "players": [seat],
+                "display_name": f"Guest {index + 1}",
+                "slot": seat,
+                "avg_latency_5s": float("nan") if index == 5 else float("inf"),
+                "last_seen": None,
+            }
+        clients["200"] = {"registered": True, "players": [2], "display_name": "Duplicate", "slot": 2}
+        clients["watcher"] = {"registered": False, "players": [8], "display_name": "Watcher"}
+        clients["bad"] = "nope"
+        self.game._cached_status = {"clients": clients, "players": {"2": "nope"}}
+        infos = self.game.get_all_players_info()
+        self.assertEqual([info["id"] for info in infos if info["type"] == "client"], [2, 3, 4, 5, 6, 7])
+        names = [info["name"] for info in infos]
+        self.assertNotIn("Watcher", names)
+        self.assertNotIn("Duplicate", names)
+        self.game.prep_section = "local_players"
+        self.game.prep_cursor_row = 0
+        for _ in range(24):
+            self.game.handle_prep_key_event(self._prep_key(Keys.DOWN))
+        self.assertEqual(self.game.game_state, "game_prep")
+        self.assertEqual(self.game.prep_section, "start_game")
+        for size in ((1500, 1500), (900, 700)):
+            draw_game_prep(pygame.Surface(size), self.game)
+
     def test_enter_on_player_count_does_not_start(self):
         self.game.game_state = "game_prep"
         self.game.prep_section = "local_players"
@@ -871,6 +909,24 @@ class GameStateTests(unittest.TestCase):
             {"type": "keydown", "key": "Enter", "client_id": 1, "player_id": 1}
         )
         self.assertEqual(self.game.game_state, "get_ready")
+
+    def test_crushing_wall_explodes_bomb_with_no_owner(self):
+        self.game.board = open_board(7, 7)
+        self.game.grid_width = 7
+        self.game.grid_height = 7
+        self.game.players = [_player(3, 3)]
+        self.game.game_state = "playing"
+        self.game.game_start_time = 0
+        self.game.current_time = 240_000
+        self.game.crushing_walls_active = True
+        self.game.crushing_walls_pattern = [(1, 1)]
+        self.game.crushing_walls_index = 0
+        self.game.crushing_walls_last_time = 0
+        self.game.bombs = [Bomb(1, 1, 0, 2, None)]
+        self.game.handle_crushing_walls()
+        self.assertEqual(self.game.bombs, [])
+        self.assertEqual(self.game.board[1][1], INDESTRUCTIBLE)
+        self.assertTrue(self.game.explosions)
 
     def test_crushing_walls_place_indestructible(self):
         self.game.board = open_board(7, 7)

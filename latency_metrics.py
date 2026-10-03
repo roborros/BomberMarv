@@ -172,6 +172,28 @@ def build_hud_metrics(
     }
 
 
+def _detach_board(board: Any) -> Any:
+    if not isinstance(board, list):
+        return board
+    return [list(row) if isinstance(row, (list, tuple)) else row for row in board]
+
+
+def _detach_explosions(explosions: Any) -> Any:
+    if not isinstance(explosions, list):
+        return explosions
+    detached = []
+    for explosion in explosions:
+        if not isinstance(explosion, dict):
+            detached.append(explosion)
+            continue
+        copy = dict(explosion)
+        cells = copy.get("cells")
+        if isinstance(cells, (list, tuple)):
+            copy["cells"] = [list(cell) if isinstance(cell, (list, tuple)) else cell for cell in cells]
+        detached.append(copy)
+    return detached
+
+
 def prepare_wire_state(
     state_payload: Dict[str, Any],
     *,
@@ -179,10 +201,19 @@ def prepare_wire_state(
     hud_metrics: Optional[Dict[str, Any]] = None,
     sim_tick: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Copy a host snapshot for the state queue without 60 Hz HUD metrics."""
+    """Copy a host snapshot for the state queue without 60 Hz HUD metrics.
+
+    The board and explosion cell lists are detached from the live match.
+    The queue feeder pickles on another thread; sharing those lists with the
+    sim lets a cell update tear the pickle.
+    """
     wire = dict(state_payload)
     wire.pop("_net_metrics", None)
     wire.pop("_hud_metrics", None)
+    if "board" in wire:
+        wire["board"] = _detach_board(wire.get("board"))
+    if "explosions" in wire:
+        wire["explosions"] = _detach_explosions(wire.get("explosions"))
     if sim_tick is not None:
         wire["_sim_tick"] = int(sim_tick)
     wire["_host_published_at_ms"] = int(wall_ms)

@@ -14,11 +14,12 @@ def build_status_signature(status: Optional[Dict[str, Any]]) -> Optional[Tuple[t
     for cid, info in clients.items():
         if not isinstance(info, dict):
             continue
+        slot = info.get("slot")
         clients_sig.append(
             (
                 str(cid),
                 bool(info.get("registered", False)),
-                info.get("slot"),
+                "" if slot is None else str(slot),
                 str(info.get("display_name") or ""),
             )
         )

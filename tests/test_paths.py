@@ -4,9 +4,12 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from unittest.mock import patch
+
 from bm_paths import (
     _is_usable_lan_ip,
     app_root,
+    cached_lan_join_label,
     detect_lan_ip,
     find_client_static_dir,
     lan_join_label,
@@ -44,6 +47,21 @@ class PathTests(unittest.TestCase):
         self.assertTrue(label.startswith("http://"))
         self.assertTrue(label.endswith(":8080"))
         self.assertIn(detect_lan_ip(), label)
+
+    def test_cached_join_label_does_not_probe_on_the_caller(self):
+        import bm_paths
+
+        previous = bm_paths._lan_probed_at
+        try:
+            bm_paths._lan_probed_at = 0.0
+            with patch("bm_paths._probe_lan_ips", side_effect=AssertionError("probed on the lobby thread")):
+                with patch("bm_paths._schedule_lan_refresh") as refresh:
+                    label = cached_lan_join_label(8080)
+            self.assertTrue(label.startswith("http://"))
+            self.assertTrue(label.endswith(":8080"))
+            refresh.assert_called()
+        finally:
+            bm_paths._lan_probed_at = previous
 
 
 if __name__ == "__main__":

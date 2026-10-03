@@ -132,6 +132,11 @@ class NetProtocolTests(unittest.TestCase):
         self.assertEqual(validate_client_message([]), "message must be an object")
         self.assertEqual(validate_client_message("hello"), "message must be an object")
 
+    def test_validate_accepts_login_without_a_chosen_id(self):
+        self.assertIsNone(validate_client_message({"type": "login", "protocol": PROTOCOL_VERSION, "name": "Ada"}))
+        self.assertIsNone(validate_client_message({"type": "login", "protocol": PROTOCOL_VERSION}))
+        self.assertIsNotNone(validate_client_message({"type": "login", "protocol": PROTOCOL_VERSION, "name": "x" * 21}))
+
     def test_validate_rejects_bad_slot_and_name(self):
         self.assertIsNotNone(validate_client_message({"type": "select_slot", "protocol": PROTOCOL_VERSION, "slot": "1"}))
         self.assertIsNotNone(

@@ -346,7 +346,26 @@ canvas {
 .lobby-actions {
   display: flex;
   justify-content: center;
+  align-items: center;
+  gap: 12px;
   margin-top: 8px;
+}
+
+.login-button {
+  min-width: 220px;
+  min-height: 64px;
+  font-size: 1.35rem;
+  background: #3e8f5a;
+  border-color: #d7f5e2;
+}
+
+.login-button:hover:not(:disabled) {
+  background: #4ea56a;
+}
+
+.login-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .lobby-action {

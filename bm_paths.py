@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 import socket
 import sys
+import threading
+import time
 
 
 def is_frozen() -> bool:
@@ -64,8 +66,19 @@ def _is_ipv4_family(family) -> bool:
     return getattr(family, "name", "") == "AF_INET"
 
 
-def list_lan_ips() -> list[str]:
-    """IPv4 addresses other PCs on the LAN can use. Loopback is omitted."""
+_lan_lock = threading.Lock()
+_lan_ips: list[str] = []
+_lan_probed_at = 0.0
+_lan_refreshing = False
+_LAN_REFRESH_S = 30.0
+
+
+def _probe_lan_ips() -> list[str]:
+    """IPv4 addresses other PCs on the LAN can use. Loopback is omitted.
+
+    This may talk to the OS network stack. Call it from startup or a background
+    thread, never from the lobby frame that also pumps the window.
+    """
     found: list[str] = []
 
     def _add(ip: str) -> None:
@@ -81,19 +94,64 @@ def list_lan_ips() -> list[str]:
                     _add(getattr(addr, "address", "") or "")
     except Exception:
         pass
+    sock = None
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(0.4)
         sock.connect(("8.8.8.8", 80))
         _add(sock.getsockname()[0])
-        sock.close()
     except Exception:
         pass
-    try:
-        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            _add(info[4][0])
-    except Exception:
-        pass
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
     return found
+
+
+def _remember_lan_ips(ips: list[str]) -> None:
+    global _lan_ips, _lan_probed_at
+    with _lan_lock:
+        _lan_ips = list(ips)
+        _lan_probed_at = time.monotonic()
+
+
+def _schedule_lan_refresh() -> None:
+    global _lan_refreshing
+    with _lan_lock:
+        if _lan_refreshing:
+            return
+        _lan_refreshing = True
+
+    def _run() -> None:
+        global _lan_refreshing
+        try:
+            _remember_lan_ips(_probe_lan_ips())
+        finally:
+            with _lan_lock:
+                _lan_refreshing = False
+
+    threading.Thread(target=_run, name="bombermarv-lan-ip", daemon=True).start()
+
+
+def list_lan_ips() -> list[str]:
+    """Blocking LAN address probe. Startup and tests use this."""
+    ips = _probe_lan_ips()
+    _remember_lan_ips(ips)
+    return ips
+
+
+def cached_lan_ips() -> list[str]:
+    """Last known LAN addresses. Never blocks; refreshes in the background."""
+    with _lan_lock:
+        ips = list(_lan_ips)
+        probed_at = _lan_probed_at
+    age = None if probed_at <= 0 else time.monotonic() - probed_at
+    if age is None or age >= _LAN_REFRESH_S:
+        _schedule_lan_refresh()
+    return ips
 
 
 def detect_lan_ip() -> str:
@@ -113,6 +171,14 @@ def lan_join_label(http_port: int | None = None) -> str:
     """Address guests type in a browser on the same network."""
     port = http_join_port() if http_port is None else int(http_port)
     return f"http://{detect_lan_ip()}:{port}"
+
+
+def cached_lan_join_label(http_port: int | None = None) -> str:
+    """Join address for the lobby frame. Does not probe the network."""
+    port = http_join_port() if http_port is None else int(http_port)
+    ips = cached_lan_ips()
+    ip = ips[0] if ips else "…"
+    return f"http://{ip}:{port}"
 
 
 def print_join_urls(http_port: int = 8080, ws_port: int = 8765) -> None:

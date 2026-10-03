@@ -32,6 +32,29 @@ class QueueUtilsTests(unittest.TestCase):
         self.assertEqual(q.get_nowait(), 3)
         self.assertEqual(metrics["dropped"], 2)
 
+    def test_process_pipe_does_not_read_when_full(self):
+        class PipeQueue:
+            shares_process_pipe = True
+
+            def __init__(self):
+                self.items = []
+
+            def put_nowait(self, item):
+                if self.items:
+                    raise queue.Full
+                self.items.append(item)
+
+            def get_nowait(self):
+                raise AssertionError("producer must not read a process pipe")
+
+        q = PipeQueue()
+        metrics = {}
+        put_latest_nonblocking(q, {"v": 1}, metrics, "sent", "dropped")
+        put_latest_nonblocking(q, {"v": 2}, metrics, "sent", "dropped")
+        self.assertEqual(q.items, [{"v": 1}])
+        self.assertEqual(metrics["sent"], 1)
+        self.assertEqual(metrics["dropped"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

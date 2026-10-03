@@ -164,6 +164,22 @@ class PlannedBlastAndHitboxTests(unittest.TestCase):
         cx, cy, cw, ch = explosion_cell_rect(3, 3, CELL_SIZE, EXPLOSION_COLLISION_SCALE)
         self.assertAlmostEqual(cw, 70)
 
+    def test_blast_arm_cache_is_bounded(self):
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+        import pygame
+        pygame.init()
+        from bm_drawing import _BLAST_ARM_CACHE, _BLAST_ARM_CACHE_MAX, _get_blast_arm_surface
+
+        _BLAST_ARM_CACHE.clear()
+        image = pygame.Surface((16, 8), pygame.SRCALPHA)
+        image.fill((255, 80, 0, 255))
+        for direction in ("left", "right", "up", "down"):
+            for length in range(1, 500, 3):
+                _get_blast_arm_surface(image, length, 40, direction)
+        self.assertGreater(len(_BLAST_ARM_CACHE), 0)
+        self.assertLessEqual(len(_BLAST_ARM_CACHE), _BLAST_ARM_CACHE_MAX)
+
 
 if __name__ == "__main__":
     unittest.main()

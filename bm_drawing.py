@@ -4,6 +4,7 @@ import time
 import math
 import os
 import types
+from collections import OrderedDict
 import bm_params as bmp
 from bm_params import *
 from timing_abstraction import get_ticks
@@ -15,7 +16,7 @@ from explosions import (
     explosion_tip_clip,
     is_player_in_planned_blast,
 )
-from bm_paths import lan_join_label
+from bm_paths import cached_lan_join_label
 from lightning import draw_lightning_cross
 from replay import frame_at_time, hydrate_replay_snapshot, letterbox_dest, pick_kill_cam, replay_view_rect
 
@@ -23,11 +24,18 @@ _AVATAR_CACHE = {}
 _ASSETS_READY = False
 _SCALED_IMAGE_CACHE = {}
 _BOARD_LAYER_CACHE = {"signature": None, "surface": None}
-_BLAST_ARM_CACHE = {}
+# Pixel-length keys used to grow without bound: every blast phase is a new
+# surface, and a few remote players create a new one on almost every frame.
+_BLAST_ARM_CACHE = OrderedDict()
+_BLAST_ARM_CACHE_MAX = 96
+_BLAST_LENGTH_QUANTUM = 8
 _TEXT_CACHE = {}
+_DEFAULT_FONT_CACHE = {}
 _UI_FONT_CACHE = {}
 _NAME_FONT_CACHE = {}
 _LOBBY_BG_CACHE = {"key": None, "surf": None}
+_REPLAY_WORLD_CACHE = {"key": None, "surf": None}
+_REPLAY_CROP_CACHE = {"key": None, "surf": None}
 
 _WIN_STAT_COLUMNS = (
     ("name", "Player"),
@@ -103,17 +111,29 @@ def _get_board_layer(theGame):
     return _BOARD_LAYER_CACHE["surface"]
 
 
+def _quantized_arm_length(length):
+    pixels = int(length)
+    if pixels <= 0:
+        return 0
+    quantum = _BLAST_LENGTH_QUANTUM
+    return max(quantum, ((pixels + quantum - 1) // quantum) * quantum)
+
+
 def _get_blast_arm_surface(image, length, thickness, direction):
     """Create a blast arm surface extending in the given direction.
     The source image is a horizontal flame strip; we scale to (length, thickness)
     and rotate so the arm extends correctly in each direction."""
+    length = _quantized_arm_length(length)
+    if length <= 0 or image is None:
+        return None
     cache_key = (id(image), int(length), int(thickness), direction)
     cached = _BLAST_ARM_CACHE.get(cache_key)
     if cached is not None:
+        _BLAST_ARM_CACHE.move_to_end(cache_key)
         return cached
     # Scale to (length, thickness) for all directions - length is along the arm
     # Flip along length so bulky base is at explosion center, pointy tip at outer end
-    scaled = pygame.transform.smoothscale(image, (int(length), int(thickness)))
+    scaled = pygame.transform.smoothscale(image, (max(1, int(length)), max(1, int(thickness))))
     if direction == "right":
         out = pygame.transform.flip(scaled, True, False)
     elif direction == "left":
@@ -127,6 +147,8 @@ def _get_blast_arm_surface(image, length, thickness, direction):
     else:
         out = scaled
     _BLAST_ARM_CACHE[cache_key] = out
+    while len(_BLAST_ARM_CACHE) > _BLAST_ARM_CACHE_MAX:
+        _BLAST_ARM_CACHE.popitem(last=False)
     return out
 
 
@@ -138,6 +160,26 @@ def _get_cached_text(font_obj, text, color):
     rendered = font_obj.render(str(text), True, color)
     _TEXT_CACHE[key] = rendered
     return rendered
+
+
+def _cached_rgb_surface(cache, size):
+    """Reuse one surface of this size. The results replay used to allocate a full arena every frame."""
+    width = max(1, int(size[0]))
+    height = max(1, int(size[1]))
+    key = (width, height)
+    if cache.get("key") != key or cache.get("surf") is None:
+        cache["key"] = key
+        cache["surf"] = pygame.Surface(key)
+    return cache["surf"]
+
+
+def _default_font(size):
+    size = max(12, int(size))
+    font = _DEFAULT_FONT_CACHE.get(size)
+    if font is None:
+        font = pygame.font.Font(None, size)
+        _DEFAULT_FONT_CACHE[size] = font
+    return font
 
 
 def _ui_font(size, bold=False):
@@ -405,6 +447,8 @@ def _ensure_fonts_initialized():
 def draw_brick_pattern(rect, surface):
     brick_height = rect[3] // 4
     brick_width = rect[2] // 3
+    if brick_width <= 0:
+        return
     mortar_color = (80, 80, 80)
     rows = 2
     for row in range(rows):
@@ -1024,6 +1068,8 @@ def draw_blast_arm(surface, start_pos, end_offset, image):
     else:
         direction = "down" if end_offset[1] > 0 else "up"
     arm_surface = _get_blast_arm_surface(image, int(length), thickness, direction)
+    if arm_surface is None:
+        return
     image_rect = arm_surface.get_rect(center=(x1, y1))
     if direction == "up":
         image_rect.bottom = y1
@@ -1357,7 +1403,8 @@ def draw_stat_screen(surface, winner, players, game=None, heading=None, heading_
                 cam_x_px, cam_y_px, world_w, world_h, CELL_SIZE, REPLAY_CAMERA_RADIUS_CELLS
             )
             view_rect = pygame.Rect(vx, vy, view_w, view_h)
-            world_surface = pygame.Surface((world_w, world_h))
+            world_surface = _cached_rgb_surface(_REPLAY_WORLD_CACHE, (world_w, world_h))
+            world_surface.fill(COLOR_BG)
             world_game = types.SimpleNamespace(
                 board=board,
                 grid_width=gw,
@@ -1381,7 +1428,7 @@ def draw_stat_screen(surface, winner, players, game=None, heading=None, heading_
             )
 
             # Keep a square crop even at map edges, then letterbox into the panel.
-            crop = pygame.Surface((view_w, view_h))
+            crop = _cached_rgb_surface(_REPLAY_CROP_CACHE, (view_w, view_h))
             crop.fill(COLOR_BG)
             crop.blit(world_surface, (-view_rect.x, -view_rect.y))
             title_h = 52 if clips else 30
@@ -1682,7 +1729,7 @@ def draw_match_timer(surface, game):
         early_s, late_s = game.crushing_wall_start_seconds()
         hint = format_crushing_wall_start(early_s, late_s)
     sw, sh = surface.get_size()
-    font = pygame.font.Font(None, max(18, min(32, sh // 28)))
+    font = _default_font(max(18, min(32, sh // 28)))
     text = font.render(label, True, (242, 244, 248))
     pad = max(8, sh // 80)
     shadow = font.render(label, True, (12, 14, 18))
@@ -1794,6 +1841,41 @@ def _get_lobby_backdrop(sw, sh):
 def _draw_panel(surface, rect, fill, border, radius=16):
     pygame.draw.rect(surface, fill, rect, border_radius=radius)
     pygame.draw.rect(surface, border, rect, 2, border_radius=radius)
+
+
+def _draw_round_rect(surface, color, rect, width=0, radius=0):
+    """Rounded rect whose radius stays inside the rect, so short rows cannot abort SDL."""
+    rect = pygame.Rect(rect)
+    if rect.width <= 0 or rect.height <= 0:
+        return
+    limit = max(0, min(rect.width, rect.height) // 2)
+    radius = max(0, min(int(radius), limit))
+    if width:
+        width = max(0, min(int(width), limit))
+    if radius <= 0:
+        pygame.draw.rect(surface, color, rect, width)
+        return
+    pygame.draw.rect(surface, color, rect, width, border_radius=radius)
+
+
+def _latency_ms(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0
+    if not math.isfinite(number):
+        return 0
+    return int(round(min(999999.0, max(0.0, number))))
+
+
+def _status_mapping(mapping, *keys):
+    if not isinstance(mapping, dict):
+        return {}
+    for key in keys:
+        value = mapping.get(key)
+        if isinstance(value, dict):
+            return value
+    return {}
 
 
 def _draw_pill(surface, font, text, fill, text_color, x, y, width, height, border=None):
@@ -1960,9 +2042,11 @@ def draw_game_prep(surface, Game):
 
     cached_clients = {}
     cached_players = {}
-    if Game._cached_status:
-        cached_clients = Game._cached_status.get('clients', {})
-        cached_players = Game._cached_status.get('players', {})
+    if isinstance(Game._cached_status, dict):
+        raw_clients = Game._cached_status.get('clients', {})
+        raw_players = Game._cached_status.get('players', {})
+        cached_clients = raw_clients if isinstance(raw_clients, dict) else {}
+        cached_players = raw_players if isinstance(raw_players, dict) else {}
 
     all_players = Game.get_all_players_info()
     for p in all_players:
@@ -1974,9 +2058,11 @@ def draw_game_prep(surface, Game):
         else:
             source = p.get('source') or (None, None)
             client_id, player_id = source if isinstance(source, tuple) else (source, None)
-            client_info = cached_clients.get(client_id, {}) or cached_clients.get(str(client_id), {})
-            pinfo = cached_players.get(str(player_id), {})
+            client_info = _status_mapping(cached_clients, client_id, str(client_id))
+            pinfo = _status_mapping(cached_players, str(player_id), player_id)
             keys = pinfo.get('keys', {})
+            if not isinstance(keys, dict):
+                keys = {}
             pressed = []
             if keys.get('up'): pressed.append('UP')
             if keys.get('down'): pressed.append('DOWN')
@@ -1984,7 +2070,7 @@ def draw_game_prep(surface, Game):
             if keys.get('right'): pressed.append('RIGHT')
             if keys.get('bomb'): pressed.append('BOMB')
             p['status'] = ' + '.join(pressed) if pressed else 'IDLE'
-            p['latency_5s'] = float(client_info.get('avg_latency_5s', client_info.get('avg_latency', 0)) or 0)
+            p['latency_5s'] = _latency_ms(client_info.get('avg_latency_5s', client_info.get('avg_latency', 0)))
 
     margin = max(28, int(sw * 0.02))
     title_font = _ui_font(min(58, max(36, sh // 32)), bold=True)
@@ -2028,7 +2114,7 @@ def draw_game_prep(surface, Game):
     inset = 20
     section_font = _ui_font(min(32, max(22, sh // 48)), bold=True)
     label_font = _ui_font(min(20, max(16, sh // 60)), bold=True)
-    join_label = lan_join_label()
+    join_label = cached_lan_join_label()
     _blit_label(surface, section_font, "Players", (235, 242, 255), left_panel.x + inset, left_panel.y + 14, left_panel.width - 40, section_font.get_height() + 2, vcenter=False)
     _blit_label(surface, section_font, "Remote players", (235, 242, 255), right_panel.x + inset, right_panel.y + 14, right_panel.width - 40, section_font.get_height() + 2, vcenter=False)
     join_font = _ui_font(min(20, max(14, sh // 62)), bold=True)
@@ -2104,15 +2190,15 @@ def draw_game_prep(surface, Game):
 
     row_y = arena_button_y + button_h + 14
     available_rows = max(1, left_panel.bottom - row_y - 16)
-    n_show = max(1, len(all_players))
-    row_h = min(88, max(64, available_rows // min(n_show, 8)))
-    max_rows = max(1, available_rows // row_h)
-    if len(all_players) > max_rows:
-        max_rows = max(1, (available_rows - 26) // row_h)
+    roster_n = max(1, min(len(all_players), MAX_PLAYERS))
+    row_h = min(88, max(36, available_rows // roster_n))
+    if roster_n * row_h > available_rows:
+        row_h = max(20, available_rows // roster_n)
+    max_rows = roster_n
     shown_players = all_players[:max_rows]
     name_font = _ui_font(min(30, max(18, row_h - 40)), bold=True)
     meta_font = _ui_font(min(18, max(14, row_h - 52)))
-    chip = min(36, row_h - 22)
+    chip = min(36, max(8, row_h - 16))
     team_w = 52
     role_w = 78
 
@@ -2125,10 +2211,14 @@ def draw_game_prep(surface, Game):
             row_bg = (glow, glow + 12, 112)
         else:
             row_bg = (41, 50, 64)
-        pygame.draw.rect(surface, row_bg, rect, border_radius=10)
-        pygame.draw.rect(surface, (212, 175, 55) if selected else (102, 122, 148), rect, 2 if selected else 1, border_radius=10)
-        player_color = colors[p['color'] % len(colors)]
-        pygame.draw.rect(surface, player_color, pygame.Rect(rect.x, rect.y, 8, rect.height), border_top_left_radius=10, border_bottom_left_radius=10)
+        _draw_round_rect(surface, row_bg, rect, radius=10)
+        _draw_round_rect(surface, (212, 175, 55) if selected else (102, 122, 148), rect, 2 if selected else 1, radius=10)
+        try:
+            color_idx = int(p['color']) % len(colors)
+        except (TypeError, ValueError):
+            color_idx = 0
+        player_color = colors[color_idx]
+        _draw_round_rect(surface, player_color, pygame.Rect(rect.x, rect.y, min(8, rect.width), rect.height), radius=4)
 
         chip_rect = pygame.Rect(rect.x + 18, rect.y + (rect.height - chip) // 2, chip, chip)
         pygame.draw.rect(surface, player_color, chip_rect, border_radius=8)
@@ -2178,7 +2268,7 @@ def draw_game_prep(surface, Game):
 
         status_text = p['status']
         if p['type'] == 'client':
-            status_text = f"{p['status']}  ·  {int(round(float(p.get('latency_5s', 0))))} ms"
+            status_text = f"{p['status']}  ·  {_latency_ms(p.get('latency_5s', 0))} ms"
         status_color = (142, 246, 160) if p['type'] == 'client' and p['status'] != 'IDLE' else (164, 181, 203)
         if p.get('title'):
             status_text = f"{p['title']}  ·  {status_text}"
@@ -2195,10 +2285,14 @@ def draw_game_prep(surface, Game):
     card_h = min(92, max(70, (right_panel.bottom - client_card_y - 20) // 4))
     if cached_clients:
         for client_id, info in cached_clients.items():
+            if not isinstance(info, dict):
+                continue
             if client_card_y + card_h > right_panel.bottom - 12:
                 break
-            last_seen = info.get('last_seen', 0)
-            age = time.time() - last_seen
+            try:
+                age = time.time() - float(info.get('last_seen', 0) or 0)
+            except (TypeError, ValueError):
+                age = 1e9
             online_col = (132, 233, 146) if age < 5 else (236, 200, 117) if age < 30 else (227, 123, 123)
             reg = "READY" if info.get('registered', False) else "WAITING"
             display_name = str(info.get('display_name', '') or '').strip()
@@ -2211,7 +2305,9 @@ def draw_game_prep(surface, Game):
             line1 = f"Client {client_id}  ·  {reg}"
             if display_name:
                 line1 += f"  ·  {display_name}"
-            line2 = f"{len(info.get('players', []))} player(s)  ·  {latency} ms ({samples})"
+            raw_players = info.get('players') or []
+            player_count = len(raw_players) if isinstance(raw_players, (list, tuple)) else 0
+            line2 = f"{player_count} player(s)  ·  {latency} ms ({samples})"
             text_x = card.x + 40
             text_w = card.width - 52
             _blit_label(surface, card_font, line1, online_col, text_x, card.y + 8, text_w, card_font.get_height() + 2, vcenter=False)
