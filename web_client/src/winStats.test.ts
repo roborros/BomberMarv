@@ -33,6 +33,15 @@ describe('winStats', () => {
     expect(rows[1].bold.flames).toBe(true)
   })
 
+  it('lists players with the most trophies first', () => {
+    const rows = buildWinStatRows([
+      samplePlayer({ id: 1, name: 'Marv', trophies: 1 }),
+      samplePlayer({ id: 2, name: 'Sobi', trophies: 3 }),
+      samplePlayer({ id: 3, name: 'Ada', trophies: 3 })
+    ])
+    expect(rows.map((row) => row.name)).toEqual(['Sobi', 'Ada', 'Marv'])
+  })
+
   it('uses a dash for survivors', () => {
     const rows = buildWinStatRows([samplePlayer({ death_time_rel_ms: null })])
     expect(rows[0].death).toBe('—')

@@ -19,14 +19,14 @@ class ControlGuideTests(unittest.TestCase):
         self.assertEqual(
             READY_KEY_LINES,
             (
-                "Local   W A S D move   ·   Space bomb",
-                "Browser   Arrow keys move   ·   Space bomb",
+                "Local   W A S D or arrows move   ·   Space bomb",
+                "Browser   W A S D or arrows move   ·   Space bomb",
             ),
         )
 
     def test_guide_lists_every_local_seat(self):
         rows = control_guide_rows()
-        self.assertEqual(rows[0], ("Player 1", "W A S D", "Space"))
+        self.assertEqual(rows[0], ("Player 1", "W A S D or arrows", "Space"))
         self.assertEqual(rows[1], ("Player 2", "I J K L", "Left Ctrl"))
         self.assertEqual(rows[2], ("Player 3", "F C V B", "H"))
         self.assertEqual(rows[5][0], "Player 6")

@@ -21,7 +21,9 @@ export interface WinStatRow {
 }
 
 export function buildWinStatRows(players: PlayerState[]): WinStatRow[] {
-  const sliced = players.slice(0, 8)
+  const sliced = [...players]
+    .sort((a, b) => (b.trophies ?? 0) - (a.trophies ?? 0))
+    .slice(0, 8)
   const deathVals = sliced.map((p) => (p.death_time_rel_ms == null ? 999999 : Math.round(p.death_time_rel_ms / 1000)))
   const flamesVals = sliced.map((p) => p.fire_power_at_death ?? p.fire_power ?? 0)
   const bombsVals = sliced.map((p) => p.bomb_capacity_at_death ?? p.bomb_capacity ?? 0)

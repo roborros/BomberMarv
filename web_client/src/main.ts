@@ -21,8 +21,8 @@ import type {
 import { isServerMessage } from './types'
 import { clamp, percentile, pushLimited, reconnectWaitMs } from './math'
 import {
-  applyKeyCode,
   buildGameInputPayload,
+  deriveKeys,
   hashInput,
   resolveInputTickId,
   shouldSendInput,
@@ -47,9 +47,12 @@ import { buildWsUrl } from './wsUrl'
 import { decodeIncomingWsData, encodeWsFrame, preferredWsCodec, type WsCodec } from './wireCodec'
 import { samplePresentAgeMs, sampleRttMs } from './latency'
 import {
+  BIG_EXPLOSION_SOUND_COUNT,
   BIG_EXPLOSION_TILE_THRESHOLD,
   BIG_EXPLOSION_VOLUME,
   BIG_EXPLOSION_WINDOW_MS,
+  bigExplosionReady,
+  bigExplosionSoundIndex,
   collectNewExplosionKeys,
   collectPlayerAudioCues,
   crossedBigExplosionThreshold,
@@ -212,6 +215,7 @@ let knownExplosionKeys = new Set<string>()
 let recentExplosionEvents: { startTime: number; cells: [number, number][] }[] = []
 let bigExplosionOverThreshold = false
 let bigExplosionSoundTimers: number[] = []
+let bigExplosionLastTriggerMs: number | null = null
 let lastKeyframeRequestAt = 0
 
 const SOUND_EXPLOSION = '/sounds/explosion_short.wav'
@@ -219,7 +223,10 @@ const SOUND_EXPLOSION_QD = '/sounds/explosion_short_qd.wav'
 const SOUND_BONUS = '/sounds/pick-bonus.wav'
 const SOUND_DEATH = '/sounds/death.wav'
 const SOUND_QD = '/sounds/quad_damage.mp3'
-const SOUND_BIG_EXPLOSION = '/sounds/mocny_stral.mp3'
+const SOUND_BIG_EXPLOSIONS = Array.from(
+  { length: BIG_EXPLOSION_SOUND_COUNT },
+  (_, index) => `/sounds/mocny_stral_${index + 1}.mp3`
+)
 const SOUND_FRESH_MEAT = '/sounds/fresh_meat.wav'
 
 const audioCache = new Map<string, HTMLAudioElement>()
@@ -231,6 +238,7 @@ const keys: InputKeys = {
   right: false,
   bomb: false
 }
+const heldCodes = new Set<string>()
 let keysDirty = false
 let lastInputSentAt = 0
 let lastInputHash = ''
@@ -371,7 +379,7 @@ function ensureAudioUnlocked() {
   if (audioUnlocked) return
   audioUnlocked = true
   // Prime audio elements after first user gesture.
-  ;[SOUND_EXPLOSION, SOUND_EXPLOSION_QD, SOUND_BONUS, SOUND_DEATH, SOUND_QD, SOUND_BIG_EXPLOSION, SOUND_FRESH_MEAT].forEach((src) => {
+  ;[SOUND_EXPLOSION, SOUND_EXPLOSION_QD, SOUND_BONUS, SOUND_DEATH, SOUND_QD, SOUND_FRESH_MEAT, ...SOUND_BIG_EXPLOSIONS].forEach((src) => {
     if (!audioCache.has(src)) {
       const a = new Audio(src)
       a.preload = 'auto'
@@ -400,6 +408,7 @@ function playSound(src: string, volume: number) {
 function resetBigExplosionTracking() {
   recentExplosionEvents = []
   bigExplosionOverThreshold = false
+  bigExplosionLastTriggerMs = null
   for (const id of bigExplosionSoundTimers) window.clearTimeout(id)
   bigExplosionSoundTimers = []
 }
@@ -415,9 +424,10 @@ function loudHit(state: GameState) {
 }
 
 function scheduleBigExplosionSound(delayMs: number, volume: number) {
+  const src = SOUND_BIG_EXPLOSIONS[bigExplosionSoundIndex(Math.random())]
   const id = window.setTimeout(() => {
     bigExplosionSoundTimers = bigExplosionSoundTimers.filter((timerId) => timerId !== id)
-    playSound(SOUND_BIG_EXPLOSION, volume)
+    playSound(src, volume)
   }, delayMs)
   bigExplosionSoundTimers.push(id)
 }
@@ -445,7 +455,11 @@ function processAudioEvents(previous: GameState | null, current: GameState) {
   if (newlySeen.length) {
     recentExplosionEvents.push(...newlySeen)
     const tileCount = uniqueTilesInWindow(recentExplosionEvents, current.time, hit.windowMs)
-    if (crossedBigExplosionThreshold(bigExplosionOverThreshold, tileCount, hit.tiles)) {
+    if (
+      bigExplosionReady(bigExplosionLastTriggerMs, current.time) &&
+      crossedBigExplosionThreshold(bigExplosionOverThreshold, tileCount, hit.tiles)
+    ) {
+      bigExplosionLastTriggerMs = current.time
       scheduleBigExplosionSound(hit.delayMs, hit.volume)
     }
     bigExplosionOverThreshold = tileCount >= hit.tiles
@@ -885,13 +899,16 @@ applyRenderToggleState()
 renderToggleEl.addEventListener('change', applyRenderToggleState)
 
 function updateKey(code: string, pressed: boolean) {
-  const result = applyKeyCode(keys, code, pressed)
-  keys.up = result.keys.up
-  keys.down = result.keys.down
-  keys.left = result.keys.left
-  keys.right = result.keys.right
-  keys.bomb = result.keys.bomb
-  if (result.changed) {
+  if (pressed) heldCodes.add(code)
+  else heldCodes.delete(code)
+  const next = deriveKeys(heldCodes)
+  const changed = hashInput(next) !== hashInput(keys)
+  keys.up = next.up
+  keys.down = next.down
+  keys.left = next.left
+  keys.right = next.right
+  keys.bomb = next.bomb
+  if (changed) {
     keysDirty = true
     maybeSendInput(true)
   }
@@ -960,6 +977,9 @@ async function toggleGameFullscreen() {
   await root.requestFullscreen()
 }
 
+window.addEventListener('blur', () => {
+  for (const code of [...heldCodes]) updateKey(code, false)
+})
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !keysOverlayEl.classList.contains('hidden')) {
     e.preventDefault()

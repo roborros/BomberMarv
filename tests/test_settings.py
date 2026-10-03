@@ -1,7 +1,7 @@
 import os
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from helpers import open_board, silence_sounds
 
@@ -217,6 +217,24 @@ class EverySettingTests(unittest.TestCase):
         moved = float(player.pos[0]) - start
         self.assertAlmostEqual(moved, player.speed * 2.0, delta=1.0)
 
+    def test_crushing_wall_hint_lists_two_player_then_unconditional_start(self):
+        game = self._arena()
+        game.game_state = "playing"
+        for count, state in ((2, "playing"), (4, "playing"), (2, "boss_fight")):
+            game.starting_player_count = count
+            game.game_state = state
+            self.assertEqual(game.crushing_wall_start_seconds(), (120, 240))
+        walls = game.to_dict()["crushing_walls"]
+        self.assertEqual((walls["early_s"], walls["late_s"]), (120, 240))
+
+    def test_aftergame_rows_follow_trophy_count(self):
+        from bm_drawing import _players_by_trophies
+        low = type("P", (), {"name": "Low", "trophies": 1})()
+        high = type("P", (), {"name": "High", "trophies": 4})()
+        tied = type("P", (), {"name": "Tied", "trophies": 4})()
+        ordered = _players_by_trophies([low, high, tied])
+        self.assertEqual([player.name for player in ordered], ["High", "Tied", "Low"])
+
     def test_wall_delays_follow_each_mode(self):
         game = self._arena()
         game.starting_player_count = 3
@@ -231,21 +249,19 @@ class EverySettingTests(unittest.TestCase):
 
         game.crushing_walls_active = False
         game.starting_player_count = 2
-        bm_settings.set_value("walls_2p_delay_s", 240)
-        game.current_time = 180_000
+        game.current_time = 120_000
         game.handle_crushing_walls()
         self.assertFalse(game.crushing_walls_active)
-        game.current_time = 240_000
+        game.current_time = 200_000
         game.handle_crushing_walls()
         self.assertTrue(game.crushing_walls_active)
 
         game.crushing_walls_active = False
         game.game_state = "boss_fight"
-        bm_settings.set_value("walls_boss_delay_s", 240)
-        game.current_time = 180_000
+        game.current_time = 120_000
         game.handle_crushing_walls()
         self.assertFalse(game.crushing_walls_active)
-        game.current_time = 240_000
+        game.current_time = 200_000
         game.handle_crushing_walls()
         self.assertTrue(game.crushing_walls_active)
 
@@ -320,7 +336,8 @@ class EverySettingTests(unittest.TestCase):
         game._register_new_explosions([blast])
         self.assertEqual(game.big_explosion_sound_at, [1100])
         game.current_time = 1100
-        with patch("bm_classes.mocny_stral_sound") as sound:
+        sound = MagicMock()
+        with patch("bm_classes.mocny_stral_sounds", [sound]):
             game._play_due_big_explosion_sounds()
         sound.set_volume.assert_called_with(0.4)
         sound.play.assert_called()
@@ -328,3 +345,29 @@ class EverySettingTests(unittest.TestCase):
         self.assertEqual(payload["tiles"], 10)
         self.assertEqual(payload["delay_ms"], 100)
         self.assertEqual(payload["volume"], 0.4)
+
+    def test_loud_hit_does_not_retrigger_for_five_seconds(self):
+        from bm_params import BIG_EXPLOSION_COOLDOWN_MS
+        game = self._arena()
+        game.current_time = 1000
+        game.recent_explosion_events = []
+        game.big_explosion_over_threshold = False
+        game.big_explosion_sound_at = []
+        game.big_explosion_last_trigger_ms = None
+        bm_settings.set_value("big_blast_tiles", 10)
+        bm_settings.set_value("big_blast_delay_ms", 0)
+        blast = Explosion([(i, 0) for i in range(10)], 1000)
+        game._register_new_explosions([blast])
+        self.assertEqual(game.big_explosion_sound_at, [1000])
+        game.current_time = 1000 + BIG_EXPLOSION_COOLDOWN_MS - 1
+        game.recent_explosion_events = []
+        game.big_explosion_over_threshold = False
+        again = Explosion([(i, 2) for i in range(10)], game.current_time)
+        game._register_new_explosions([again])
+        self.assertEqual(game.big_explosion_sound_at, [1000])
+        game.current_time = 1000 + BIG_EXPLOSION_COOLDOWN_MS
+        game.recent_explosion_events = []
+        game.big_explosion_over_threshold = False
+        later = Explosion([(i, 3) for i in range(10)], game.current_time)
+        game._register_new_explosions([later])
+        self.assertEqual(game.big_explosion_sound_at, [1000, game.current_time])

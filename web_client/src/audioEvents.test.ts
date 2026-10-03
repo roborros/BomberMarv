@@ -7,8 +7,13 @@ import {
   explosionEventKey,
   shouldResetBigExplosionTracking,
   uniqueTilesInWindow,
+  BIG_EXPLOSION_COOLDOWN_MS,
   BIG_EXPLOSION_TILE_THRESHOLD,
-  BIG_EXPLOSION_VOLUME
+  BIG_EXPLOSION_VOLUME,
+  bigExplosionReady,
+  bigExplosionSoundIndex,
+  formatCrushingWallStart,
+  formatMatchClock
 } from './audioEvents'
 import { samplePlayer, sampleState } from './testFixtures'
 
@@ -42,7 +47,7 @@ describe('audioEvents', () => {
   })
 
   it('crosses the big-explosion threshold once', () => {
-    expect(BIG_EXPLOSION_TILE_THRESHOLD).toBe(50)
+    expect(BIG_EXPLOSION_TILE_THRESHOLD).toBe(125)
     expect(BIG_EXPLOSION_VOLUME).toBe(1)
     expect(crossedBigExplosionThreshold(false, BIG_EXPLOSION_TILE_THRESHOLD)).toBe(true)
     expect(crossedBigExplosionThreshold(false, BIG_EXPLOSION_TILE_THRESHOLD - 1)).toBe(false)
@@ -66,5 +71,17 @@ describe('audioEvents', () => {
   it('resets tracking in lobby states', () => {
     expect(shouldResetBigExplosionTracking('game_prep')).toBe(true)
     expect(shouldResetBigExplosionTracking('playing')).toBe(false)
+  })
+
+  it('holds the loud hit for five seconds and rolls one of five sounds', () => {
+    expect(BIG_EXPLOSION_COOLDOWN_MS).toBe(5000)
+    expect(bigExplosionReady(null, 1000)).toBe(true)
+    expect(bigExplosionReady(1000, 5999)).toBe(false)
+    expect(bigExplosionReady(1000, 6000)).toBe(true)
+    expect(bigExplosionSoundIndex(0)).toBe(0)
+    expect(bigExplosionSoundIndex(0.99)).toBe(4)
+    expect(formatMatchClock(65000)).toBe('65')
+    expect(formatCrushingWallStart(180, 360)).toBe('(cw start: 180s/360s)')
+    expect(formatCrushingWallStart(180, 360, true)).toBe('')
   })
 })

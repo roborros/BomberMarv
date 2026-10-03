@@ -1,6 +1,7 @@
 import type { GameState, PlayerState, BombState, ExplosionState, PowerUpState } from './types';
 import { computeBoardSignature } from './boardHash';
 import { isPlayerInPlannedBlast, explosionArmPixelLength, explosionArmFactor, explosionDurationMs, paintBlastArm } from './explosionVisual';
+import { formatCrushingWallStart, formatMatchClock } from './audioEvents';
 import { drawLightningExplosion } from './lightning';
 import { buildWinStatRows } from './winStats';
 import { canvasFitBox, computeCanvasBackingStore, visibleViewportSize } from './canvasScale';
@@ -130,6 +131,7 @@ export class Renderer {
         state.bombs.forEach(b => this.drawBomb(b, state.time));
         state.explosions.forEach(e => this.drawExplosion(e, state.time, blastMs));
         state.players.forEach(player => this.drawPlayer(player, state));
+        this.drawMatchTimer(state);
         if (state.state === 'get_ready') {
             this.drawGetReady();
         }
@@ -151,6 +153,37 @@ export class Renderer {
             this.renderSamplesMs = this.renderSamplesMs.slice(-240);
         }
         return this.buildDebugLine(state, metrics, this.getRenderP95Ms());
+    }
+
+    private drawMatchTimer(state: GameState) {
+        if (state.round_start_ms == null) return;
+        if (state.state !== 'playing' && state.state !== 'boss_fight' && state.state !== 'get_ready') return;
+        const label = formatMatchClock(state.time - state.round_start_ms);
+        const hint = formatCrushingWallStart(
+            state.crushing_walls.early_s,
+            state.crushing_walls.late_s,
+            state.crushing_walls.active
+        );
+        const size = Math.max(16, Math.min(28, this.height / 32));
+        this.ctx.save();
+        this.ctx.font = `${size}px sans-serif`;
+        this.ctx.textAlign = 'right';
+        this.ctx.textBaseline = 'bottom';
+        const x = this.width - Math.max(8, this.height / 80);
+        const y = this.height - Math.max(8, this.height / 80);
+        this.ctx.fillStyle = 'rgba(12, 14, 18, 0.85)';
+        this.ctx.fillText(label, x + 1, y + 1);
+        this.ctx.fillStyle = '#f2f4f8';
+        this.ctx.fillText(label, x, y);
+        if (hint) {
+            const gap = Math.max(8, size / 3);
+            const hintX = x - this.ctx.measureText(label).width - gap;
+            this.ctx.fillStyle = 'rgba(12, 14, 18, 0.85)';
+            this.ctx.fillText(hint, hintX + 1, y + 1);
+            this.ctx.fillStyle = '#d2d6de';
+            this.ctx.fillText(hint, hintX, y);
+        }
+        this.ctx.restore();
     }
 
     private applyCanvasBacking() {

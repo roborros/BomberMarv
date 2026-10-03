@@ -63,6 +63,8 @@ export interface PowerUpState {
 export interface CrushingWallsState {
     active: boolean;
     index: number;
+    early_s?: number;
+    late_s?: number;
 }
 
 export interface BossFightWinner {
@@ -74,6 +76,7 @@ export interface BossFightWinner {
 
 export interface GameState {
     time: number;
+    round_start_ms?: number;
     state: string;
     board: number[][];
     players: PlayerState[];

@@ -14,37 +14,40 @@ export function hashInput(keys: InputKeys): string {
   return `${keys.up ? 1 : 0}${keys.down ? 1 : 0}${keys.left ? 1 : 0}${keys.right ? 1 : 0}${keys.bomb ? 1 : 0}`
 }
 
-export function applyKeyCode(keys: InputKeys, code: string, pressed: boolean): { keys: InputKeys; changed: boolean } {
+const MOVE_CODES: Record<string, keyof InputKeys> = {
+  ArrowUp: 'up',
+  KeyW: 'up',
+  ArrowDown: 'down',
+  KeyS: 'down',
+  ArrowLeft: 'left',
+  KeyA: 'left',
+  ArrowRight: 'right',
+  KeyD: 'right',
+  Space: 'bomb',
+  Enter: 'bomb'
+}
+
+export function deriveKeys(heldCodes: Iterable<string>): InputKeys {
+  const keys = emptyKeys()
+  for (const code of heldCodes) {
+    const action = MOVE_CODES[code]
+    if (action) keys[action] = true
+  }
+  return keys
+}
+
+export function applyKeyCode(keys: InputKeys, code: string, pressed: boolean, heldCodes?: Iterable<string>): { keys: InputKeys; changed: boolean } {
+  if (heldCodes) {
+    const next = deriveKeys(heldCodes)
+    const changed = hashInput(next) !== hashInput(keys)
+    return { keys: next, changed }
+  }
   const next: InputKeys = { ...keys }
   let changed = false
-  switch (code) {
-    case 'ArrowUp':
-    case 'KeyW':
-      changed = next.up !== pressed
-      next.up = pressed
-      break
-    case 'ArrowDown':
-    case 'KeyS':
-      changed = next.down !== pressed
-      next.down = pressed
-      break
-    case 'ArrowLeft':
-    case 'KeyA':
-      changed = next.left !== pressed
-      next.left = pressed
-      break
-    case 'ArrowRight':
-    case 'KeyD':
-      changed = next.right !== pressed
-      next.right = pressed
-      break
-    case 'Space':
-    case 'Enter':
-      changed = next.bomb !== pressed
-      next.bomb = pressed
-      break
-    default:
-      break
+  const action = MOVE_CODES[code]
+  if (action) {
+    changed = next[action] !== pressed
+    next[action] = pressed
   }
   return { keys: next, changed }
 }

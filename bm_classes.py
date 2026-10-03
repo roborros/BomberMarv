@@ -112,22 +112,26 @@ class Player:
         else:
             keys = get_pressed_keys()
             # Remap all web_keys using browser_key_to_pygame
-            if web_keys:
-                for k in web_keys:
-                    mapped = browser_key_to_pygame(k)
-                    if mapped:
-                        mapped_web_keys.add(mapped.lower())
+        if web_keys:
+            for k in web_keys:
+                mapped = browser_key_to_pygame(k)
+                if mapped:
+                    mapped_web_keys.add(mapped.lower())
+                for name in (str(k), mapped or ""):
+                    alias = _WEB_MOVE_ALIAS.get(name.lower())
+                    if alias:
+                        mapped_web_keys.add(alias)
         # Use mapped_web_keys as an OR with local keys
         # Handle both local players (with controls) and client players (web_keys only)
         if not is_ai_turn and self.controls is not None:
-            # Local player - use local controls + web keys
-            if is_key_pressed(self.controls['up']) or (mapped_web_keys and 'up' in mapped_web_keys):
+            # Local player - use local controls + web keys. Player 1 also accepts arrows.
+            if self._local_action_down('up', game) or (mapped_web_keys and 'up' in mapped_web_keys):
                 direction[1] -= 1
-            if is_key_pressed(self.controls['down']) or (mapped_web_keys and 'down' in mapped_web_keys):
+            if self._local_action_down('down', game) or (mapped_web_keys and 'down' in mapped_web_keys):
                 direction[1] += 1
-            if is_key_pressed(self.controls['left']) or (mapped_web_keys and 'left' in mapped_web_keys):
+            if self._local_action_down('left', game) or (mapped_web_keys and 'left' in mapped_web_keys):
                 direction[0] -= 1
-            if is_key_pressed(self.controls['right']) or (mapped_web_keys and 'right' in mapped_web_keys):
+            if self._local_action_down('right', game) or (mapped_web_keys and 'right' in mapped_web_keys):
                 direction[0] += 1
         elif not is_ai_turn:
             # Client player - use web keys only
@@ -332,9 +336,20 @@ class Player:
         return False
     
 
+    def _local_action_down(self, action, game):
+        """Primary keys, plus Player 1's arrow keys unless a prompt is using them."""
+        if self.controls is None:
+            return False
+        if is_key_pressed(self.controls[action]):
+            return True
+        if getattr(game, "leave_prompt_open", False) or getattr(game, "quit_prompt_open", False):
+            return False
+        alt = (self.controls.get("also") or {}).get(action)
+        return alt is not None and is_key_pressed(alt)
+
     def _bomb_button_down(self, mapped_web_keys):
-        if self.controls is not None:
-            return is_key_pressed(self.controls['bomb']) or (mapped_web_keys and 'space' in mapped_web_keys)
+        if self.controls is not None and is_key_pressed(self.controls['bomb']):
+            return True
         return bool(mapped_web_keys and 'space' in mapped_web_keys)
 
     def drop_bomb(self, bombs, current_time, game=None):
@@ -502,12 +517,15 @@ class Game:
         self.recent_explosion_events = []
         self.big_explosion_over_threshold = False
         self.big_explosion_sound_at = []
+        self.big_explosion_last_trigger_ms = None
         self.powerups = []
         self.game_start_time = get_ticks()
         self.players = []
-        self.game_state = "game_prep"
+        self.game_state = "startup"
         self.startup_start_time = get_ticks()
         self.current_time = self.startup_start_time
+        from startup_load import build_startup_load_jumps
+        self.startup_jumps = build_startup_load_jumps()
         self.clock = Clock()
         self.dt = 0
         
@@ -902,6 +920,7 @@ class Game:
         self.recent_explosion_events = []
         self.big_explosion_over_threshold = False
         self.big_explosion_sound_at = []
+        self.big_explosion_last_trigger_ms = None
         self.powerups = []
         self.endgame_hold_until = None
         self.death_events = []
@@ -1044,6 +1063,7 @@ class Game:
         self.recent_explosion_events = []
         self.big_explosion_over_threshold = False
         self.big_explosion_sound_at = []
+        self.big_explosion_last_trigger_ms = None
         self.powerups = []
         self.endgame_hold_until = None
         self.death_events = []
@@ -1369,6 +1389,7 @@ class Game:
             "replay_loop_anchor_time",
             "endgame_hold_until",
             "post_win_transition_time",
+            "big_explosion_last_trigger_ms",
         ):
             value = getattr(self, attr, None)
             if isinstance(value, (int, float)):
@@ -1477,24 +1498,27 @@ class Game:
         # Move the player to the safe position
         player.pos = safe_pos
 
+    def crushing_wall_delay_s(self):
+        """Seconds before walls may start. Same for every player count and the boss fight."""
+        return max(int(bm_settings.get("walls_delay_s")), int(CRUSHING_WALLS_MIN_START_S))
+
+    def crushing_wall_start_seconds(self):
+        """(few players and few walls left, start with no other condition). Both use the shared delay."""
+        early = self.crushing_wall_delay_s()
+        return early, early * int(CRUSHING_WALLS_STALE_TIME_MULTIPLIER)
+
     def handle_crushing_walls(self):
         """Handle the crushing walls feature"""
         alive_players = [p for p in self.players if p.alive]
-        
+
         # Boss fight waits longer than a crowded round and grows more slowly.
         if self.game_state == "boss_fight":
-            crushing_delay = bm_settings.get("walls_boss_delay_s")
-            crushing_min_destroyable = CRUSHING_WALLS_MIN_DESTROYABLE
-            crushing_max_alive = CRUSHING_WALLS_MAX_ALIVE
             growth_interval_ms = int(bm_settings.get("walls_boss_growth_ms"))
         else:
-            crushing_delay = bm_settings.get("walls_delay_s")
-            if int(getattr(self, "starting_player_count", 0) or 0) == 2:
-                crushing_delay = bm_settings.get("walls_2p_delay_s")
-            crushing_min_destroyable = CRUSHING_WALLS_MIN_DESTROYABLE
-            crushing_max_alive = CRUSHING_WALLS_MAX_ALIVE
             growth_interval_ms = int(bm_settings.get("walls_growth_ms"))
-        crushing_delay = max(int(crushing_delay), int(CRUSHING_WALLS_MIN_START_S))
+        crushing_delay = self.crushing_wall_delay_s()
+        crushing_min_destroyable = CRUSHING_WALLS_MIN_DESTROYABLE
+        crushing_max_alive = CRUSHING_WALLS_MAX_ALIVE
         elapsed_ms = self.current_time - self.game_start_time
         remaining = self.count_destroyable_cells()
         few_alive = (
@@ -1692,9 +1716,12 @@ class Game:
         tile_count = count_unique_explosion_tiles(
             self.recent_explosion_events, self.current_time, window_ms
         )
-        if crossed_big_explosion_threshold(
+        last_hit = getattr(self, "big_explosion_last_trigger_ms", None)
+        cooled = last_hit is None or self.current_time - int(last_hit) >= BIG_EXPLOSION_COOLDOWN_MS
+        if cooled and crossed_big_explosion_threshold(
             self.big_explosion_over_threshold, tile_count, threshold
         ):
+            self.big_explosion_last_trigger_ms = self.current_time
             self.big_explosion_sound_at.append(self.current_time + int(bm_settings.get("big_blast_delay_ms")))
         self.big_explosion_over_threshold = tile_count >= threshold
 
@@ -1704,9 +1731,11 @@ class Game:
         due, pending = [], []
         for play_at in self.big_explosion_sound_at:
             (due if play_at <= self.current_time else pending).append(play_at)
+        volume = float(bm_settings.get("big_blast_volume"))
         for _ in due:
-            mocny_stral_sound.set_volume(float(bm_settings.get("big_blast_volume")))
-            mocny_stral_sound.play()
+            sound = random.choice(mocny_stral_sounds)
+            sound.set_volume(volume)
+            sound.play()
         self.big_explosion_sound_at = pending
     
     def handle_explosions(self):
@@ -1886,6 +1915,13 @@ class Game:
         self.dt = int(dt_ms)
         self.current_time = int(now_ms) if now_ms is not None else get_ticks()
         countdown_second = None
+        if self.game_state == "startup":
+            from startup_load import STARTUP_TOTAL_MS
+            elapsed = self.current_time - int(getattr(self, "startup_start_time", self.current_time))
+            if elapsed >= STARTUP_TOTAL_MS:
+                self.game_state = "game_prep"
+            self.log_replay_if_due()
+            return None
         if self.game_state == "get_ready":
             remaining_ms = max(0, int(self.game_start_time - self.current_time))
             countdown_second = (remaining_ms + 999) // 1000
@@ -2267,6 +2303,8 @@ class Game:
                         self.start_match_from_lobby()
                     elif self.game_state in ("win", "champion", "boss_result"):
                         self.continue_from_intermission()
+                elif keyname in ('escape', 'esc') and self.game_state == "startup":
+                    self.game_state = "game_prep"
                 elif keyname == 'r' and self.game_state in ("champion", "boss_result"):
                     self.reset_series_and_start()
             elif event['type'] == 'keyup':
@@ -2323,13 +2361,10 @@ class Game:
     def update(self):
         self._poll_kill_cheat()
         # update players
-        for idx, player in enumerate(self.players):
+        for player in self.players:
             web_keys = set()
             if hasattr(self, 'web_keys_by_player') and player in self.web_keys_by_player:
                 web_keys = self.web_keys_by_player[player]
-                if idx in (0, 1):
-                    allowed = {'arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' ', 'space'}
-                    web_keys = set(k for k in web_keys if k.lower() in allowed)
             player.update(self.dt, self.board, self.bombs, self.current_time, web_keys, game=self)
         
         # update bombs & check for explosions
@@ -2467,9 +2502,11 @@ class Game:
     def to_dict(self):
         # Ensure board is serializable (convert from numpy array if needed)
         board_data = self.board.tolist() if hasattr(self.board, 'tolist') else self.board
+        early_s, late_s = self.crushing_wall_start_seconds()
         
         return {
             'time': self.current_time,
+            'round_start_ms': int(getattr(self, "round_start_time", 0) or 0),
             'state': self.game_state,
             'board': board_data,
             'grid_width': self.grid_width,
@@ -2480,7 +2517,9 @@ class Game:
             'powerups': [p.to_dict() for p in self.powerups],
             'crushing_walls': {
                 'active': self.crushing_walls_active,
-                'index': self.crushing_walls_index
+                'index': self.crushing_walls_index,
+                'early_s': early_s,
+                'late_s': late_s,
             },
             'local_player_count': int(self.prep_num_players if self.game_state in ["startup", "game_prep"] else sum(1 for p in self.players if getattr(p, 'is_local', False))),
             'ai_count': int(getattr(self, "prep_ai_count", 0) if self.game_state in ["startup", "game_prep"] else sum(1 for p in self.players if getattr(p, "is_ai", False))),
@@ -2502,6 +2541,24 @@ class Game:
         }
             
 # Screen class and methods moved to frontend.py
+
+_WEB_MOVE_ALIAS = {
+    "w": "up",
+    "keyw": "up",
+    "arrowup": "up",
+    "s": "down",
+    "keys": "down",
+    "arrowdown": "down",
+    "a": "left",
+    "keya": "left",
+    "arrowleft": "left",
+    "d": "right",
+    "keyd": "right",
+    "arrowright": "right",
+    " ": "space",
+    "space": "space",
+}
+
 
 def browser_key_to_pygame(key):
     """

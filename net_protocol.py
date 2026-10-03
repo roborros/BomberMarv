@@ -38,6 +38,7 @@ GAMEPLAY_UPLINK_TYPES = frozenset({MSG_GAME_INPUT})
 
 GAMEPLAY_DELTA_KEYS = (
     "time",
+    "round_start_ms",
     "state",
     "bombs",
     "explosions",

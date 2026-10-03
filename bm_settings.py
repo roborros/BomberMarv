@@ -6,9 +6,7 @@ import os
 import sys
 
 from bm_params import (
-    BOSS_CRUSHING_WALLS_DELAY,
     BOSS_CRUSHING_WALLS_GROWTH_INTERVAL_MS,
-    CRUSHING_WALLS_2P_DELAY,
     CRUSHING_WALLS_DELAY,
     CRUSHING_WALLS_GROWTH_INTERVAL_MS,
     EXPLOSION_DURATION,
@@ -41,9 +39,7 @@ RULES = (
     ("quad_time_s", "Quad Damage time (s)", "int", QUAD_DAMAGE_TIME, 5, 60, 5),
     ("quad_power", "Quad Damage strength", "int", QUAD_DAMAGE_POWER, 2, 15, 1),
     ("quad_speed", "Quad Damage speed", "float", QUAD_DAMAGE_SPEEDUP, 1.0, 2.5, 0.1),
-    ("walls_delay_s", "Crushing walls, 3+ players (s)", "int", CRUSHING_WALLS_DELAY, 60, 360, 10),
-    ("walls_2p_delay_s", "Crushing walls, 2 players (s)", "int", CRUSHING_WALLS_2P_DELAY, 60, 360, 10),
-    ("walls_boss_delay_s", "Crushing walls, boss (s)", "int", BOSS_CRUSHING_WALLS_DELAY, 60, 360, 10),
+    ("walls_delay_s", "Crushing walls start (s)", "int", CRUSHING_WALLS_DELAY, 60, 360, 10),
     ("walls_growth_ms", "Walls close every (ms)", "int", CRUSHING_WALLS_GROWTH_INTERVAL_MS, 400, 3000, 200),
     ("walls_boss_growth_ms", "Boss walls close every (ms)", "int", BOSS_CRUSHING_WALLS_GROWTH_INTERVAL_MS, 400, 4000, 200),
     ("big_blast_tiles", "Loud hit size (tiles)", "int", BIG_EXPLOSION_TILE_THRESHOLD, 10, 200, 5),

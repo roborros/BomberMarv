@@ -42,6 +42,10 @@ def silence_sounds() -> None:
             setattr(bm_sounds, name, silent)
         if hasattr(bm_classes, name):
             setattr(bm_classes, name, silent)
+    if hasattr(bm_sounds, "mocny_stral_sounds"):
+        bm_sounds.mocny_stral_sounds = [silent] * len(bm_sounds.mocny_stral_sounds)
+    if hasattr(bm_classes, "mocny_stral_sounds"):
+        bm_classes.mocny_stral_sounds = [silent] * len(getattr(bm_classes, "mocny_stral_sounds") or [None] * 5)
 
 
 def open_board(width=9, height=9):

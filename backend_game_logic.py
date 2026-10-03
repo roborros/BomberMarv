@@ -122,6 +122,8 @@ class BackendGameLogic:
         """Transition from prep screen back to startup"""
         self.game.game_state = "startup"
         self.game.startup_start_time = self.game.get_ticks()
+        from startup_load import build_startup_load_jumps
+        self.game.startup_jumps = build_startup_load_jumps()
         return True
     
     def _transition_ready_to_playing(self, data: Dict[str, Any]) -> bool:

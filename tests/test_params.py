@@ -85,22 +85,22 @@ class GridSizeTests(unittest.TestCase):
         self.assertEqual(bm_constants.get_grid_size(2), GRID_SIZE_2_PLAYERS)
 
     def test_crushing_walls_timing(self):
-        self.assertEqual(CRUSHING_WALLS_GROWTH_INTERVAL_MS, 1200)
-        self.assertEqual(CRUSHING_WALLS_2P_DELAY, 180)
+        self.assertEqual(CRUSHING_WALLS_GROWTH_INTERVAL_MS, 800)
+        self.assertEqual(CRUSHING_WALLS_2P_DELAY, 120)
         self.assertEqual(CRUSHING_WALLS_DELAY, 120)
         self.assertEqual(CRUSHING_WALLS_MIN_START_S, 120)
         self.assertGreaterEqual(CRUSHING_WALLS_DELAY, CRUSHING_WALLS_MIN_START_S)
         self.assertGreaterEqual(CRUSHING_WALLS_2P_DELAY, CRUSHING_WALLS_MIN_START_S)
-        self.assertEqual(BOSS_CRUSHING_WALLS_DELAY, 180)
+        self.assertEqual(BOSS_CRUSHING_WALLS_DELAY, 120)
         self.assertGreaterEqual(BOSS_CRUSHING_WALLS_DELAY, CRUSHING_WALLS_MIN_START_S)
-        self.assertEqual(BOSS_CRUSHING_WALLS_GROWTH_INTERVAL_MS, 1800)
+        self.assertEqual(BOSS_CRUSHING_WALLS_GROWTH_INTERVAL_MS, 1200)
         self.assertEqual(CRUSHING_WALLS_STALE_WALL_FRACTION, 0.15)
         self.assertEqual(CRUSHING_WALLS_CROWDED_TIME_MULTIPLIER, 1.5)
         self.assertEqual(CRUSHING_WALLS_STALE_TIME_MULTIPLIER, 2)
 
     def test_quad_damage_delay_is_sixty_seconds(self):
         self.assertEqual(QUAD_DAMAGE_DELAY, 60)
-        self.assertEqual(QUAD_DAMAGE_PROBABILITY, 0.0005)
+        self.assertEqual(QUAD_DAMAGE_PROBABILITY, 0.000675)
 
     def test_explosion_hitbox_and_scared_range(self):
         from bm_params import (
@@ -111,6 +111,13 @@ class GridSizeTests(unittest.TestCase):
         self.assertEqual(EXPLOSION_COLLISION_SCALE, 0.7)
         self.assertEqual(EXPLOSION_PLAYER_HIT_SCALE, 0.30)
         self.assertEqual(SCARED_BLAST_MAX_CELLS, 5)
+
+    def test_match_clock_counts_whole_seconds(self):
+        from bm_params import format_crushing_wall_start, format_match_clock
+        self.assertEqual(format_match_clock(0), "0")
+        self.assertEqual(format_match_clock(65000), "65")
+        self.assertEqual(format_match_clock(-500), "0")
+        self.assertEqual(format_crushing_wall_start(180, 360), "(cw start: 180s/360s)")
 
 
 if __name__ == "__main__":

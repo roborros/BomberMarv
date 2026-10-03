@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   applyKeyCode,
   buildGameInputPayload,
+  deriveKeys,
   emptyKeys,
   hashInput,
   inputDirection,
@@ -24,6 +25,18 @@ describe('input', () => {
     const released = applyKeyCode(keys, 'ArrowUp', false)
     expect(released.changed).toBe(true)
     expect(released.keys.up).toBe(false)
+  })
+
+  it('keeps moving when one of two keys for the same direction is released', () => {
+    const held = new Set(['ArrowUp', 'KeyW', 'KeyD'])
+    expect(deriveKeys(held).up).toBe(true)
+    expect(deriveKeys(held).right).toBe(true)
+    held.delete('KeyW')
+    expect(deriveKeys(held).up).toBe(true)
+    held.delete('ArrowUp')
+    expect(deriveKeys(held).up).toBe(false)
+    expect(deriveKeys(held).right).toBe(true)
+    expect(deriveKeys(['Space']).bomb).toBe(true)
   })
 
   it('treats Space and Enter as bomb', () => {
