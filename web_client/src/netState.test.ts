@@ -10,6 +10,7 @@ import {
   localPredictionTargetMagnitude,
   mergeDelta,
   applyKeepalive,
+  inputOnlyState,
   applyBoardPatches,
   applyPlayerDelta,
   TELEPORT_SNAP_PX,
@@ -86,13 +87,17 @@ describe('netState', () => {
     expect(dropped.players.map((p) => p.id)).toEqual([2])
   })
 
-  it('applies keepalive clock fields without replacing the board', () => {
+  it('applies keepalive clock and game state fields without replacing the board', () => {
     const next = applyKeepalive(sampleState({ time: 100, _sim_tick: 4 }), {
       time: 140,
+      state: 'win',
+      result_prompt: 'Press Enter for next round',
       _sim_tick: 6,
       _host_published_at_ms: 9
     })
     expect(next.time).toBe(140)
+    expect(next.state).toBe('win')
+    expect(next.result_prompt).toBe('Press Enter for next round')
     expect(next._sim_tick).toBe(6)
     expect(next._host_published_at_ms).toBe(9)
     expect(next.board).toEqual(sampleState().board)
@@ -205,6 +210,25 @@ describe('netState', () => {
     })
     expect(pos.x).toBe(200)
     expect(pos.y).toBe(0)
+  })
+
+  it('drops the board and explosions when the page is input-only', () => {
+    const full = sampleState({
+      time: 4,
+      state: 'playing',
+      _sim_tick: 12,
+      board: [[1, 2], [0, 1]],
+      explosions: [{ cells: [[0, 0], [1, 0]], start_time: 1, quad_damage: false }],
+      players: [samplePlayer({ x: 40 })]
+    })
+    const slim = inputOnlyState(full, { _sim_tick: 13, time: 5 })
+    expect(slim._sim_tick).toBe(13)
+    expect(slim.time).toBe(5)
+    expect(slim.state).toBe('playing')
+    expect(slim.board).toEqual([])
+    expect(slim.players).toEqual([])
+    expect(slim.explosions).toEqual([])
+    expect(full.board).toEqual([[1, 2], [0, 1]])
   })
 
   it('maps lobby labels and human-readable states', () => {

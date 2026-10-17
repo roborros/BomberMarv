@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-1.2.9-orange">
+  <img alt="version" src="https://img.shields.io/badge/version-1.3.0-orange">
   <img alt="python" src="https://img.shields.io/badge/python-3.11-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
 </p>
@@ -51,7 +51,7 @@ For the Windows exe you only need the unzipped folder on the host.
    python -m pip install -r requirements.txt
    ```
 
-2. Install [Bun](https://bun.sh/) (or Node/npm) for the web client.
+2. Install [Bun](https://bun.sh/) (or Node/npm) when you change the browser page. Rebuild it from `web_client` with `bun run build`. The host serves that build.
 
 3. From the repo root:
 
@@ -59,23 +59,19 @@ For the Windows exe you only need the unzipped folder on the host.
    python run_all.py
    ```
 
-   That starts the pygame host and the Vite dev server. The console prints join URLs, for example:
+   That starts the pygame host. Browsers use one port for the page and the game connection. The console prints join URLs, for example:
 
    ```
-   Client URL (this PC): http://127.0.0.1:5173
-   Client URL (LAN):     http://192.168.1.20:5173
+   Client URL (this PC): http://127.0.0.1:8080
+   Client URL (LAN):     http://192.168.1.20:8080
    ```
 
 4. On the host, use the pygame window (lobby → Start Game).
 5. On phones/laptops, open the LAN URL, type a name, press Log in, then wait for the host to start.
 
-To run the host without Vite (pygame only):
+`python pyBomberMarv.py` starts the same host on port 8080.
 
-```bash
-python pyBomberMarv.py
-```
-
-Packaged Windows builds serve the web client from port **8080** instead of 5173. Same idea: open the URL printed in the console.
+Packaged Windows builds use the same address: open the URL printed in the console, port **8080**.
 
 ### Build the Windows folder
 
@@ -95,9 +91,9 @@ Python and Bun stay required only on the machine that *builds*. Players of the z
 ### LAN party checklist
 
 - Host on Ethernet when you can; clients on 5 GHz / 6 GHz Wi-Fi.
-- Allow Python / `BomberMarv.exe` through the host firewall for ports **8080** (HTTP) and **8765** (WebSocket).
+- Allow Python / `BomberMarv.exe` through the host firewall for port **8080**.
 - Everyone must be on the same subnet (guest Wi-Fi isolation will block joins).
-- Test one browser client on the host (`http://127.0.0.1:5173` or `:8080`) before people sit down.
+- Test one browser client on the host (`http://127.0.0.1:8080`) before people sit down.
 
 ## Features
 
@@ -268,7 +264,7 @@ Defaults follow the roster. The host lobby can shift that default by ±2 / ±4 /
 ### Network (players)
 
 - Host pygame window is always in the match.
-- Browsers talk to the host over WebSocket (`8765`). Control messages stay JSON; gameplay can use MessagePack.
+- Browsers talk to the host over WebSocket on the same port as the page (`8080/ws`). Control messages stay JSON; gameplay can use MessagePack.
 - If WebRTC is available, input/state can move to a data channel automatically, with WebSocket fallback.
 - Internet play, NAT traversal, and dedicated servers are out of scope.
 

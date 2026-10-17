@@ -2307,7 +2307,12 @@ def draw_game_prep(surface, Game):
                 line1 += f"  ·  {display_name}"
             raw_players = info.get('players') or []
             player_count = len(raw_players) if isinstance(raw_players, (list, tuple)) else 0
-            line2 = f"{player_count} player(s)  ·  {latency} ms ({samples})"
+            ip = str(info.get("ip") or "").strip()
+            version = str(info.get("client_version") or "").strip()
+            detail = "  ·  ".join(
+                part for part in (ip, version, f"{player_count} player(s)", f"{latency} ms ({samples})") if part
+            )
+            line2 = detail or f"{player_count} player(s)  ·  {latency} ms ({samples})"
             text_x = card.x + 40
             text_w = card.width - 52
             _blit_label(surface, card_font, line1, online_col, text_x, card.y + 8, text_w, card_font.get_height() + 2, vcenter=False)

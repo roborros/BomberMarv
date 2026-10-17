@@ -315,7 +315,7 @@ class LanWanGameplayTests(unittest.TestCase):
         self.addCleanup(host.stop.set)
 
         async def scenario():
-            uri = f"ws://127.0.0.1:{self.ws_port}"
+            uri = f"ws://127.0.0.1:{self.http_port}/ws"
             stop = threading.Event()
             lan_view = ClientView()
             wan_view = ClientView()

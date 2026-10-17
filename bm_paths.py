@@ -182,6 +182,8 @@ def cached_lan_join_label(http_port: int | None = None) -> str:
 
 
 def print_join_urls(http_port: int = 8080, ws_port: int = 8765) -> None:
+    """Print the one browser address. The game connection uses that same port."""
+    _ = ws_port
     lan_ips = list_lan_ips()
     print("", flush=True)
     print("BomberMarv join links", flush=True)
@@ -190,7 +192,6 @@ def print_join_urls(http_port: int = 8080, ws_port: int = 8765) -> None:
         for index, ip in enumerate(lan_ips):
             label = "LAN:     " if index == 0 else "         "
             print(f"  {label} http://{ip}:{http_port}", flush=True)
-        print(f"  WS LAN:   ws://{lan_ips[0]}:{ws_port}", flush=True)
     else:
         print("  LAN:      not detected — other PCs cannot join until this machine has a LAN address", flush=True)
     print("", flush=True)

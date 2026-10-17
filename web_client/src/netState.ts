@@ -80,13 +80,66 @@ export function applyBoardPatches(board: number[][], patches: BoardPatch[]): num
   return next
 }
 
+export function inputOnlyState(
+  previous: GameState | null,
+  patch: {
+    time?: number
+    _sim_tick?: number
+    _host_published_at_ms?: number
+    state?: string
+    result_prompt?: string
+    leave_prompt?: GameState['leave_prompt']
+    boss_fight_winner?: GameState['boss_fight_winner']
+    trophy_win_threshold?: number
+    players_summary?: GameState['players_summary']
+    sound_events?: GameState['sound_events']
+  }
+): GameState {
+  return {
+    time: patch.time ?? previous?.time ?? 0,
+    state: patch.state ?? previous?.state ?? 'playing',
+    result_prompt: patch.result_prompt !== undefined ? patch.result_prompt : previous?.result_prompt,
+    leave_prompt: patch.leave_prompt !== undefined ? patch.leave_prompt : previous?.leave_prompt,
+    boss_fight_winner: patch.boss_fight_winner !== undefined ? patch.boss_fight_winner : previous?.boss_fight_winner,
+    trophy_win_threshold: patch.trophy_win_threshold ?? previous?.trophy_win_threshold,
+    players_summary: patch.players_summary ?? previous?.players_summary,
+    sound_events: patch.sound_events,
+    _sim_tick: patch._sim_tick ?? previous?._sim_tick,
+    _host_published_at_ms: patch._host_published_at_ms ?? previous?._host_published_at_ms,
+    board: [],
+    players: [],
+    bombs: [],
+    explosions: [],
+    powerups: [],
+    crushing_walls: { active: false, index: 0 },
+  }
+}
+
 export function applyKeepalive(
   state: GameState,
-  patch: { time?: number; _sim_tick?: number; _host_published_at_ms?: number }
+  patch: {
+    time?: number
+    state?: string
+    result_prompt?: string
+    leave_prompt?: GameState['leave_prompt']
+    boss_fight_winner?: GameState['boss_fight_winner']
+    trophy_win_threshold?: number
+    players_summary?: GameState['players_summary']
+    sound_events?: GameState['sound_events']
+    _sim_tick?: number
+    _host_published_at_ms?: number
+  }
 ): GameState {
   return {
     ...state,
     ...(patch.time !== undefined ? { time: patch.time } : {}),
+    ...(patch.state !== undefined ? { state: patch.state } : {}),
+    ...(patch.result_prompt !== undefined ? { result_prompt: patch.result_prompt } : {}),
+    ...(patch.leave_prompt !== undefined ? { leave_prompt: patch.leave_prompt } : {}),
+    ...(patch.boss_fight_winner !== undefined ? { boss_fight_winner: patch.boss_fight_winner } : {}),
+    ...(patch.trophy_win_threshold !== undefined ? { trophy_win_threshold: patch.trophy_win_threshold } : {}),
+    ...(patch.players_summary !== undefined ? { players_summary: patch.players_summary } : {}),
+    ...(patch.sound_events !== undefined ? { sound_events: patch.sound_events } : {}),
     ...(patch._sim_tick !== undefined ? { _sim_tick: patch._sim_tick } : {}),
     ...(patch._host_published_at_ms !== undefined ? { _host_published_at_ms: patch._host_published_at_ms } : {})
   }

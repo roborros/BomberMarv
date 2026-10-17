@@ -20,6 +20,8 @@ from ws_stream_server import (
     WS_SERVER_VERSION,
     _percentile,
     build_state_delta,
+    OutboundCongested,
+    await_send_budget,
     classify_broadcast_for_client,
     decode_client_payload,
     decode_server_payload,
@@ -157,6 +159,52 @@ class WsHelperTests(unittest.TestCase):
         self.assertEqual(kind, "keyframe")
         self.assertNotIn("_net_metrics", payload["data"])
 
+    def test_classify_broadcast_input_only_is_a_tick(self):
+        moved = {"time": 3, "state": "playing", "players": [{"x": 9}], "_sim_tick": 8, "board": [[1, 2]]}
+        payload, kind = classify_broadcast_for_client(
+            current_state=moved,
+            last_full_state=None,
+            current_seq=4,
+            last_broadcast_seq=3,
+            client_last_seq=-1,
+            delta_chain_count=0,
+            max_delta_chain=8,
+            force_keyframe_global=True,
+            force_keyframe_client=True,
+            keyframe_interval_seq=10,
+            server_timestamp=1,
+            render_enabled=False,
+        )
+        self.assertEqual(kind, "keepalive")
+        self.assertEqual(payload["type"], "state_keepalive")
+        self.assertEqual(payload["_sim_tick"], 8)
+        self.assertNotIn("board", payload)
+        self.assertNotIn("data", payload)
+
+    def test_send_budget_skips_a_slow_socket_without_waiting(self):
+        import asyncio
+
+        async def scenario():
+            async def slow():
+                await asyncio.sleep(1.0)
+                return "slow"
+
+            async def fast():
+                return "fast"
+
+            started = time.perf_counter()
+            results = await asyncio.gather(
+                await_send_budget(slow(), 0.02),
+                await_send_budget(fast(), 0.02),
+                return_exceptions=True,
+            )
+            return results, time.perf_counter() - started
+
+        results, elapsed = asyncio.run(scenario())
+        self.assertLess(elapsed, 0.25)
+        self.assertIsInstance(results[0], OutboundCongested)
+        self.assertEqual(results[1], "fast")
+
     def test_classify_broadcast_entity_grain_player_and_board_patches(self):
         base = {
             "time": 1,
@@ -267,7 +315,7 @@ class WsServerIntegrationTests(unittest.TestCase):
         import websockets
 
         async def scenario():
-            uri = f"ws://127.0.0.1:{self.ws_port}"
+            uri = f"ws://127.0.0.1:{self.http_port}/ws"
             async with websockets.connect(uri) as ws:
                 first = json.loads(await asyncio.wait_for(ws.recv(), 3))
                 self.assertEqual(first["type"], "client_id")
@@ -382,7 +430,7 @@ class WsServerIntegrationTests(unittest.TestCase):
         import websockets
 
         async def scenario():
-            uri = f"ws://127.0.0.1:{self.ws_port}"
+            uri = f"ws://127.0.0.1:{self.http_port}/ws"
             async with websockets.connect(uri) as first, websockets.connect(uri) as second:
                 await asyncio.wait_for(first.recv(), 3)
                 await asyncio.wait_for(second.recv(), 3)
@@ -405,7 +453,7 @@ class WsServerIntegrationTests(unittest.TestCase):
         import websockets
 
         async def scenario():
-            uri = f"ws://127.0.0.1:{self.ws_port}"
+            uri = f"ws://127.0.0.1:{self.http_port}/ws"
             async with websockets.connect(uri) as guest:
                 await asyncio.wait_for(guest.recv(), 3)
                 await guest.send(json.dumps({"type": "hello", "protocol": PROTOCOL_VERSION}))
@@ -453,6 +501,44 @@ class WsServerIntegrationTests(unittest.TestCase):
                 self.assertEqual(len(assigned), len(set(assigned)))
                 self.assertGreaterEqual(len(assigned), 1)
                 self.assertTrue(all(1 <= seat <= 8 for seat in assigned))
+
+        asyncio.run(scenario())
+
+    def test_input_only_client_gets_ticks_until_the_screen_is_on(self):
+        import asyncio
+        import websockets
+
+        async def scenario():
+            uri = f"ws://127.0.0.1:{self.http_port}/ws"
+            async with websockets.connect(uri) as ws:
+                await asyncio.wait_for(ws.recv(), 3)
+                await ws.send(
+                    json.dumps(
+                        {
+                            "type": "hello",
+                            "protocol": PROTOCOL_VERSION,
+                            "render": False,
+                            "client_version": "v1.3.0",
+                        }
+                    )
+                )
+                hello = json.loads(await asyncio.wait_for(ws.recv(), 3))
+                while hello["type"] != "hello_ack":
+                    hello = json.loads(await asyncio.wait_for(ws.recv(), 3))
+                await ws.send(json.dumps({"type": "login", "protocol": PROTOCOL_VERSION, "name": "Headless"}))
+                confirmed = json.loads(await asyncio.wait_for(ws.recv(), 3))
+                while confirmed["type"] != "registration_confirmed":
+                    confirmed = json.loads(await asyncio.wait_for(ws.recv(), 3))
+                self.state_q.put(self._playing_state(_sim_tick=40, time=4))
+                tick = await self._recv_type(ws, {"state_keepalive"})
+                self.assertEqual(tick["_sim_tick"], 40)
+                self.assertNotIn("board", tick)
+                await ws.send(json.dumps({"type": "set_render", "protocol": PROTOCOL_VERSION, "enabled": True}))
+                await asyncio.sleep(0.05)
+                self.state_q.put(self._playing_state(_sim_tick=41, time=5))
+                frame = await self._recv_type(ws, {"gamestate"})
+                self.assertEqual(frame["data"]["_sim_tick"], 41)
+                self.assertIn("board", frame["data"])
 
         asyncio.run(scenario())
 
@@ -505,7 +591,7 @@ class WsServerIntegrationTests(unittest.TestCase):
         import websockets
 
         async def scenario():
-            uri = f"ws://127.0.0.1:{self.ws_port}"
+            uri = f"ws://127.0.0.1:{self.http_port}/ws"
             async with websockets.connect(uri) as ws:
                 await self._register(ws, 2, "Keep")
                 first = self._playing_state(_net_metrics={"host_fps_5s": 60, "sim_tick": 9})
@@ -562,7 +648,7 @@ class WsServerIntegrationTests(unittest.TestCase):
             self.skipTest("msgpack is not installed")
 
         async def scenario():
-            uri = f"ws://127.0.0.1:{self.ws_port}"
+            uri = f"ws://127.0.0.1:{self.http_port}/ws"
             async with websockets.connect(uri) as ws:
                 first = decode_server_payload(await asyncio.wait_for(ws.recv(), 3))
                 client_id = first["client_id"]
@@ -634,7 +720,7 @@ class WsServerIntegrationTests(unittest.TestCase):
         import websockets
 
         async def scenario():
-            uri = f"ws://127.0.0.1:{self.ws_port}"
+            uri = f"ws://127.0.0.1:{self.http_port}/ws"
             async with websockets.connect(uri) as ws:
                 await asyncio.wait_for(ws.recv(), 3)
                 await ws.send(b"\xff\xfe\x00\x01not-a-frame")

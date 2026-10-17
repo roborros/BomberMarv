@@ -8,7 +8,7 @@
 ## How to run benchmark
 
 - Start the stack as usual.
-- Open web client with `?bench=1`, for example `http://127.0.0.1:5173/?bench=1`.
+- Open web client with `?bench=1`, for example `http://127.0.0.1:8080/?bench=1`.
 - Results are printed in browser console via `console.table`.
 
 Benchmark implementation:

@@ -36,6 +36,7 @@ import {
   interpolateState,
   mergeDelta,
   applyKeepalive,
+  inputOnlyState,
   resolveLocalPredictionTargetIndex as findLocalPredictionIndex,
   shouldDropSnapshot,
   SNAPSHOT_BUFFER_LIMIT,
@@ -43,6 +44,7 @@ import {
   updateServerClockOffset
 } from './netState'
 import { buildWsUrl } from './wsUrl'
+import { CLIENT_VERSION } from './version'
 import { decodeIncomingWsData, encodeWsFrame, preferredWsCodec, type WsCodec } from './wireCodec'
 import { samplePresentAgeMs, sampleRttMs } from './latency'
 import {
@@ -61,7 +63,8 @@ import {
 import { CONTROLS_HINT, KEY_GUIDE_ROWS, keyGuideAction } from './keysGuide'
 
 const PROTOCOL_VERSION = 2
-const INPUT_HEARTBEAT_MS = 120
+const INPUT_HEARTBEAT_MS = 250
+const INPUT_HELD_HEARTBEAT_MS = 80
 const MAX_SEND_FPS = 60
 const MAX_RENDER_FPS = 60
 const PING_INTERVAL_MS = 10000
@@ -246,7 +249,43 @@ let lastRenderDrawTs = 0
 let localInputTick = 0
 
 function getWsUrl(): string {
-  return buildWsUrl(window.location.hostname)
+  const port = Number(window.location.port || '8080')
+  return buildWsUrl(window.location.hostname, port)
+}
+
+function helloMessage() {
+  return {
+    type: 'hello',
+    protocol: PROTOCOL_VERSION,
+    ts: Date.now(),
+    webrtc_supported: RTC_ENABLED && !!window.RTCPeerConnection,
+    rtc_codec: RTC_CODEC,
+    encoding: WS_CODEC_PREF,
+    ws_codec: WS_CODEC_PREF,
+    strict_input_mode: STRICT_INPUT_MODE,
+    render: renderEnabled,
+    client_version: CLIENT_VERSION,
+  }
+}
+
+function rememberInputTick(
+  seq: number,
+  patch: {
+    time?: number
+    _sim_tick?: number
+    _host_published_at_ms?: number
+    state?: string
+    result_prompt?: string
+    leave_prompt?: GameState['leave_prompt']
+    boss_fight_winner?: GameState['boss_fight_winner']
+    trophy_win_threshold?: number
+    players_summary?: GameState['players_summary']
+    sound_events?: GameState['sound_events']
+  }
+) {
+  if (shouldDropSnapshot(latestSeq, seq)) return
+  latestState = inputOnlyState(latestState, patch)
+  latestSeq = seq
 }
 
 function sendMessage(message: object) {
@@ -271,16 +310,7 @@ function scheduleRtcRetry() {
   rtcRetryTimer = setTimeout(() => {
     rtcRetryTimer = null
     if (ws && ws.readyState === WebSocket.OPEN) {
-      sendMessage({
-        type: 'hello',
-        protocol: PROTOCOL_VERSION,
-        ts: Date.now(),
-        webrtc_supported: RTC_ENABLED && !!window.RTCPeerConnection,
-        rtc_codec: RTC_CODEC,
-        encoding: WS_CODEC_PREF,
-        ws_codec: WS_CODEC_PREF,
-        strict_input_mode: STRICT_INPUT_MODE
-      })
+      sendMessage(helloMessage())
     }
   }, RTC_RETRY_MS)
 }
@@ -717,15 +747,31 @@ function handleServerMessage(msg: ServerMessage) {
 
   if (msg.type === 'gamestate') {
     const stateMsg = msg as GameStateMessage
-    if (isRegistered) {
-      ingestSnapshot(stateMsg.data, stateMsg.seq ?? (latestSeq + 1), stateMsg.server_timestamp)
+    if (!isRegistered) return
+    if (!renderEnabled) {
+      rememberInputTick(stateMsg.seq ?? (latestSeq + 1), {
+        time: stateMsg.data?.time,
+        _sim_tick: stateMsg.data?._sim_tick,
+        state: stateMsg.data?.state,
+      })
+      return
     }
+    ingestSnapshot(stateMsg.data, stateMsg.seq ?? (latestSeq + 1), stateMsg.server_timestamp)
     return
   }
 
   if (msg.type === 'gamestate_delta') {
     const deltaMsg = msg as GameStateDeltaMessage
-    if (!isRegistered || !latestState) return
+    if (!isRegistered) return
+    if (!renderEnabled) {
+      rememberInputTick(deltaMsg.seq, {
+        time: deltaMsg.delta?.time,
+        _sim_tick: deltaMsg.delta?._sim_tick ?? deltaMsg.tick_id,
+        state: deltaMsg.delta?.state,
+      })
+      return
+    }
+    if (!latestState) return
     if (deltaMsg.base_seq !== latestSeq) {
       requestKeyframe()
       return
@@ -738,6 +784,21 @@ function handleServerMessage(msg: ServerMessage) {
   if (msg.type === 'state_keepalive') {
     const keep = msg as StateKeepaliveMessage
     if (!isRegistered) return
+    if (!renderEnabled) {
+      rememberInputTick(keep.seq, {
+        time: keep.time,
+        state: keep.state,
+        result_prompt: keep.result_prompt,
+        leave_prompt: keep.leave_prompt,
+        boss_fight_winner: keep.boss_fight_winner,
+        trophy_win_threshold: keep.trophy_win_threshold,
+        players_summary: keep.players_summary,
+        sound_events: keep.sound_events,
+        _sim_tick: keep._sim_tick,
+        _host_published_at_ms: keep._host_published_at_ms,
+      })
+      return
+    }
     if (!latestState) {
       requestKeyframe()
       return
@@ -779,6 +840,21 @@ function handleServerMessage(msg: ServerMessage) {
         avgLatency5sMs = sum / latencySamples5s.length
       } else {
         avgLatency5sMs = 0
+      }
+    }
+    if (msg.game_state && (!renderEnabled || !latestState)) {
+      latestState = inputOnlyState(latestState, {
+        state: msg.game_state,
+        result_prompt: msg.result_prompt,
+        leave_prompt: msg.leave_prompt,
+        _sim_tick: msg.apply_tick_id ?? msg.tick_id,
+      })
+    } else if (latestState && msg.game_state) {
+      latestState = {
+        ...latestState,
+        state: msg.game_state,
+        ...(msg.result_prompt !== undefined ? { result_prompt: msg.result_prompt } : {}),
+        ...(msg.leave_prompt !== undefined ? { leave_prompt: msg.leave_prompt } : {}),
       }
     }
     return
@@ -828,16 +904,7 @@ function connectWebSocket() {
     transportActive = 'ws'
     knownExplosionKeys = new Set()
     resetBigExplosionTracking()
-    sendMessage({
-      type: 'hello',
-      protocol: PROTOCOL_VERSION,
-      ts: Date.now(),
-      webrtc_supported: RTC_ENABLED && !!window.RTCPeerConnection,
-      rtc_codec: RTC_CODEC,
-      encoding: WS_CODEC_PREF,
-      ws_codec: WS_CODEC_PREF,
-      strict_input_mode: STRICT_INPUT_MODE
-    })
+    sendMessage(helloMessage())
     if (currentPlayerName) {
       sendMessage({ type: 'set_name', protocol: PROTOCOL_VERSION, name: currentPlayerName })
     }
@@ -904,9 +971,28 @@ playerNameInputEl.addEventListener('change', () => {
 })
 
 function applyRenderToggleState() {
-  renderEnabled = renderToggleEl.checked
+  const next = renderToggleEl.checked
+  const turnedOn = next && !renderEnabled
+  renderEnabled = next
   canvasEl.classList.toggle('hidden', !renderEnabled)
   stateOnlyEl.classList.toggle('hidden', renderEnabled)
+  if (!renderEnabled) {
+    snapshotBuffer = []
+    resetBigExplosionTracking()
+    knownExplosionKeys = new Set()
+    if (latestState) {
+      latestState = inputOnlyState(latestState, {
+        time: latestState.time,
+        _sim_tick: latestState._sim_tick,
+        _host_published_at_ms: latestState._host_published_at_ms,
+        state: latestState.state,
+      })
+    }
+  } else if (turnedOn) {
+    snapshotBuffer = []
+    requestKeyframe()
+  }
+  sendMessage({ type: 'set_render', protocol: PROTOCOL_VERSION, enabled: renderEnabled })
 }
 applyRenderToggleState()
 renderToggleEl.addEventListener('change', applyRenderToggleState)
@@ -941,7 +1027,8 @@ function maybeSendInput(force = false) {
     hash,
     lastHash: lastInputHash,
     minDeltaMs,
-    heartbeatMs: INPUT_HEARTBEAT_MS
+    heartbeatMs: INPUT_HEARTBEAT_MS,
+    heldHeartbeatMs: INPUT_HELD_HEARTBEAT_MS
   })) return
 
   const playerId = playerIds[0]
@@ -1028,7 +1115,16 @@ function loop(ts: number) {
     maybeSendInput(false)
     lastRenderLoopTs = ts
   }
-  if (canRenderNow && snapshotBuffer.length > 0 && latestState) {
+  if (canRenderNow && latestState && !renderEnabled) {
+    const hostFps = latestHudMetrics?.host_fps_5s ?? 0
+    const simTick = latestState._sim_tick ?? latestHudMetrics?.sim_tick ?? 0
+    const promptNote = latestState.leave_prompt?.open
+      ? ` | ${latestState.leave_prompt.title ?? 'Leave game?'}`
+      : (latestState.result_prompt ? ` | ${latestState.result_prompt}` : '')
+    stateOnlyEl.textContent = `${humanStateName(latestState.state)}${promptNote} | Tick: ${simTick} | RTT(5s): ${avgLatency5sMs.toFixed(1)} ms | Host SIM FPS(5s): ${hostFps.toFixed(1)}`
+    debugLineEl.textContent = stateOnlyEl.textContent
+    lastRenderDrawTs = ts
+  } else if (canRenderNow && snapshotBuffer.length > 0 && latestState) {
     const frameStartPerf = performance.now()
     const frameNow = Date.now()
     const delayMs = getRenderDelayMs()

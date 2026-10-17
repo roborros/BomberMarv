@@ -21,6 +21,8 @@ def build_status_signature(status: Optional[Dict[str, Any]]) -> Optional[Tuple[t
                 bool(info.get("registered", False)),
                 "" if slot is None else str(slot),
                 str(info.get("display_name") or ""),
+                str(info.get("ip") or ""),
+                str(info.get("client_version") or ""),
             )
         )
     slots_sig = [(str(slot_id), bool(is_taken)) for slot_id, is_taken in slots.items()]

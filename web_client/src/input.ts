@@ -61,10 +61,15 @@ export function shouldSendInput(opts: {
   lastHash: string
   minDeltaMs: number
   heartbeatMs: number
+  heldHeartbeatMs?: number
 }): boolean {
   if (opts.force) return true
   if (opts.now - opts.lastSentAt < opts.minDeltaMs) return false
-  const heartbeatDue = opts.now - opts.lastSentAt >= opts.heartbeatMs
+  const isAnyKeyHeld = opts.hash !== '00000'
+  const effectiveHeartbeatMs = isAnyKeyHeld && opts.heldHeartbeatMs !== undefined
+    ? opts.heldHeartbeatMs
+    : opts.heartbeatMs
+  const heartbeatDue = opts.now - opts.lastSentAt >= effectiveHeartbeatMs
   if (!opts.keysDirty && !heartbeatDue) return false
   if (opts.hash === opts.lastHash && !heartbeatDue) return false
   return true

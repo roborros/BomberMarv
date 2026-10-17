@@ -27,7 +27,7 @@ import websockets
 
 ROOT = Path(__file__).resolve().parents[1]
 CHROME = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
-CLIENT_URL = "http://127.0.0.1:5173/"
+CLIENT_URL = "http://127.0.0.1:8080/"
 PLAY_SECONDS = max(5, int(os.environ.get("BM_STRESS_PLAY_SECONDS", "70") or 70))
 PROXY_PORT = 8876
 DEBUG_PORTS = list(range(9331, 9337))
@@ -405,13 +405,13 @@ WS_REWRITE = r"""
   function Wrapped(url, protocols) {
     try {
       const parsed = new URL(url, window.location.href);
-      if (parsed.port === '8765') {
+      if (parsed.pathname === '/ws') {
         parsed.port = 'PORT';
         url = parsed.toString();
       }
     } catch (e) {}
     const sock = protocols === undefined ? new Orig(url) : new Orig(url, protocols);
-    window.__bmSocket = sock;
+    if (String(url).indexOf('/ws') !== -1) window.__bmSocket = sock;
     sock.addEventListener('open', () => { window.__bmWs = 'open'; });
     sock.addEventListener('close', (ev) => { window.__bmWs = 'close:' + ev.code; });
     sock.addEventListener('error', () => { window.__bmWs = 'error'; });
@@ -548,6 +548,7 @@ class Browser:
                       if (btn && !btn.disabled) btn.click();
                       const sock = window.__bmSocket;
                       if (sock && sock.readyState === 1) {
+                        sock.send(JSON.stringify({ type: 'set_render', protocol: 2, enabled: true }));
                         sock.send(JSON.stringify({ type: 'login', protocol: 2, name: '%s' }));
                       }
                       return [
@@ -641,7 +642,7 @@ async def _handle_proxy(reader, writer) -> None:
     peer = writer.get_extra_info("peername")
     log(f"proxy {name} from {peer} delay={int(delay * 1000)}ms cap={int(rate)}B/s")
     try:
-        remote_reader, remote_writer = await asyncio.open_connection("127.0.0.1", 8765)
+        remote_reader, remote_writer = await asyncio.open_connection("127.0.0.1", 8080)
     except Exception as exc:
         log(f"proxy upstream failed: {exc}")
         writer.close()
@@ -812,9 +813,8 @@ async def one_pass(force_ws: bool) -> dict:
             await asyncio.sleep(0.2)
         else:
             raise TimeoutError("websocket server did not start")
-        wait_tcp(8765)
         wait_http("http://127.0.0.1:8080/health", as_json=True)
-        wait_http("http://127.0.0.1:5173/")
+        wait_http("http://127.0.0.1:8080/")
         window_deadline = time.time() + 15
         while time.time() < window_deadline and not host_window():
             await asyncio.sleep(0.2)

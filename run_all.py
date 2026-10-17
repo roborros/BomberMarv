@@ -7,8 +7,6 @@ import threading
 import re
 import psutil
 import socket
-import shutil
-
 ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 
 
@@ -56,7 +54,7 @@ def cleanup_previous_instances():
     """Finds and kills all previous instances of the game components."""
     print("Cleaning up previous instances...")
     
-    # 1. Kill by port
+    # 8080 is the live port. 8765 and 5173 are listeners left by older builds.
     target_ports = {8080, 8765, 5173}
     kill_processes_on_ports(target_ports)
     
@@ -129,51 +127,20 @@ def main():
         # Start logging thread for backend
         threading.Thread(target=stream_reader, args=(backend_process, "BACKEND"), daemon=True).start()
 
-        # Start Bun Frontend
-        print("Launching Bun Frontend...")
-        # bun executable path - assuming it's in path or finding it
-        # User has bun in C:\Users\mbrab\.bun\bin\bun.exe, let's try 'bun' first if in path, else specific
-        # The user was running bun from path in previous steps so 'bun' should work if env vars are propagated, 
-        # but earlier it wasn't. Let's use the explicit path if available, or just 'bun' and hope.
-        # Actually, let's try to detect bun.
-        bun_cmd = 'bun'
-        # Check if bun is in path
-        if shutil.which("bun") is None:
-             # Try default location
-             user_profile = os.environ.get('USERPROFILE', '')
-             expected_bun = os.path.join(user_profile, '.bun', 'bin', 'bun.exe')
-             if os.path.exists(expected_bun):
-                 bun_cmd = expected_bun
-        
-        # Prepare environment for frontend
-        frontend_env = os.environ.copy()
-        frontend_env["NO_COLOR"] = "1"
-        frontend_env["FORCE_COLOR"] = "0"
-        
-        frontend_process = subprocess.Popen(
-            [bun_cmd, 'run', 'dev', '--', '--host'],
-            cwd=web_client_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            env=frontend_env
-        )
-        processes.append(('Frontend', frontend_process))
-        
-        # Start logging thread for frontend
-        threading.Thread(target=stream_reader, args=(frontend_process, "FRONTEND"), daemon=True).start()
+        dist_index = os.path.join(web_client_dir, "dist", "index.html")
+        if not os.path.isfile(dist_index):
+            print("Browser page is not built. From web_client run: bun run build")
 
-        print("All services started. Press Ctrl+C to stop.")
+        print("Host started. Press Ctrl+C to stop.")
         try:
             from bm_paths import list_lan_ips
             lan_ips = list_lan_ips()
         except Exception:
             lan_ips = [detect_lan_ip()]
-        print(f"Client URL (this PC): http://127.0.0.1:5173")
+        print("Client URL (this PC): http://127.0.0.1:8080")
         if lan_ips:
             for ip in lan_ips:
-                print(f"Client URL (LAN): http://{ip}:5173")
+                print(f"Client URL (LAN): http://{ip}:8080")
         else:
             print("Client URL (LAN): not detected")
         
@@ -183,9 +150,6 @@ def main():
             # Check if processes are still alive
             if backend_process.poll() is not None:
                 print("Backend process ended unexpectedly.")
-                break
-            if frontend_process.poll() is not None:
-                print("Frontend process ended unexpectedly.")
                 break
 
     except KeyboardInterrupt:

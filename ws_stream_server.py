@@ -10,7 +10,7 @@ from logging.handlers import RotatingFileHandler
 from typing import Any, Dict, List, Optional
 
 import websockets
-from aiohttp import web
+from aiohttp import WSMsgType, web
 
 from latency_metrics import split_hud_metrics, wall_clock_ms
 from net_protocol import (
@@ -37,11 +37,16 @@ from net_protocol import (
     MSG_LOGIN,
     MSG_SELECT_SLOT,
     MSG_SET_NAME,
+    MSG_SET_RENDER,
     MSG_SLOT_LIST,
     MSG_STATE_KEEPALIVE,
+    DEFAULT_INPUT_TIMEOUT_MS,
+    RollingClockOffset,
+    build_players_summary,
     build_state_delta,
     classify_state_diff,
     envelope,
+    evaluate_input_freshness,
     resolve_input_tick,
     resolve_ws_codec,
     validate_client_message,
@@ -139,6 +144,92 @@ def _percentile(values: List[float], percentile: float) -> float:
     return float(sorted_values[rank])
 
 
+def client_send_budget_s() -> float:
+    """How long one client's send may stall the broadcast before that client is skipped."""
+    raw = os.environ.get("BM_CLIENT_SEND_BUDGET_MS", "8")
+    try:
+        milliseconds = float(raw)
+    except (TypeError, ValueError):
+        milliseconds = 8.0
+    return max(0.001, milliseconds / 1000.0)
+
+
+async def await_send_budget(awaitable, budget_s: Optional[float] = None):
+    """Wait for one send. A stuck socket raises OutboundCongested instead of holding the others."""
+    limit = client_send_budget_s() if budget_s is None else budget_s
+    try:
+        return await asyncio.wait_for(awaitable, timeout=limit)
+    except asyncio.TimeoutError as exc:
+        raise OutboundCongested() from exc
+
+
+def apply_client_render_flag(client: Dict[str, Any], enabled: bool) -> None:
+    """Input-only clients receive ticks. Turning the screen on requests a full snapshot."""
+    client["render_enabled"] = bool(enabled)
+    if client["render_enabled"]:
+        client["force_keyframe"] = True
+        client["last_state_seq"] = -1
+        client["delta_chain_count"] = 0
+
+
+def peer_ip(remote_address: Any) -> str:
+    if isinstance(remote_address, tuple) and remote_address:
+        return str(remote_address[0] or "")
+    if isinstance(remote_address, str):
+        return remote_address
+    return ""
+
+
+class BrowserSocket:
+    """aiohttp websocket with the send/receive surface the broadcast loop already uses."""
+
+    def __init__(self, websocket: web.WebSocketResponse, request: web.Request):
+        peername = None
+        transport = request.transport
+        if transport is not None:
+            peername = transport.get_extra_info("peername")
+        if isinstance(peername, tuple) and len(peername) >= 2:
+            self.remote_address = (str(peername[0]), int(peername[1]) if isinstance(peername[1], int) else 0)
+        else:
+            self.remote_address = (str(request.remote or ""), 0)
+        self.transport = transport
+        self.write_limit = (WS_OUTBOUND_BUFFER_LIMIT, None)
+        self._ws = websocket
+        self._send_lock = asyncio.Lock()
+
+    @property
+    def paused(self) -> bool:
+        getter = getattr(self.transport, "get_write_buffer_size", None)
+        if not callable(getter):
+            return False
+        try:
+            return int(getter()) >= WS_OUTBOUND_BUFFER_LIMIT
+        except (TypeError, ValueError):
+            return False
+
+    def __aiter__(self):
+        return self._messages()
+
+    async def _messages(self):
+        async for msg in self._ws:
+            if msg.type == WSMsgType.TEXT or msg.type == WSMsgType.BINARY:
+                yield msg.data
+                continue
+            if msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED, WSMsgType.ERROR):
+                raise websockets.ConnectionClosed(None, None)
+        raise websockets.ConnectionClosed(None, None)
+
+    async def send(self, data: Any) -> None:
+        async with self._send_lock:
+            if isinstance(data, (bytes, bytearray)):
+                await self._ws.send_bytes(bytes(data))
+            else:
+                await self._ws.send_str(str(data))
+
+    async def close(self) -> None:
+        await self._ws.close()
+
+
 def classify_broadcast_for_client(
     *,
     current_state: Dict[str, Any],
@@ -152,8 +243,34 @@ def classify_broadcast_for_client(
     force_keyframe_client: bool,
     keyframe_interval_seq: int,
     server_timestamp: int,
+    render_enabled: bool = True,
 ) -> tuple:
     """Choose keyframe, delta, or idle keepalive for one registered client."""
+    tick_id = 0
+    try:
+        tick_id = int((current_state or {}).get("_sim_tick", 0) or 0)
+    except (TypeError, ValueError):
+        tick_id = 0
+    if not render_enabled:
+        return (
+            envelope(
+                MSG_STATE_KEEPALIVE,
+                seq=current_seq,
+                time=current_state.get("time"),
+                state=current_state.get("state"),
+                result_prompt=current_state.get("result_prompt"),
+                leave_prompt=current_state.get("leave_prompt"),
+                boss_fight_winner=current_state.get("boss_fight_winner"),
+                trophy_win_threshold=current_state.get("trophy_win_threshold"),
+                players_summary=build_players_summary(current_state.get("players")),
+                sound_events=current_state.get("sound_events"),
+                _sim_tick=current_state.get("_sim_tick"),
+                _host_published_at_ms=current_state.get("_host_published_at_ms"),
+                server_timestamp=server_timestamp,
+                tick_id=tick_id,
+            ),
+            "keepalive",
+        )
     needs_keyframe = (
         force_keyframe_global
         or force_keyframe_client
@@ -163,11 +280,6 @@ def classify_broadcast_for_client(
         or client_last_seq != last_broadcast_seq
         or int(delta_chain_count) >= int(max_delta_chain)
     )
-    tick_id = 0
-    try:
-        tick_id = int((current_state or {}).get("_sim_tick", 0) or 0)
-    except (TypeError, ValueError):
-        tick_id = 0
     if needs_keyframe:
         return (
             envelope(
@@ -187,6 +299,13 @@ def classify_broadcast_for_client(
                 MSG_STATE_KEEPALIVE,
                 seq=current_seq,
                 time=current_state.get("time"),
+                state=current_state.get("state"),
+                result_prompt=current_state.get("result_prompt"),
+                leave_prompt=current_state.get("leave_prompt"),
+                boss_fight_winner=current_state.get("boss_fight_winner"),
+                trophy_win_threshold=current_state.get("trophy_win_threshold"),
+                players_summary=build_players_summary(current_state.get("players")),
+                sound_events=current_state.get("sound_events"),
                 _sim_tick=current_state.get("_sim_tick"),
                 _host_published_at_ms=current_state.get("_host_published_at_ms"),
                 server_timestamp=server_timestamp,
@@ -276,8 +395,9 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
     rtc_enabled = os.environ.get("BM_RTC_ENABLED", "0") == "1"
     rtc_force_ws = os.environ.get("BM_RTC_FORCE_WS", "0") == "1"
     strict_input_mode = os.environ.get("BM_STRICT_INPUT_MODE", "0") == "1"
-    input_lead_ticks = max(0, int(os.environ.get("BM_INPUT_LEAD_TICKS", "1") or 1))
+    input_lead_ticks = max(0, int(os.environ.get("BM_INPUT_LEAD_TICKS", "0") or 0))
     late_tick_window = max(1, int(os.environ.get("BM_INPUT_LATE_WINDOW_TICKS", "6") or 6))
+    input_timeout_ms = max(20, int(os.environ.get("BM_INPUT_TIMEOUT_MS", str(DEFAULT_INPUT_TIMEOUT_MS)) or DEFAULT_INPUT_TIMEOUT_MS))
     max_delta_chain = max(1, int(os.environ.get("BM_MAX_DELTA_CHAIN", "8") or 8))
     client_bps_budget = max(50_000, int(os.environ.get("BM_CLIENT_BPS_BUDGET", "250000") or 250000))
     rtc_available = bool(rtc_enabled and not rtc_force_ws and RTCPeerConnection is not None and RTCSessionDescription is not None)
@@ -287,6 +407,7 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
     tracking_lock = threading.Lock()
     slots_lock = threading.Lock()
     state_lock = threading.Lock()
+    clock_offset_tracker = RollingClockOffset()
 
     clients: Dict[int, Dict[str, Any]] = {}
     players: Dict[int, Dict[str, Any]] = {}
@@ -340,6 +461,7 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
         "input_tick_late": 0,
         "input_tick_strict_rejected": 0,
         "input_tick_applied": 0,
+        "input_timed_out": 0,
         "input_player_id_rejected": 0,
         "input_keyframe_requests": 0,
         "input_tick_apply_age_samples": [],
@@ -400,6 +522,8 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                     "registered": client_data.get("registered", False),
                     "slot": client_data.get("slot"),
                     "display_name": client_data.get("display_name"),
+                    "ip": client_data.get("ip") or "",
+                    "client_version": client_data.get("client_version") or "",
                     "transport_active": client_data.get("transport_active", "ws"),
                     "webrtc_supported": bool(client_data.get("webrtc_supported", False)),
                     "webrtc_offered": bool(client_data.get("webrtc_offered", False)),
@@ -622,13 +746,14 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
 
     async def process_game_input(client_id: int, data: Dict[str, Any], source: str = "ws", websocket=None) -> None:
         with tracking_lock:
-            if not clients.get(client_id, {}).get("registered", False):
-                if websocket is not None:
-                    await send_json(
-                        websocket,
-                        envelope(MSG_REGISTRATION_REJECTED, message="client not registered"),
-                    )
-                return
+            registered = bool(clients.get(client_id, {}).get("registered", False))
+        if not registered:
+            if websocket is not None:
+                await send_json(
+                    websocket,
+                    envelope(MSG_REGISTRATION_REJECTED, message="client not registered"),
+                )
+            return
         game_input = data.get("input", [])
         input_frame = data.get("input_frame")
         tick_id_raw = data.get("tick_id")
@@ -664,6 +789,16 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
 
         recv_timestamp = wall_clock_ms()
         applied_tick_id: Optional[int] = None
+        with tracking_lock:
+            transit_excess_ms = clock_offset_tracker.observe(client_id, client_timestamp, recv_timestamp)
+        is_fresh, _effective_age_ms, _fresh_reason = evaluate_input_freshness(
+            client_id=client_id,
+            client_timestamp_ms=client_timestamp,
+            ws_received_ms=recv_timestamp,
+            apply_now_ms=recv_timestamp,
+            max_input_age_ms=input_timeout_ms,
+            precomputed_transit_excess_ms=transit_excess_ms,
+        )
 
         def enqueue_frame(player_id: int, keys_state: Dict[str, int], frame_tick_id: Optional[int]) -> None:
             apply_tick_id = None
@@ -678,6 +813,8 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                     "tick_id": frame_tick_id,
                     "apply_tick_id": apply_tick_id,
                     "ws_received_timestamp": recv_timestamp,
+                    "client_timestamp": client_timestamp,
+                    "transit_excess_ms": transit_excess_ms,
                 }
             )
 
@@ -705,6 +842,15 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                 if player_id not in assigned_ids or not isinstance(owner, dict) or owner.get("client_id") != client_id:
                     metrics["input_player_id_rejected"] += 1
                     continue
+
+                if not is_fresh:
+                    metrics["input_timed_out"] += 1
+                    if tick_id is not None:
+                        expected_tick = int(cdata.get("expected_input_tick", -1))
+                        _act, next_expected, _skip = resolve_input_tick(expected_tick, tick_id)
+                        cdata["expected_input_tick"] = next_expected
+                    continue
+
                 owner["keys"] = dict(keys_state)
 
                 if tick_id is None:
@@ -750,6 +896,11 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                 if len(samples) > 300:
                     samples = samples[-300:]
                 clients[client_id]["latency_samples"] = samples
+        with state_lock:
+            snap_state = latest_game_state if isinstance(latest_game_state, dict) else {}
+            current_game_state = snap_state.get("state")
+            current_result_prompt = snap_state.get("result_prompt")
+            current_leave_prompt = snap_state.get("leave_prompt")
         ack_ws = websocket
         if ack_ws is None:
             with tracking_lock:
@@ -764,6 +915,10 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                     server_timestamp=server_timestamp,
                     tick_id=tick_id,
                     apply_tick_id=applied_tick_id,
+                    game_state=current_game_state,
+                    result_prompt=current_result_prompt,
+                    leave_prompt=current_leave_prompt,
+                    timed_out=not is_fresh,
                     clock="unix_ms",
                     rtt_clock="client",
                 ),
@@ -924,6 +1079,7 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                                 "rtc_state_channel": cdata.get("rtc_state_channel"),
                                 "delta_chain_count": int(cdata.get("delta_chain_count", 0)),
                                 "force_keyframe": bool(cdata.get("force_keyframe", False)),
+                                "render_enabled": bool(cdata.get("render_enabled", True)),
                             }
                         )
             if not recipients:
@@ -960,6 +1116,7 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                         force_keyframe_client=bool(recipient.get("force_keyframe")),
                         keyframe_interval_seq=keyframe_interval_seq,
                         server_timestamp=server_timestamp,
+                        render_enabled=bool(recipient.get("render_enabled", True)),
                     )
                     payload = encode_payload(payload_dict, str(recipient.get("codec", "json")))
                     send_plan.append(
@@ -973,6 +1130,7 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                             "payload": payload,
                             "payload_dict": payload_dict,
                             "kind": kind,
+                            "render_enabled": bool(recipient.get("render_enabled", True)),
                         }
                     )
                     total_payload_bytes += len(payload) if isinstance(payload, (bytes, bytearray)) else len(str(payload))
@@ -984,17 +1142,19 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
             if total_payload_bytes:
                 add_sample("broadcast_payload_bytes_samples", total_payload_bytes / max(1, len(send_plan)))
             send_started = time.perf_counter()
-            results: List[Optional[Exception]] = []
-            for item in send_plan:
+
+            async def deliver_one(item: Dict[str, Any]) -> Optional[Exception]:
                 try:
-                    sent_bytes, used_rtc = await send_gameplay_frame(
-                        item["websocket"],
-                        item.get("rtc_state_channel"),
-                        str(item.get("transport_active", "ws")),
-                        str(item.get("codec", "json")),
-                        str(item.get("rtc_codec", "json")),
-                        item["payload_dict"],
-                        item.get("payload"),
+                    sent_bytes, used_rtc = await await_send_budget(
+                        send_gameplay_frame(
+                            item["websocket"],
+                            item.get("rtc_state_channel"),
+                            str(item.get("transport_active", "ws")),
+                            str(item.get("codec", "json")),
+                            str(item.get("rtc_codec", "json")),
+                            item["payload_dict"],
+                            item.get("payload"),
+                        )
                     )
                     if used_rtc:
                         metrics["broadcast_frames_rtc"] += 1
@@ -1003,12 +1163,14 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                         metrics["broadcast_frames_ws"] += 1
                         metrics["broadcast_bytes_ws"] += sent_bytes
                     item["sent_bytes"] = sent_bytes
-                    results.append(None)
+                    return None
                 except OutboundCongested:
                     metrics["broadcast_congested_skips"] += 1
-                    results.append(OutboundCongested())
+                    return OutboundCongested()
                 except Exception as exc:
-                    results.append(exc)
+                    return exc
+
+            results: List[Optional[Exception]] = list(await asyncio.gather(*(deliver_one(item) for item in send_plan)))
             send_ms = (time.perf_counter() - send_started) * 1000.0
             add_sample("broadcast_send_duration_samples_ms", send_ms)
             metrics["broadcast_frames"] += 1
@@ -1064,19 +1226,29 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                     seq=current_seq,
                     server_timestamp=server_timestamp,
                 )
-                for item in send_plan:
+                async def deliver_metrics(item: Dict[str, Any]) -> None:
                     try:
-                        await send_gameplay_frame(
-                            item["websocket"],
-                            item.get("rtc_state_channel"),
-                            str(item.get("transport_active", "ws")),
-                            str(item.get("codec", "json")),
-                            str(item.get("rtc_codec", "json")),
-                            metrics_payload,
+                        await await_send_budget(
+                            send_gameplay_frame(
+                                item["websocket"],
+                                item.get("rtc_state_channel"),
+                                str(item.get("transport_active", "ws")),
+                                str(item.get("codec", "json")),
+                                str(item.get("rtc_codec", "json")),
+                                metrics_payload,
+                            )
                         )
                         metrics["broadcast_metrics_frames"] += 1
                     except Exception:
-                        pass
+                        metrics["broadcast_congested_skips"] += 1
+
+                metric_targets = [
+                    item
+                    for idx, item in enumerate(send_plan)
+                    if results[idx] is None and item.get("render_enabled", True)
+                ]
+                if metric_targets:
+                    await asyncio.gather(*(deliver_metrics(item) for item in metric_targets))
             add_sample("broadcast_loop_duration_samples_ms", (time.perf_counter() - loop_started) * 1000.0)
 
     async def cleanup_stale_clients_loop():
@@ -1156,6 +1328,9 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                 "delta_chain_count": 0,
                 "bytes_window": [],
                 "force_keyframe": False,
+                "render_enabled": True,
+                "ip": peer_ip(websocket.remote_address),
+                "client_version": "",
                 "rtc_peer": None,
                 "rtc_input_channel": None,
                 "rtc_state_channel": None,
@@ -1200,6 +1375,11 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                             clients[client_id]["webrtc_offered"] = bool(rtc_available and client_webrtc_supported)
                             clients[client_id]["rtc_codec"] = rtc_codec
                             clients[client_id]["strict_input_mode"] = bool(strict_input_mode and client_strict_requested)
+                            if isinstance(data.get("render"), bool):
+                                apply_client_render_flag(clients[client_id], data["render"])
+                            version = data.get("client_version")
+                            if isinstance(version, str) and version.strip():
+                                clients[client_id]["client_version"] = version.strip()[:32]
                     await send_json(
                         websocket,
                         envelope(
@@ -1218,11 +1398,25 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                         ),
                     )
                     if rtc_available and client_webrtc_supported:
-                        try:
-                            await maybe_start_rtc_for_client(client_id)
-                        except Exception as exc:
-                            metrics["rtc_failed_events"] += 1
-                            await send_json(websocket, envelope(MSG_RTC_FAILED, reason=f"rtc_offer_failed:{exc}"))
+                        async def offer_rtc(cid=client_id, sock=websocket):
+                            try:
+                                await maybe_start_rtc_for_client(cid)
+                            except Exception as exc:
+                                metrics["rtc_failed_events"] += 1
+                                try:
+                                    await send_json(sock, envelope(MSG_RTC_FAILED, reason=f"rtc_offer_failed:{exc}"))
+                                except Exception:
+                                    pass
+
+                        asyncio.create_task(offer_rtc())
+                    enqueue_status_snapshot()
+                    continue
+
+                if msg_type == MSG_SET_RENDER:
+                    with tracking_lock:
+                        if client_id in clients:
+                            apply_client_render_flag(clients[client_id], bool(data.get("enabled")))
+                    enqueue_status_snapshot()
                     continue
 
                 if msg_type == MSG_REQUEST_SLOT_LIST:
@@ -1345,7 +1539,7 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
 
                 if msg_type == MSG_PING:
                     await send_json(websocket, envelope(MSG_PONG, server_timestamp=int(time.time() * 1000)))
-        except websockets.ConnectionClosed:
+        except (websockets.ConnectionClosed, ConnectionError):
             logger.info("WebSocket closed for client id=%s", client_id)
         except Exception as exc:
             logger.exception("Error in client handler id=%s: %s", client_id, exc)
@@ -1353,6 +1547,7 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
             metrics["connections_closed"] += 1
             rtc_peer_to_close = None
             with tracking_lock:
+                clock_offset_tracker.remove_client(client_id)
                 cdata = clients.pop(client_id, None)
                 if cdata:
                     rtc_peer_to_close = cdata.get("rtc_peer")
@@ -1467,8 +1662,24 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
         app.router.add_get("/{tail:.*}", handle_asset)
         logger.info("Serving web client from %s", static_dir)
 
-    def start_http_server():
+    async def handle_websocket(request: web.Request) -> web.WebSocketResponse:
+        socket = web.WebSocketResponse(max_msg_size=2**22, heartbeat=20)
+        await socket.prepare(request)
+        try:
+            await handle_client(BrowserSocket(socket, request))
+        finally:
+            if not socket.closed:
+                await socket.close()
+        return socket
+
+    async def main():
+        logger.info("Starting BomberMarv on port %s", HTTP_PORT)
+        aio_loop_holder.clear()
+        aio_loop_holder.append(asyncio.get_running_loop())
+        state_wakeup_holder.clear()
+        state_wakeup_holder.append(asyncio.Event())
         app = web.Application()
+        app.router.add_get("/ws", handle_websocket)
         app.router.add_get("/health", handle_health)
         app.router.add_get("/versions", handle_versions)
         app.router.add_get("/config", handle_config)
@@ -1476,38 +1687,17 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
         app.router.add_get("/metrics", handle_metrics)
         _mount_client_static(app)
         runner = web.AppRunner(app)
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        async def run():
-            await runner.setup()
-            site = web.TCPSite(runner, "0.0.0.0", HTTP_PORT)
-            await site.start()
-            logger.info("HTTP diagnostics server started on port %s", HTTP_PORT)
-            while True:
-                await asyncio.sleep(3600)
-
-        loop.run_until_complete(run())
-
-    async def main():
-        logger.info("Starting websocket server on port %s", PORT)
-        aio_loop_holder.clear()
-        aio_loop_holder.append(asyncio.get_running_loop())
-        state_wakeup_holder.clear()
-        state_wakeup_holder.append(asyncio.Event())
-        threading.Thread(target=start_http_server, daemon=True, name="http-server").start()
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", HTTP_PORT)
+        await site.start()
+        logger.info("Page and game connection are both on port %s", HTTP_PORT)
         asyncio.create_task(broadcast_loop())
         asyncio.create_task(cleanup_stale_clients_loop())
         asyncio.create_task(status_snapshot_loop())
-        ws_server = await websockets.serve(
-            handle_client,
-            "0.0.0.0",
-            PORT,
-            max_size=2**22,
-            ping_interval=20,
-            ping_timeout=20,
-        )
-        await ws_server.wait_closed()
+        try:
+            await asyncio.Future()
+        finally:
+            await runner.cleanup()
 
     try:
         asyncio.run(main())

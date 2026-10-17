@@ -74,6 +74,22 @@ export interface BossFightWinner {
     title?: string;
 }
 
+export interface PlayerSummary {
+    id?: number;
+    name?: string;
+    alive: boolean;
+    trophies: number;
+    color?: [number, number, number] | number;
+    client_id?: number | null;
+    client_player_id?: number | null;
+}
+
+export interface SoundEventPayload {
+    type: string;
+    t?: number;
+    volume?: number;
+}
+
 export interface GameState {
     time: number;
     round_start_ms?: number;
@@ -124,6 +140,8 @@ export interface GameState {
         title: string
     }
     ai_count?: number
+    players_summary?: PlayerSummary[];
+    sound_events?: SoundEventPayload[];
     _host_published_at_ms?: number;
 }
 
@@ -208,6 +226,10 @@ export interface InputAckMessage extends ProtocolEnvelope {
     server_timestamp: number;
     tick_id?: number;
     apply_tick_id?: number
+    game_state?: string
+    result_prompt?: string
+    leave_prompt?: GameState['leave_prompt']
+    timed_out?: boolean
     clock?: string
     rtt_clock?: string
 }
@@ -226,6 +248,13 @@ export interface StateKeepaliveMessage extends ProtocolEnvelope {
     type: 'state_keepalive'
     seq: number
     time?: number
+    state?: string
+    result_prompt?: string
+    leave_prompt?: GameState['leave_prompt']
+    boss_fight_winner?: BossFightWinner | null
+    trophy_win_threshold?: number
+    players_summary?: PlayerSummary[]
+    sound_events?: SoundEventPayload[]
     _sim_tick?: number
     _host_published_at_ms?: number
     server_timestamp?: number

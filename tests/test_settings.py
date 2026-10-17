@@ -336,9 +336,15 @@ class EverySettingTests(unittest.TestCase):
         game._register_new_explosions([blast])
         self.assertEqual(game.big_explosion_sound_at, [1100])
         game.current_time = 1100
+        game.consume_sound_events()
         sound = MagicMock()
-        with patch("bm_classes.mocny_stral_sounds", [sound]):
-            game._play_due_big_explosion_sounds()
+        game._play_due_big_explosion_sounds()
+        sound.play.assert_not_called()
+        events = game.consume_sound_events()
+        self.assertEqual(events, [{"type": "big_explosion", "t": 1100, "volume": 0.4}])
+        with patch("bm_sounds.mocny_stral_sounds", [sound]):
+            from bm_sounds import play_sound_events
+            play_sound_events(events)
         sound.set_volume.assert_called_with(0.4)
         sound.play.assert_called()
         payload = game.to_dict()["big_blast"]

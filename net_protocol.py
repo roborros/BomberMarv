@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from collections import deque
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 PROTOCOL_VERSION = 2
 
@@ -22,6 +23,7 @@ MSG_PING = "ping"
 MSG_PONG = "pong"
 MSG_ERROR = "error"
 MSG_SET_NAME = "set_name"
+MSG_SET_RENDER = "set_render"
 MSG_HELLO_ACK = "hello_ack"
 MSG_RTC_OFFER = "rtc_offer"
 MSG_RTC_ANSWER = "rtc_answer"
@@ -34,6 +36,12 @@ MSG_NET_METRICS = "net_metrics"
 
 # How far ahead of the host sim tick a client may schedule input before it is applied immediately.
 MAX_INPUT_APPLY_LEAD_TICKS = 4
+
+# Hard 60 Hz server input freshness & watchdog defaults (milliseconds).
+DEFAULT_INPUT_TIMEOUT_MS = 150
+DEFAULT_INPUT_HOLD_TIMEOUT_MS = 450
+CLOCK_OFFSET_WINDOW_SIZE = 32
+CLOCK_OFFSET_MAX_AGE_MS = 10_000
 
 GAMEPLAY_UPLINK_TYPES = frozenset({MSG_GAME_INPUT})
 
@@ -70,6 +78,7 @@ ALLOWED_CLIENT_MESSAGES = {
     MSG_GAME_INPUT,
     MSG_PING,
     MSG_SET_NAME,
+    MSG_SET_RENDER,
     MSG_RTC_ANSWER,
     MSG_RTC_ICE_CANDIDATE,
     MSG_RTC_READY,
@@ -152,6 +161,9 @@ def validate_client_message(data: Any) -> Optional[str]:
         seq = data.get("seq")
         if seq is not None and (not isinstance(seq, int) or seq < -1):
             return "request_keyframe.seq must be an integer >= -1"
+    if message_type == MSG_SET_RENDER:
+        if not isinstance(data.get("enabled"), bool):
+            return "set_render.enabled must be a boolean"
     if message_type == MSG_HELLO:
         encoding = data.get("encoding", data.get("ws_codec"))
         if encoding is not None and encoding not in ("json", "msgpack"):
@@ -159,6 +171,13 @@ def validate_client_message(data: Any) -> Optional[str]:
         rtc_codec = data.get("rtc_codec")
         if rtc_codec is not None and rtc_codec not in ("json", "msgpack"):
             return "hello.rtc_codec must be json or msgpack"
+        render = data.get("render")
+        if render is not None and not isinstance(render, bool):
+            return "hello.render must be a boolean"
+        client_version = data.get("client_version")
+        if client_version is not None:
+            if not isinstance(client_version, str) or not client_version.strip() or len(client_version.strip()) > 32:
+                return "hello.client_version must be a string of at most 32 characters"
     return None
 
 
@@ -324,12 +343,221 @@ def strip_wire_metrics(state: Dict[str, Any]) -> Dict[str, Any]:
     return {key: value for key, value in state.items() if key not in WIRE_METRICS_KEYS}
 
 
+def build_players_summary(players: Any) -> List[Dict[str, Any]]:
+    """Compact player status list included in state_keepalive so non-rendering web clients can react."""
+    if not isinstance(players, list):
+        return []
+    summary: List[Dict[str, Any]] = []
+    for p in players:
+        if not isinstance(p, dict):
+            continue
+        summary.append(
+            {
+                "id": p.get("id"),
+                "name": p.get("name"),
+                "alive": bool(p.get("alive", True)),
+                "trophies": int(p.get("trophies", 0) or 0),
+                "color": p.get("color"),
+                "client_id": p.get("client_id"),
+                "client_player_id": p.get("client_player_id"),
+            }
+        )
+    return summary
+
+
+KEEPALIVE_SYNC_KEYS = frozenset(
+    {
+        "time",
+        "_sim_tick",
+        "_host_published_at_ms",
+        "state",
+        "result_prompt",
+        "leave_prompt",
+        "boss_fight_winner",
+        "trophy_win_threshold",
+        "players_summary",
+        "sound_events",
+    }
+)
+
+
 def apply_keepalive_to_state(state: Dict[str, Any], keepalive: Dict[str, Any]) -> Dict[str, Any]:
     updated = dict(state)
-    for key in KEEPALIVE_ONLY_KEYS:
+    for key in KEEPALIVE_SYNC_KEYS:
         if key in keepalive and keepalive[key] is not None:
             updated[key] = keepalive[key]
     return updated
+
+
+class RollingClockOffset:
+    """Clock-skew-safe rolling minimum offset tracker per client (Risk D & F).
+
+    For a given client, ``recv_ms - client_sent_ms = clock_offset + one_way_delay``.
+    The minimum observed difference over a recent window estimates ``clock_offset + min_rtt/2``,
+    so any excess above that minimum is pure network/TCP queueing delay, independent of wall-clock skew.
+    """
+
+    def __init__(
+        self,
+        window_size: int = CLOCK_OFFSET_WINDOW_SIZE,
+        max_window_age_ms: int = CLOCK_OFFSET_MAX_AGE_MS,
+    ) -> None:
+        self.window_size = max(4, int(window_size))
+        self.max_window_age_ms = max(1000, int(max_window_age_ms))
+        self._samples: Dict[int, Deque[Tuple[int, int]]] = {}
+
+    def observe(self, client_id: int, client_timestamp_ms: Optional[int], recv_timestamp_ms: int) -> int:
+        """Record a sample and return excess transit delay (ms) above the client's rolling baseline."""
+        if client_timestamp_ms is None:
+            return 0
+        try:
+            c_ts = int(client_timestamp_ms)
+            r_ts = int(recv_timestamp_ms)
+        except (TypeError, ValueError):
+            return 0
+        if c_ts <= 0 or r_ts <= 0:
+            return 0
+        raw_offset = r_ts - c_ts
+        cid = int(client_id)
+        window = self._samples.get(cid)
+        if window is None:
+            window = deque(maxlen=self.window_size)
+            self._samples[cid] = window
+        cutoff = r_ts - self.max_window_age_ms
+        while window and window[0][0] < cutoff:
+            window.popleft()
+        # Before adding raw_offset, if raw_offset is lower than all existing samples, it becomes the new baseline.
+        window.append((r_ts, raw_offset))
+        baseline = min(sample_offset for _, sample_offset in window)
+        return max(0, raw_offset - baseline)
+
+    def remove_client(self, client_id: int) -> None:
+        self._samples.pop(int(client_id), None)
+
+
+def evaluate_input_freshness(
+    *,
+    client_id: int,
+    client_timestamp_ms: Optional[int],
+    ws_received_ms: Optional[int],
+    apply_now_ms: int,
+    clock_tracker: Optional[RollingClockOffset] = None,
+    max_input_age_ms: int = DEFAULT_INPUT_TIMEOUT_MS,
+    precomputed_transit_excess_ms: Optional[int] = None,
+) -> Tuple[bool, int, str]:
+    """Return ``(is_fresh, effective_age_ms, reason)`` for an incoming input packet.
+
+    Combines clock-skew-safe transit excess with server queue wait time so stalled TCP bursts
+    or backed-up queues are discarded rather than executed late.
+    """
+    limit = max(1, int(max_input_age_ms))
+    now_ms = int(apply_now_ms)
+    recv_ms = int(ws_received_ms) if ws_received_ms is not None else now_ms
+    queue_age_ms = max(0, now_ms - recv_ms)
+    if precomputed_transit_excess_ms is not None:
+        transit_excess_ms = max(0, int(precomputed_transit_excess_ms))
+    elif clock_tracker is not None and client_timestamp_ms is not None:
+        transit_excess_ms = clock_tracker.observe(client_id, client_timestamp_ms, recv_ms)
+    else:
+        transit_excess_ms = 0
+    total_age_ms = transit_excess_ms + queue_age_ms
+    if total_age_ms > limit:
+        return (False, total_age_ms, "input_timed_out")
+    return (True, total_age_ms, "ok")
+
+
+class SubTickInputLatch:
+    """Preserves sub-tick key taps (e.g. <16.67ms bomb tap) until consumed by one 60 Hz sim step (Risk E)."""
+
+    _DIRS = ("up", "down", "left", "right")
+    _ALL_KEYS = ("up", "down", "left", "right", "bomb")
+
+    def __init__(self) -> None:
+        self._latest: Dict[Tuple[int, int], Dict[str, int]] = {}
+        self._latched: Dict[Tuple[int, int], Dict[str, int]] = {}
+        self._dirty: Dict[Tuple[int, int], bool] = {}
+
+    @classmethod
+    def _normalize_keys(cls, keys: Optional[Dict[str, Any]]) -> Dict[str, int]:
+        src = keys if isinstance(keys, dict) else {}
+        return {k: (1 if int(src.get(k, 0) or 0) else 0) for k in cls._ALL_KEYS}
+
+    def record(self, client_id: int, player_id: int, keys: Dict[str, Any]) -> None:
+        key_pair = (int(client_id), int(player_id))
+        norm = self._normalize_keys(keys)
+        prev = self._latest.get(key_pair)
+        latched = self._latched.get(key_pair)
+        if latched is None:
+            latched = {k: 0 for k in self._ALL_KEYS}
+            self._latched[key_pair] = latched
+        for k in self._ALL_KEYS:
+            if norm[k] == 1 and (prev is None or prev.get(k, 0) == 0 or latched.get(k, 0) == 1):
+                latched[k] = 1
+        self._latest[key_pair] = norm
+        self._dirty[key_pair] = True
+
+    def consume_all(self) -> List[Tuple[int, int, Dict[str, int]]]:
+        """Drain effective key states for this 60 Hz tick, plus any follow-up release needed next tick."""
+        out: List[Tuple[int, int, Dict[str, int]]] = []
+        for key_pair in list(self._dirty.keys()):
+            if not self._dirty.get(key_pair):
+                continue
+            latest = self._latest.get(key_pair)
+            if latest is None:
+                self._dirty.pop(key_pair, None)
+                continue
+            latched = self._latched.get(key_pair) or {k: 0 for k in self._ALL_KEYS}
+            effective = dict(latest)
+            tap_held_only_for_this_tick = False
+            # Always preserve a sub-tick bomb press for at least one 60 Hz simulation step.
+            if latched.get("bomb", 0) == 1 and latest.get("bomb", 0) == 0:
+                effective["bomb"] = 1
+                tap_held_only_for_this_tick = True
+            # If all directions were released before the tick ran, preserve the sub-tick direction tap for 1 step.
+            if not any(latest.get(d, 0) for d in self._DIRS) and any(latched.get(d, 0) for d in self._DIRS):
+                for d in self._DIRS:
+                    if latched.get(d, 0) == 1:
+                        effective[d] = 1
+                        tap_held_only_for_this_tick = True
+                        break
+            # Clear latches now that one 60 Hz step will observe them.
+            self._latched[key_pair] = {k: 0 for k in self._ALL_KEYS}
+            # If a sub-tick tap forced a 1 when latest is 0, keep _dirty True so the next tick releases to latest (0).
+            self._dirty[key_pair] = tap_held_only_for_this_tick
+            out.append((key_pair[0], key_pair[1], effective))
+        return out
+
+    def force_release(self, client_id: int, player_id: int) -> Dict[str, int]:
+        key_pair = (int(client_id), int(player_id))
+        zero = {k: 0 for k in self._ALL_KEYS}
+        self._latest[key_pair] = dict(zero)
+        self._latched[key_pair] = dict(zero)
+        self._dirty[key_pair] = False
+        return zero
+
+
+class HeldKeyWatchdog:
+    """Releases stuck held keys if a client holding a key stops sending heartbeats (Risk E)."""
+
+    def __init__(self, hold_timeout_ms: int = DEFAULT_INPUT_HOLD_TIMEOUT_MS) -> None:
+        self.hold_timeout_ms = max(50, int(hold_timeout_ms))
+        self._state: Dict[Tuple[int, int], Tuple[int, bool]] = {}
+
+    def observe(self, client_id: int, player_id: int, keys: Dict[str, Any], now_ms: int) -> None:
+        key_pair = (int(client_id), int(player_id))
+        any_held = any(bool(int(keys.get(k, 0) or 0)) for k in ("up", "down", "left", "right", "bomb"))
+        self._state[key_pair] = (int(now_ms), any_held)
+
+    def check_expired(self, now_ms: int, hold_timeout_ms: Optional[int] = None) -> List[Tuple[int, int]]:
+        limit = self.hold_timeout_ms if hold_timeout_ms is None else max(50, int(hold_timeout_ms))
+        current = int(now_ms)
+        expired: List[Tuple[int, int]] = []
+        for key_pair, (last_ms, any_held) in list(self._state.items()):
+            if any_held and (current - last_ms) > limit:
+                expired.append(key_pair)
+                self._state[key_pair] = (current, False)
+        return expired
+
 
 
 def is_gameplay_uplink(message_type: Any) -> bool:

@@ -1,4 +1,5 @@
 import os
+import random
 
 import pygame
 
@@ -40,3 +41,40 @@ death_sound.set_volume(0.1)  # Set volume to 30%
 for _mocny in mocny_stral_sounds:
     _mocny.set_volume(BIG_EXPLOSION_VOLUME)
 fresh_meat_sound.set_volume(0.9)
+
+
+def play_sound_event(event: dict) -> None:
+    """Renderer-side audio playback for a single sound event announced by the backend."""
+    if not isinstance(event, dict):
+        return
+    kind = str(event.get("type") or event.get("sound") or "")
+    if kind in ("bonus", "countdown", "player_joined"):
+        bonus_sound.play()
+    elif kind == "explosion":
+        explosion_sound.play()
+    elif kind == "explosion_qd":
+        explosion_sound_qd.play()
+    elif kind == "death":
+        death_sound.play()
+    elif kind == "qd":
+        qd_sound.play()
+    elif kind == "fresh_meat":
+        fresh_meat_sound.play()
+    elif kind == "big_explosion":
+        if mocny_stral_sounds:
+            sound = random.choice(mocny_stral_sounds)
+            try:
+                vol = float(event.get("volume", BIG_EXPLOSION_VOLUME))
+            except (TypeError, ValueError):
+                vol = float(BIG_EXPLOSION_VOLUME)
+            sound.set_volume(vol)
+            sound.play()
+
+
+def play_sound_events(events) -> None:
+    """Renderer-side consumer that plays all sound events announced in a frame/state."""
+    if not events:
+        return
+    for event in events:
+        play_sound_event(event)
+

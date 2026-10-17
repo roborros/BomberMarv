@@ -181,3 +181,4 @@ desktop.ini
 web_client/node_modules/
 web_client/.vite/
 tools/.frames/
+tools/lan_stress_summary.json

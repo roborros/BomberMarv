@@ -137,6 +137,20 @@ class NetProtocolTests(unittest.TestCase):
         self.assertIsNone(validate_client_message({"type": "login", "protocol": PROTOCOL_VERSION}))
         self.assertIsNotNone(validate_client_message({"type": "login", "protocol": PROTOCOL_VERSION, "name": "x" * 21}))
 
+    def test_validate_set_render_hello_render_and_client_version(self):
+        self.assertIsNone(validate_client_message({"type": "set_render", "protocol": PROTOCOL_VERSION, "enabled": False}))
+        self.assertIsNone(validate_client_message({"type": "set_render", "protocol": PROTOCOL_VERSION, "enabled": True}))
+        self.assertIsNotNone(validate_client_message({"type": "set_render", "protocol": PROTOCOL_VERSION, "enabled": 1}))
+        self.assertIsNone(
+            validate_client_message(
+                {"type": "hello", "protocol": PROTOCOL_VERSION, "render": False, "client_version": "v1.3.0"}
+            )
+        )
+        self.assertIsNotNone(validate_client_message({"type": "hello", "protocol": PROTOCOL_VERSION, "render": "no"}))
+        self.assertIsNotNone(
+            validate_client_message({"type": "hello", "protocol": PROTOCOL_VERSION, "client_version": "x" * 33})
+        )
+
     def test_validate_rejects_bad_slot_and_name(self):
         self.assertIsNotNone(validate_client_message({"type": "select_slot", "protocol": PROTOCOL_VERSION, "slot": "1"}))
         self.assertIsNotNone(
@@ -276,6 +290,150 @@ class NetProtocolTests(unittest.TestCase):
         self.assertNotIn("board", exact_delta)
         over = [[1] * 5 for _ in range(5)]
         self.assertIn("board", diff_board(over, [[0] * 5 for _ in range(5)]))
+
+    def test_clock_skew_safe_input_timeout(self):
+        from net_protocol import RollingClockOffset, evaluate_input_freshness
+
+        offset = RollingClockOffset()
+        # Client clock is 5000ms ahead of server clock (skew = -5000ms)
+        fresh, excess_ms, reason = evaluate_input_freshness(
+            client_id=1,
+            client_timestamp_ms=15000,
+            ws_received_ms=10000,
+            apply_now_ms=10000,
+            clock_tracker=offset,
+            max_input_age_ms=150,
+        )
+        self.assertTrue(fresh)
+        self.assertEqual(excess_ms, 0)
+        self.assertEqual(reason, "ok")
+
+        # Normal packet with 20ms relative transit jitter passes
+        fresh2, excess2, _ = evaluate_input_freshness(
+            client_id=1,
+            client_timestamp_ms=15050,
+            ws_received_ms=10070,
+            apply_now_ms=10070,
+            clock_tracker=offset,
+            max_input_age_ms=150,
+        )
+        self.assertTrue(fresh2)
+        self.assertEqual(excess2, 20)
+
+        # Stale burst packet delayed by 220ms above minimum transit is discarded
+        fresh3, excess3, reason3 = evaluate_input_freshness(
+            client_id=1,
+            client_timestamp_ms=15100,
+            ws_received_ms=10320,
+            apply_now_ms=10320,
+            clock_tracker=offset,
+            max_input_age_ms=150,
+        )
+        self.assertFalse(fresh3)
+        self.assertGreater(excess3, 150)
+        self.assertEqual(reason3, "input_timed_out")
+
+    def test_sub_tick_input_latch_preserves_short_tap(self):
+        from net_protocol import SubTickInputLatch
+
+        latch = SubTickInputLatch()
+        # Fast keydown + keyup within the same 16.67ms tick
+        latch.record(1, 1, {"up": 0, "down": 0, "left": 0, "right": 0, "bomb": 1})
+        latch.record(1, 1, {"up": 0, "down": 0, "left": 0, "right": 0, "bomb": 0})
+        effective = dict(((cid, pid), keys) for cid, pid, keys in latch.consume_all())
+        # Tick step sees the bomb press!
+        self.assertEqual(effective[(1, 1)]["bomb"], 1)
+        # Next tick step automatically releases to the latest state (bomb=0)
+        next_step = dict(((cid, pid), keys) for cid, pid, keys in latch.consume_all())
+        self.assertEqual(next_step[(1, 1)]["bomb"], 0)
+        # Subsequent tick step without new input does not emit anything
+        self.assertEqual(latch.consume_all(), [])
+
+    def test_held_key_watchdog_releases_silent_client(self):
+        from net_protocol import HeldKeyWatchdog
+
+        watchdog = HeldKeyWatchdog(hold_timeout_ms=450)
+        watchdog.observe(2, 1, {"up": 1, "down": 0, "left": 0, "right": 0, "bomb": 0}, now_ms=1000)
+        self.assertEqual(watchdog.check_expired(now_ms=1300), [])
+        expired = watchdog.check_expired(now_ms=1460)
+        self.assertEqual(expired, [(2, 1)])
+        # Already released once
+        self.assertEqual(watchdog.check_expired(now_ms=1600), [])
+
+    def test_render_snapshot_is_one_way_and_detached(self):
+        from render_snapshot import RenderStateHub, build_render_snapshot
+
+        class DummyScreen:
+            width = 1300
+            height = 1100
+
+        class DummyPlayer:
+            id = 1
+            pos = (150.0, 150.0)
+            color = (255, 0, 0)
+            name = "Marv"
+            alive = True
+            trophies = 2
+            quad_damage = False
+            quad_damage_time_left = 0.0
+            disease = None
+            disease_time_left = 0.0
+            protection_time_left = 0.0
+            bombs_left = 1
+            explosion_Support = 2
+            speed = 2
+            score = 0
+            kills = 1
+            deaths = 0
+            suicides = 0
+            is_ai = False
+            direction = (1, 0)
+            last_non_zero_direction = (1, 0)
+            voice_play_until = 0
+            owner_client_id = None
+            owner_client_player_id = None
+
+        class DummyGame:
+            screen = DummyScreen()
+            grid_width = 3
+            grid_height = 3
+            current_time = 500
+            round_start_time = 100
+            game_state = "playing"
+            board = [[1, 1, 1], [1, 0, 1], [1, 1, 1]]
+            players = [DummyPlayer()]
+            bombs = []
+            explosions = []
+            powerups = []
+            crushing_walls_active = False
+            crushing_walls_index = 0
+            boss_fight_winner = None
+            leave_prompt_open = False
+            leave_prompt_choice = "no"
+            ai_players_count = 2
+            replay_buffer = []
+            replay_loop_anchor_time = 500
+
+            def consume_sound_events(self):
+                return [{"type": "explosion", "t": 500}]
+
+        game = DummyGame()
+        snap = build_render_snapshot(game, seq=7)
+        # Mutate backend board after snapshot; snapshot must be unaffected
+        game.board[1][1] = 2
+        self.assertEqual(snap.board[1][1], 0)
+        self.assertEqual(snap.players[0].name, "Marv")
+        self.assertEqual(snap.sound_events, ({"type": "explosion", "t": 500},))
+
+        hub = RenderStateHub()
+        hub.publish(snap)
+        latest = hub.consume_latest()
+        self.assertIsNotNone(latest)
+        self.assertEqual(len(latest.sound_events), 1)
+        # Consuming a second time on the same tick does not replay audio
+        again = hub.consume_latest()
+        self.assertIsNotNone(again)
+        self.assertEqual(len(again.sound_events), 0)
 
 
 if __name__ == "__main__":

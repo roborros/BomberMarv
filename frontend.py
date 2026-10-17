@@ -6,9 +6,10 @@ This is the only module that should import pygame directly.
 import math
 import os
 import pygame
+import queue
 import sys
 from typing import Optional, Tuple
-from event_abstraction import EventProcessor, GameCommandHandler
+from event_abstraction import EventProcessor, GameCommand, GameCommandHandler
 from input_abstraction import note_key_event
 from bm_params import BASE_WIDTH, BASE_HEIGHT, INITIAL_WINDOW_SIZE
 
@@ -114,6 +115,14 @@ class FrontendScreen:
     def get_surface(self):
         """Get the game surface for drawing"""
         return self.surface
+
+    def ensure_surface_size(self, size: Optional[Tuple[int, int]]):
+        """Resize the internal render surface on the renderer thread when the arena grid changes."""
+        if not size or len(size) != 2:
+            return
+        w, h = int(size[0]), int(size[1])
+        if w > 0 and h > 0 and self.surface.get_size() != (w, h):
+            self.surface = pygame.Surface((w, h))
     
     def get_window_size(self):
         """Get the current window size"""
@@ -199,24 +208,52 @@ class FrontendRenderer:
 class FrontendEventHandler:
     """Handles all frontend events and delegates to backend game logic"""
     
+    _WINDOW_COMMANDS = frozenset({
+        GameCommand.TOGGLE_FULLSCREEN,
+        GameCommand.RESIZE_WINDOW,
+        GameCommand.CLOSE_WINDOW,
+    })
+
     def __init__(self, game_instance):
         self.game = game_instance
         self.command_handler = GameCommandHandler(game_instance)
+        self.pending_game_events: "queue.SimpleQueue" = queue.SimpleQueue()
     
     def process_events(self):
-        """Process all pygame events and delegate to game logic"""
+        """Process all pygame events on the window thread.
+
+        When the backend simulation runs on its own thread (``_detached_renderer=True``),
+        window commands run immediately on the window thread while game-mutating commands
+        are queued for the 60 Hz backend thread to drain at the start of its step.
+        """
+        detached = bool(getattr(self.game, "_detached_renderer", False))
         for event in pygame.event.get():
             note_key_event(event)
-            # Convert pygame event to game event
             game_event = EventProcessor.process_pygame_event(event)
-            
-            if game_event:
-                # Handle the game event
-                handled = self.command_handler.handle_command(game_event)
-                
-                if not handled:
-                    # If not handled by command handler, try legacy handlers
-                    self._handle_legacy_event(event)
+            if game_event and game_event.command in self._WINDOW_COMMANDS:
+                self.command_handler.handle_command(game_event)
+                continue
+            if detached:
+                self.pending_game_events.put((game_event, event))
+                continue
+            self._apply_backend_event(game_event, event)
+
+    def drain_backend_events(self):
+        """Drain and apply queued local events on the 60 Hz backend simulation thread."""
+        while True:
+            try:
+                game_event, raw_event = self.pending_game_events.get_nowait()
+            except queue.Empty:
+                break
+            self._apply_backend_event(game_event, raw_event)
+
+    def _apply_backend_event(self, game_event, raw_event):
+        if game_event:
+            handled = self.command_handler.handle_command(game_event)
+            if not handled and raw_event is not None:
+                self._handle_legacy_event(raw_event)
+        elif raw_event is not None:
+            self._handle_legacy_event(raw_event)
     
     def _handle_legacy_event(self, event):
         """Handle events that don't fit the new command system"""
@@ -296,6 +333,10 @@ class FrontendManager:
     def process_events(self):
         """Process all events"""
         self.event_handler.process_events()
+
+    def drain_backend_events(self):
+        """Drain queued local game events on the backend simulation thread."""
+        self.event_handler.drain_backend_events()
     
     def render(self):
         """Render the current frame"""

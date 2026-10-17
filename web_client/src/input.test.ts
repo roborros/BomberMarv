@@ -78,6 +78,29 @@ describe('input', () => {
     expect(shouldSendInput({ ...base, now: 60 })).toBe(true)
     expect(shouldSendInput({ ...base, now: 200, keysDirty: false, hash: '00000', lastHash: '00000' })).toBe(true)
     expect(shouldSendInput({ ...base, now: 60, keysDirty: false, hash: '00000', lastHash: '00000' })).toBe(false)
+    // Uses heldHeartbeatMs while a key is held, and heartbeatMs while idle
+    expect(shouldSendInput({
+      force: false,
+      now: 130,
+      lastSentAt: 40,
+      keysDirty: false,
+      hash: '10000',
+      lastHash: '10000',
+      minDeltaMs: 16,
+      heartbeatMs: 250,
+      heldHeartbeatMs: 80
+    })).toBe(true)
+    expect(shouldSendInput({
+      force: false,
+      now: 130,
+      lastSentAt: 40,
+      keysDirty: false,
+      hash: '00000',
+      lastHash: '00000',
+      minDeltaMs: 16,
+      heartbeatMs: 250,
+      heldHeartbeatMs: 80
+    })).toBe(false)
   })
 
   it('prefers host tick ids', () => {

@@ -91,6 +91,7 @@ a = Analysis(
         'aiohttp.web',
         'msgpack',
         'PIL',
+        'render_snapshot',
     ],
     hookspath=[],
     hooksconfig={{}},

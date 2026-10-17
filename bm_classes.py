@@ -578,6 +578,7 @@ class Game:
         self.replay_loop_anchor_time = None
         self.kill_cam_clips = []
         self._pending_kill_cams = []
+        self.pending_sound_events = []
         
         # Game preparation screen state
         self.prep_num_players = NUM_PLAYERS
@@ -961,6 +962,7 @@ class Game:
         self.replay_start_time = None
         self.kill_cam_clips = []
         self._pending_kill_cams = []
+        self.pending_sound_events = []
         # Mark round start to compute relative death times for display
         self.current_time = get_ticks()
         self.round_start_time = self.current_time
@@ -1008,12 +1010,31 @@ class Game:
             }
         return previous_players
 
+    def _emit_sound(self, kind: str, **meta):
+        """Announce a sound event in backend game state without triggering audio playback in BE."""
+        events = getattr(self, "pending_sound_events", None)
+        if events is None:
+            self.pending_sound_events = []
+            events = self.pending_sound_events
+        event = {"type": str(kind), "t": int(getattr(self, "current_time", 0) or 0)}
+        if meta:
+            event.update(meta)
+        events.append(event)
+        return event
+
+    def consume_sound_events(self):
+        """Drain announced sound events (called when building the one-way render snapshot)."""
+        events = list(getattr(self, "pending_sound_events", None) or [])
+        self.pending_sound_events = []
+        return events
+
     def _set_arena_size(self, grid_size):
         """Keep sim grid and host draw surface on the same odd tile count."""
         self.grid_width = int(grid_size)
         self.grid_height = int(grid_size)
-        if self.screen:
-            self.screen.surface = pygame.Surface((int(grid_size) * CELL_SIZE, int(grid_size) * CELL_SIZE))
+        self._desired_surface_size = (int(grid_size) * CELL_SIZE, int(grid_size) * CELL_SIZE)
+        if self.screen and not getattr(self, "_detached_renderer", False):
+            self.screen.surface = pygame.Surface(self._desired_surface_size)
 
     def init_boss_fight(self, champion, uber=False):
         """Set up 1v1 boss fight: champion vs BomberMarv, or vs BomberTom after that."""
@@ -1103,6 +1124,7 @@ class Game:
         self.replay_start_time = None
         self.kill_cam_clips = []
         self._pending_kill_cams = []
+        self.pending_sound_events = []
         self.current_time = get_ticks()
         self.round_start_time = self.current_time
 
@@ -1385,6 +1407,7 @@ class Game:
         self.powerups = []
         self.kill_cam_clips = []
         self._pending_kill_cams = []
+        self.pending_sound_events = []
         self.replay_buffer = []
         self.replay_segment = None
         self.replay_loop_anchor_time = None
@@ -1611,7 +1634,7 @@ class Game:
                                 player.death_time_rel_ms = max(0, self.current_time - self.round_start_time)
                             player.fire_power_at_death = player.fire_power
                             player.bomb_capacity_at_death = player.bomb_capacity
-                            death_sound.play()
+                            self._emit_sound("death")
                             self._queue_kill_cam(player)
 
     def get_explosion_cells(self, bomb):
@@ -1690,7 +1713,7 @@ class Game:
                 continue
             if self.current_time < due:
                 continue
-            fresh_meat_sound.play()
+            self._emit_sound("fresh_meat")
             player.voice_until = self.current_time + 2200
             player.pickup_message = BOSS_TAUNT
             player.pickup_message_end_time = self.current_time + 2200
@@ -1713,9 +1736,9 @@ class Game:
             cells = tuple((int(cell[0]), int(cell[1])) for cell in exp.cells)
             self.recent_explosion_events.append((exp.start_time, cells))
             if exp.quad_damage:
-                explosion_sound_qd.play()
+                self._emit_sound("explosion_qd")
             else:
-                explosion_sound.play()
+                self._emit_sound("explosion")
         tile_count = count_unique_explosion_tiles(
             self.recent_explosion_events, self.current_time, window_ms
         )
@@ -1736,9 +1759,7 @@ class Game:
             (due if play_at <= self.current_time else pending).append(play_at)
         volume = float(bm_settings.get("big_blast_volume"))
         for _ in due:
-            sound = random.choice(mocny_stral_sounds)
-            sound.set_volume(volume)
-            sound.play()
+            self._emit_sound("big_explosion", volume=volume)
         self.big_explosion_sound_at = pending
     
     def handle_explosions(self):
@@ -1804,7 +1825,7 @@ class Game:
                                 if death_cell_bombs:
                                     self._explode_with_chain(death_cell_bombs)
                                 self.powerups.append(PowerUp(gx, gy, "death_bonus", spawn_time=self.current_time))
-                                death_sound.play()
+                                self._emit_sound("death")
                                 self._queue_kill_cam(player)
                                 break
             
@@ -2383,11 +2404,11 @@ class Game:
                 if player.get_grid_pos() == (pu.x, pu.y):
                     if pu.type == "bomb":
                         player.bomb_capacity += 1
-                        bonus_sound.play()
+                        self._emit_sound("bonus")
                         player.powerups_collected += 1
                     elif pu.type == "fire":
                         player.fire_power += 1
-                        bonus_sound.play()
+                        self._emit_sound("bonus")
                         player.powerups_collected += 1
                     elif pu.type == "death_bonus":
                         # Randomly apply one of the effects:
@@ -2408,7 +2429,7 @@ class Game:
                             player.bomb_capacity += 3
                             player.pickup_message = "+3 BOMBS"
                             player.pickup_message_end_time = self.current_time + 3000
-                        bonus_sound.play()
+                        self._emit_sound("bonus")
                         player.powerups_collected += 1
                     elif pu.type == "quad_damage":
                         player.quad_damage = True
@@ -2416,7 +2437,7 @@ class Game:
                         bonus = int(bm_settings.get("quad_power"))
                         player.bomb_capacity += bonus
                         player.fire_power += bonus
-                        qd_sound.play()
+                        self._emit_sound("qd")
                         player.quad_damage_collected += 1
                     self.powerups.remove(pu)
                     
@@ -2484,6 +2505,8 @@ class Game:
         if self.post_win_target_state is not None and self.post_win_transition_time is not None:
             if self.current_time >= self.post_win_transition_time:
                 self.game_state = self.post_win_target_state
+                if self.replay_loop_anchor_time is None:
+                    self.replay_loop_anchor_time = self.current_time
                 # Clear schedule to avoid repeat
                 self.post_win_target_state = None
                 self.post_win_transition_time = None
@@ -2541,6 +2564,7 @@ class Game:
                 'choice': getattr(self, "leave_prompt_choice", "no"),
                 'title': self.leave_prompt_title() if getattr(self, "leave_prompt_open", False) else "",
             },
+            'sound_events': list(getattr(self, "pending_sound_events", None) or []),
         }
             
 # Screen class and methods moved to frontend.py
