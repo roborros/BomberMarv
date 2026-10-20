@@ -64,7 +64,7 @@ import { CONTROLS_HINT, KEY_GUIDE_ROWS, keyGuideAction } from './keysGuide'
 
 const PROTOCOL_VERSION = 2
 const INPUT_HEARTBEAT_MS = 250
-const INPUT_HELD_HEARTBEAT_MS = 80
+const INPUT_HELD_HEARTBEAT_MS = 250
 const MAX_SEND_FPS = 60
 const MAX_RENDER_FPS = 60
 const PING_INTERVAL_MS = 10000
@@ -211,6 +211,7 @@ let localVisualOffset: { x: number; y: number } = { x: 0, y: 0 }
 let localPredictionErrorPx: number[] = []
 let localPredictionTargetKey: string | null = null
 let localLastAuthPos: { x: number; y: number } | null = null
+let lastSentTickId = -1
 let audioUnlocked = false
 let lastSoundAt: Record<string, number> = {}
 let knownExplosionKeys = new Set<string>()
@@ -843,16 +844,19 @@ function handleServerMessage(msg: ServerMessage) {
       }
     }
     if (msg.game_state && (!renderEnabled || !latestState)) {
+      const ackSimTick = typeof msg.sim_tick === 'number' ? msg.sim_tick : (msg.apply_tick_id ?? msg.tick_id)
       latestState = inputOnlyState(latestState, {
         state: msg.game_state,
         result_prompt: msg.result_prompt,
         leave_prompt: msg.leave_prompt,
-        _sim_tick: msg.apply_tick_id ?? msg.tick_id,
+        _sim_tick: ackSimTick,
       })
     } else if (latestState && msg.game_state) {
+      const ackSimTick = typeof msg.sim_tick === 'number' ? msg.sim_tick : undefined
       latestState = {
         ...latestState,
         state: msg.game_state,
+        ...(ackSimTick !== undefined ? { _sim_tick: Math.max(latestState._sim_tick ?? 0, ackSimTick) } : {}),
         ...(msg.result_prompt !== undefined ? { result_prompt: msg.result_prompt } : {}),
         ...(msg.leave_prompt !== undefined ? { leave_prompt: msg.leave_prompt } : {}),
       }
@@ -897,6 +901,7 @@ function connectWebSocket() {
     latestState = null
     latestSeq = -1
     localInputTick = 0
+    lastSentTickId = -1
     localVisualOffset = { x: 0, y: 0 }
     localPredictionErrorPx = []
     localPredictionTargetKey = null
@@ -939,6 +944,7 @@ function connectWebSocket() {
     latestState = null
     latestSeq = -1
     localInputTick = 0
+    lastSentTickId = -1
     localVisualOffset = { x: 0, y: 0 }
     localPredictionErrorPx = []
     localPredictionTargetKey = null
@@ -1033,7 +1039,8 @@ function maybeSendInput(force = false) {
 
   const playerId = playerIds[0]
   const hostTick = latestState?._sim_tick ?? latestState?._net_metrics?.sim_tick
-  const tickId = resolveInputTickId(hostTick, localInputTick)
+  const tickId = resolveInputTickId(hostTick, localInputTick, lastSentTickId)
+  lastSentTickId = tickId
   const payload = buildGameInputPayload({
     protocol: PROTOCOL_VERSION,
     clientId,
@@ -1077,6 +1084,24 @@ async function toggleGameFullscreen() {
   await root.requestFullscreen()
 }
 
+const GAMEPLAY_CODES = new Set([
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'KeyW',
+  'KeyA',
+  'KeyS',
+  'KeyD',
+  'Space',
+  'Enter',
+])
+
+function isTypingInField(): boolean {
+  const el = document.activeElement
+  return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')
+}
+
 window.addEventListener('blur', () => {
   for (const code of [...heldCodes]) updateKey(code, false)
 })
@@ -1091,10 +1116,20 @@ window.addEventListener('keydown', (e) => {
     void toggleGameFullscreen().then(() => renderer.fitCanvasToViewport()).catch(() => renderer.fitCanvasToViewport())
     return
   }
+  if (isTypingInField()) return
+  if (GAMEPLAY_CODES.has(e.code)) {
+    if (e.code.startsWith('Arrow') || e.code === 'Space') {
+      e.preventDefault()
+    }
+    if (e.repeat && heldCodes.has(e.code)) {
+      return
+    }
+  }
   updateKey(e.code, true)
 })
 document.addEventListener('fullscreenchange', () => renderer.fitCanvasToViewport())
 window.addEventListener('keyup', (e) => updateKey(e.code, false))
+window.setInterval(() => maybeSendInput(false), 120)
 
 function loop(ts: number) {
   const renderIntervalMs = 1000 / MAX_RENDER_FPS

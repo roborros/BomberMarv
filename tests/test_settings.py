@@ -377,3 +377,120 @@ class EverySettingTests(unittest.TestCase):
         later = Explosion([(i, 3) for i in range(10)], game.current_time)
         game._register_new_explosions([later])
         self.assertEqual(game.big_explosion_sound_at, [1000, game.current_time])
+
+    def test_show_debug_hud_setting_and_top_left_overlay(self):
+        import pygame
+        from bm_drawing import draw_game_screen, format_debug_hud_lines
+        from latency_metrics import build_hud_metrics
+        from render_snapshot import build_render_snapshot
+
+        pygame.init()
+        pygame.font.init()
+        game = self._arena()
+        self.assertFalse(bm_settings.get("show_debug_hud"))
+        self.assertFalse(game.show_debug_hud)
+
+        game._cached_status = {
+            "clients": {
+                1: {"latency_samples_5s": 10, "min_latency": 4.0, "max_latency": 18.0, "avg_latency_5s": 9.0},
+                2: {"latency_samples_5s": 8, "min_latency": 7.0, "max_latency": 29.0, "avg_latency_5s": 14.0},
+            }
+        }
+        hud = build_hud_metrics(
+            host_fps_5s=60.0,
+            host_render_fps_5s=59.8,
+            cached_status=game._cached_status,
+        )
+        self.assertEqual(hud["client_latency_min_ms"], 4.0)
+        self.assertEqual(hud["client_latency_max_ms"], 29.0)
+
+        lines = format_debug_hud_lines(game, hud)
+        self.assertEqual(
+            lines,
+            (
+                "Logic FPS: 60.0",
+                "Render FPS: 59.8",
+                "Latency (min/max): 4/29 ms",
+            ),
+        )
+
+        surf_off = pygame.Surface((700, 700))
+        snap_off = build_render_snapshot(game, seq=1, hud_metrics=hud)
+        draw_game_screen(surf_off, snap_off)
+
+        bm_settings.set_value("show_debug_hud", True)
+        game.apply_match_rules()
+        self.assertTrue(game.show_debug_hud)
+
+        surf_on = pygame.Surface((700, 700))
+        snap_on = build_render_snapshot(game, seq=2, hud_metrics=hud)
+        self.assertTrue(snap_on.show_debug_hud)
+        draw_game_screen(surf_on, snap_on)
+
+        # Top-left region must differ when the debug HUD is turned on
+        top_left_diff = any(
+            surf_off.get_at((x, y)) != surf_on.get_at((x, y))
+            for y in range(10, 90, 4)
+            for x in range(10, 220, 4)
+        )
+        self.assertTrue(top_left_diff)
+
+    def test_seven_ais_simulation_and_render_keep_up_with_60fps(self):
+        import time
+        import pygame
+        from bm_drawing import draw_game_screen
+        from render_snapshot import build_render_snapshot
+
+        pygame.init()
+        pygame.font.init()
+        game = Game()
+        game._detached_renderer = True
+        game.prep_num_players = 1
+        game.prep_ai_count = 7
+        game.game_state = "game_prep"
+        game.start_match_from_lobby()
+        game.game_state = "playing"
+        game.current_time = game.game_start_time + 100
+
+        surf = pygame.Surface((game.grid_width * 100, game.grid_height * 100))
+        # Warm up caches on frame 0
+        draw_game_screen(surf, build_render_snapshot(game, seq=0))
+
+        sim_samples_ms = []
+        draw_samples_ms = []
+        now = game.current_time
+        for i in range(120):
+            now += 16
+            t0 = time.perf_counter()
+            game.simulate(16, now_ms=now)
+            t1 = time.perf_counter()
+            snap = build_render_snapshot(game, seq=i + 1)
+            draw_game_screen(surf, snap)
+            t2 = time.perf_counter()
+            sim_samples_ms.append((t1 - t0) * 1000.0)
+            draw_samples_ms.append((t2 - t1) * 1000.0)
+
+        avg_sim_ms = sum(sim_samples_ms) / len(sim_samples_ms)
+        avg_draw_ms = sum(draw_samples_ms) / len(draw_samples_ms)
+        self.assertLess(avg_sim_ms, 8.0, f"7-AI avg sim step too slow: {avg_sim_ms:.2f}ms")
+        self.assertLess(avg_draw_ms, 10.0, f"7-AI avg draw frame too slow: {avg_draw_ms:.2f}ms")
+
+    def test_frontend_renderer_handles_horizontal_and_vertical_letterboxing(self):
+        import pygame
+        from frontend import FrontendRenderer, FrontendScreen, FrontendWindow
+
+        pygame.init()
+        screen = FrontendScreen()
+        screen.ensure_surface_size((1500, 1500))
+        screen.surface.fill((40, 80, 120))
+        window = FrontendWindow()
+
+        for win_size in ((1200, 800), (960, 1200), (600, 1080), (1500, 1500)):
+            fake_win = pygame.Surface(win_size)
+            window.window = fake_win
+            window.flip_display = lambda: None
+            renderer = FrontendRenderer(screen, window)
+            renderer.draw_adjust_screen_size()
+            self.assertEqual(fake_win.get_size(), win_size)
+
+

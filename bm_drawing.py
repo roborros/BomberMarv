@@ -79,8 +79,35 @@ def _get_scaled_image(name, width, height):
     return scaled
 
 
+_TILE_SURFACE_CACHE = {}
+
+
+def _get_tile_surface(tile_type):
+    cached = _TILE_SURFACE_CACHE.get(tile_type)
+    if cached is not None:
+        return cached
+    tile = pygame.Surface((CELL_SIZE, CELL_SIZE))
+    rect = np.array([0, 0, CELL_SIZE, CELL_SIZE], dtype=np.float64)
+    if tile_type == EMPTY:
+        tile.fill(COLOR_BG)
+    elif tile_type == INDESTRUCTIBLE:
+        pygame.gfxdraw.box(tile, rect, COLOR_INDESTRUCTIBLE)
+        pygame.draw.rect(tile, (80, 80, 80), rect, 1)
+    elif tile_type == DESTRUCTIBLE:
+        pygame.gfxdraw.box(tile, rect, COLOR_DESTRUCTIBLE)
+        draw_brick_pattern(rect, tile)
+        pygame.draw.rect(tile, (80, 80, 80), rect, 1)
+    else:
+        tile.fill(COLOR_BG)
+    _TILE_SURFACE_CACHE[tile_type] = tile
+    return tile
+
+
 def _board_signature(theGame):
-    return tuple(tuple(int(cell) for cell in row) for row in theGame.board)
+    board = theGame.board
+    if isinstance(board, tuple) and (not board or isinstance(board[0], tuple)):
+        return board
+    return tuple(tuple(int(cell) for cell in row) for row in board)
 
 
 def _build_board_layer(theGame):
@@ -88,26 +115,51 @@ def _build_board_layer(theGame):
     gh = getattr(theGame, 'grid_height', len(theGame.board))
     layer = pygame.Surface((gw * CELL_SIZE, gh * CELL_SIZE))
     layer.fill(COLOR_BG)
+    empty_tile = _get_tile_surface(EMPTY)
+    indestructible_tile = _get_tile_surface(INDESTRUCTIBLE)
+    destructible_tile = _get_tile_surface(DESTRUCTIBLE)
     for y in range(gh):
+        row = theGame.board[y]
+        py = y * CELL_SIZE
         for x in range(gw):
-            rect = np.array([x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE], dtype=np.float64)
-            if theGame.board[y][x] == EMPTY:
-                pygame.gfxdraw.box(layer, rect, COLOR_BG)
-            elif theGame.board[y][x] == INDESTRUCTIBLE:
-                pygame.gfxdraw.box(layer, rect, COLOR_INDESTRUCTIBLE)
-                pygame.draw.rect(layer, (80, 80, 80), rect, 1)
-            elif theGame.board[y][x] == DESTRUCTIBLE:
-                pygame.gfxdraw.box(layer, rect, COLOR_DESTRUCTIBLE)
-                draw_brick_pattern(rect, layer)
-                pygame.draw.rect(layer, (80, 80, 80), rect, 1)
+            cell = row[x]
+            if cell == EMPTY:
+                layer.blit(empty_tile, (x * CELL_SIZE, py))
+            elif cell == INDESTRUCTIBLE:
+                layer.blit(indestructible_tile, (x * CELL_SIZE, py))
+            elif cell == DESTRUCTIBLE:
+                layer.blit(destructible_tile, (x * CELL_SIZE, py))
     return layer
 
 
 def _get_board_layer(theGame):
     signature = _board_signature(theGame)
-    if _BOARD_LAYER_CACHE["signature"] != signature or _BOARD_LAYER_CACHE["surface"] is None:
+    old_sig = _BOARD_LAYER_CACHE["signature"]
+    surf = _BOARD_LAYER_CACHE["surface"]
+    if old_sig == signature and surf is not None:
+        return surf
+    gw = getattr(theGame, 'grid_width', len(signature[0]) if signature else 0)
+    gh = getattr(theGame, 'grid_height', len(signature))
+    if (
+        surf is not None
+        and old_sig is not None
+        and len(old_sig) == gh
+        and (gh == 0 or len(old_sig[0]) == gw)
+        and surf.get_size() == (gw * CELL_SIZE, gh * CELL_SIZE)
+    ):
+        for y in range(gh):
+            old_row = old_sig[y]
+            new_row = signature[y]
+            if old_row == new_row:
+                continue
+            py = y * CELL_SIZE
+            for x in range(gw):
+                if old_row[x] != new_row[x]:
+                    surf.blit(_get_tile_surface(new_row[x]), (x * CELL_SIZE, py))
         _BOARD_LAYER_CACHE["signature"] = signature
-        _BOARD_LAYER_CACHE["surface"] = _build_board_layer(theGame)
+        return surf
+    _BOARD_LAYER_CACHE["signature"] = signature
+    _BOARD_LAYER_CACHE["surface"] = _build_board_layer(theGame)
     return _BOARD_LAYER_CACHE["surface"]
 
 
@@ -437,12 +489,15 @@ def _player_label_font(draw_radius, bold=False):
 
 
 def _ensure_fonts_initialized():
-    """Ensure fonts are initialized before use"""
-    global arcade_font, font_small
+    """Ensure fonts and image assets are initialized before gameplay rendering."""
+    global arcade_font, font_small, _ASSETS_READY
     if arcade_font is None:
         arcade_font = pygame.font.SysFont('Comic Sans MS', 180)
     if font_small is None:
         font_small = pygame.font.SysFont("arial", 64)
+    if not _ASSETS_READY:
+        bmp.init_assets()
+        _ASSETS_READY = True
 
 def draw_brick_pattern(rect, surface):
     brick_height = rect[3] // 4
@@ -789,7 +844,7 @@ def draw_players(surface, players, explosions=None, current_time=None, bombs=Non
                 pygame.gfxdraw.filled_circle(surface, pos[0], pos[1], r, player.color)
                 pygame.gfxdraw.aacircle(surface, pos[0], pos[1], r, player.color)
             helmet_color = (min(player.color[0]+30,255), min(player.color[1]+30,255), min(player.color[2]+30,255))
-            rect_head = np.array([pos[0]-r, pos[1]-r, 2*r, 2*r], dtype=np.float64)
+            rect_head = (pos[0] - r, pos[1] - r, 2 * r, 2 * r)
             pygame.draw.arc(surface, helmet_color, rect_head, math.pi, 2*math.pi, 3)
             # Scared only while standing on a live bomb's planned blast (max 5 cells).
             scared = False
@@ -850,8 +905,8 @@ def draw_players(surface, players, explosions=None, current_time=None, bombs=Non
             leg_width = r//3
             leg_height = r//4
             leg_offset = int(6 * math.sin(player.animation_time / 150.0))
-            left_leg = np.array([pos[0] - r//2 - leg_width//2, pos[1] + r - 2 + leg_offset, leg_width, leg_height], dtype=np.float64)
-            right_leg = np.array([pos[0] + r//2 - leg_width//2, pos[1] + r - 2 - leg_offset, leg_width, leg_height], dtype=np.float64)
+            left_leg = (pos[0] - r//2 - leg_width//2, pos[1] + r - 2 + leg_offset, leg_width, leg_height)
+            right_leg = (pos[0] + r//2 - leg_width//2, pos[1] + r - 2 - leg_offset, leg_width, leg_height)
             leg_color = (player.color[0]//2, player.color[1]//2, player.color[2]//2)
             pygame.draw.rect(surface, leg_color, left_leg)
             pygame.draw.rect(surface, leg_color, right_leg)
@@ -863,7 +918,7 @@ def draw_players(surface, players, explosions=None, current_time=None, bombs=Non
                 elapsed = clock - player.quad_damage_start_time
                 pulse = 1 + 0.1 * math.sin(2 * math.pi * (elapsed / 500.0))
                 rect_size = int((2 * r + 10) * pulse)
-                rect = np.array([pos[0] - rect_size // 2, pos[1] - rect_size // 2, rect_size, rect_size], dtype=np.float64)
+                rect = (pos[0] - rect_size // 2, pos[1] - rect_size // 2, rect_size, rect_size)
                 pygame.draw.rect(surface, (0, 255, 255), rect, 4)
 
             shield_until = getattr(player, 'boss_shield_until', 0)
@@ -1689,8 +1744,10 @@ def draw_boss_result_screen(surface, winner, players=None, game=None):
         _draw_brabi_invite_card(surface, game)
 
 def draw_game_screen(surface, theGame):
-    surface.fill(COLOR_BG)
-    draw_board(surface, theGame)
+    board_layer = _get_board_layer(theGame)
+    if surface.get_size() != board_layer.get_size():
+        surface.fill(COLOR_BG)
+    surface.blit(board_layer, (0, 0))
     draw_powerups(surface, theGame)
     draw_bombs(surface, theGame.current_time, theGame.bombs)
     draw_explosions(surface, theGame.current_time, theGame.explosions)
@@ -1709,6 +1766,76 @@ def draw_game_screen(surface, theGame):
     if SHOW_PLAYER_DIRECTIONS:
         draw_player_directions(surface, theGame.players, theGame)
     draw_match_timer(surface, theGame)
+    draw_debug_hud(surface, theGame)
+
+
+def format_debug_hud_lines(game=None, hud_metrics=None):
+    """Build the three top-left debug HUD lines: Logic FPS, Render FPS, and Client Latency (min/max)."""
+    from latency_metrics import compute_client_latency_min_max
+
+    metrics = hud_metrics if isinstance(hud_metrics, dict) else getattr(game, "debug_hud_metrics", None)
+    if not isinstance(metrics, dict):
+        metrics = {}
+    logic_fps = float(metrics.get("host_fps_5s", getattr(game, "logic_fps", 0.0)) or 0.0)
+    render_fps = float(metrics.get("host_render_fps_5s", getattr(game, "render_fps", 0.0)) or 0.0)
+    lat_min = metrics.get("client_latency_min_ms")
+    lat_max = metrics.get("client_latency_max_ms")
+    if lat_min is None or lat_max is None:
+        cached_status = getattr(game, "_cached_status", None) if game is not None else None
+        c_min, c_max = compute_client_latency_min_max(cached_status)
+        if lat_min is None:
+            lat_min = c_min
+        if lat_max is None:
+            lat_max = c_max
+    return (
+        f"Logic FPS: {logic_fps:.1f}",
+        f"Render FPS: {render_fps:.1f}",
+        f"Latency (min/max): {float(lat_min):.0f}/{float(lat_max):.0f} ms",
+    )
+
+
+_DEBUG_HUD_PANEL_CACHE = {}
+
+
+def draw_debug_hud(surface, game=None, hud_metrics=None):
+    """Render game logic FPS, renderer FPS, and client latency (min/max) in the top-left corner."""
+    import bm_settings
+
+    enabled = (
+        bm_settings.show_debug_hud()
+        or bool(getattr(game, "show_debug_hud", False))
+        or bool(getattr(bmp, "DEBUG_MODE", False))
+    )
+    if not enabled:
+        return
+    _ensure_fonts_initialized()
+    lines = format_debug_hud_lines(game, hud_metrics)
+    sw, sh = surface.get_size()
+    font = _ui_font(max(16, min(28, sh // 42)), bold=True)
+    pad = max(10, sh // 90)
+    inner_x = max(10, pad)
+    inner_y = max(6, pad // 2)
+    line_gap = max(3, sh // 260)
+
+    rendered = [_get_cached_text(font, line, (226, 244, 255)) for line in lines]
+    shadows = [_get_cached_text(font, line, (10, 14, 20)) for line in lines]
+    box_w = max(r.get_width() for r in rendered) + inner_x * 2
+    box_h = sum(r.get_height() for r in rendered) + line_gap * (len(rendered) - 1) + inner_y * 2
+
+    panel_key = (box_w, box_h)
+    panel = _DEBUG_HUD_PANEL_CACHE.get(panel_key)
+    if panel is None:
+        panel = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
+        pygame.draw.rect(panel, (14, 20, 30, 185), (0, 0, box_w, box_h), border_radius=8)
+        pygame.draw.rect(panel, (90, 130, 175, 210), (0, 0, box_w, box_h), 1, border_radius=8)
+        _DEBUG_HUD_PANEL_CACHE[panel_key] = panel
+    surface.blit(panel, (pad, pad))
+
+    cy = pad + inner_y
+    for text_surf, shadow_surf in zip(rendered, shadows):
+        surface.blit(shadow_surf, (pad + inner_x + 1, cy + 1))
+        surface.blit(text_surf, (pad + inner_x, cy))
+        cy += text_surf.get_height() + line_gap
 
 
 def _players_by_trophies(players):
@@ -1730,15 +1857,15 @@ def draw_match_timer(surface, game):
         hint = format_crushing_wall_start(early_s, late_s)
     sw, sh = surface.get_size()
     font = _default_font(max(18, min(32, sh // 28)))
-    text = font.render(label, True, (242, 244, 248))
+    text = _get_cached_text(font, label, (242, 244, 248))
     pad = max(8, sh // 80)
-    shadow = font.render(label, True, (12, 14, 18))
+    shadow = _get_cached_text(font, label, (12, 14, 18))
     origin = text.get_rect(bottomright=(sw - pad, sh - pad))
     surface.blit(shadow, origin.move(1, 1))
     surface.blit(text, origin)
     if hint:
-        hint_text = font.render(hint, True, (210, 214, 222))
-        hint_shadow = font.render(hint, True, (12, 14, 18))
+        hint_text = _get_cached_text(font, hint, (210, 214, 222))
+        hint_shadow = _get_cached_text(font, hint, (12, 14, 18))
         hint_origin = hint_text.get_rect(bottomright=(origin.left - 10, origin.bottom))
         surface.blit(hint_shadow, hint_origin.move(1, 1))
         surface.blit(hint_text, hint_origin)

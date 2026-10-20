@@ -171,8 +171,10 @@ class FrontendRenderer:
     def __init__(self, screen: FrontendScreen, window: FrontendWindow):
         self.screen = screen
         self.window = window
-        # smoothscale is visibly nicer, but significantly slower at large internal resolutions.
-        self.use_smoothscale = os.environ.get("BM_USE_SMOOTHSCALE", "1") == "1"
+        # smoothscale keeps the game screen anti-aliased when scaling to the window.
+        raw_smooth = os.environ.get("BM_USE_SMOOTHSCALE", "1").strip().lower()
+        self.use_smoothscale = raw_smooth not in ("0", "false", "no", "off")
+        self._scaled_surface: Optional[pygame.Surface] = None
     
     def draw_adjust_screen_size(self):
         """Draw the game surface scaled to fit the window"""
@@ -191,18 +193,25 @@ class FrontendRenderer:
 
         if new_width == surf_w and new_height == surf_h:
             scaled_surface = self.screen.surface
-        elif new_width < surf_w or new_height < surf_h:
-            # Quality-first downscaling now that host render is capped to 60 FPS.
-            if self.use_smoothscale:
-                scaled_surface = pygame.transform.smoothscale(self.screen.surface, (new_width, new_height))
-            else:
-                scaled_surface = pygame.transform.scale(self.screen.surface, (new_width, new_height))
-        elif self.use_smoothscale:
-            scaled_surface = pygame.transform.smoothscale(self.screen.surface, (new_width, new_height))
         else:
-            scaled_surface = pygame.transform.scale(self.screen.surface, (new_width, new_height))
-        self.window.window.fill((0, 0, 0))
-        self.window.window.blit(scaled_surface, (x_offset, y_offset))
+            if self._scaled_surface is None or self._scaled_surface.get_size() != (new_width, new_height):
+                self._scaled_surface = pygame.Surface((new_width, new_height))
+            if self.use_smoothscale:
+                scaled_surface = pygame.transform.smoothscale(
+                    self.screen.surface, (new_width, new_height), self._scaled_surface
+                )
+            else:
+                scaled_surface = pygame.transform.scale(
+                    self.screen.surface, (new_width, new_height), self._scaled_surface
+                )
+        win = self.window.window
+        if x_offset > 0:
+            win.fill((0, 0, 0), (0, 0, x_offset, win_h))
+            win.fill((0, 0, 0), (x_offset + new_width, 0, max(0, win_w - x_offset - new_width), win_h))
+        if y_offset > 0:
+            win.fill((0, 0, 0), (0, 0, win_w, y_offset))
+            win.fill((0, 0, 0), (0, y_offset + new_height, win_w, max(0, win_h - y_offset - new_height)))
+        win.blit(scaled_surface, (x_offset, y_offset))
         self.window.flip_display()
 
 class FrontendEventHandler:

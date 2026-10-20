@@ -229,6 +229,9 @@ describe('netState', () => {
     expect(slim.players).toEqual([])
     expect(slim.explosions).toEqual([])
     expect(full.board).toEqual([[1, 2], [0, 1]])
+    // Out-of-order input_ack with an older tick must not rewind _sim_tick backwards
+    const afterStaleAck = inputOnlyState(slim, { _sim_tick: 10 })
+    expect(afterStaleAck._sim_tick).toBe(13)
   })
 
   it('maps lobby labels and human-readable states', () => {

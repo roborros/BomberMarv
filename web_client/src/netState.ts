@@ -104,7 +104,10 @@ export function inputOnlyState(
     trophy_win_threshold: patch.trophy_win_threshold ?? previous?.trophy_win_threshold,
     players_summary: patch.players_summary ?? previous?.players_summary,
     sound_events: patch.sound_events,
-    _sim_tick: patch._sim_tick ?? previous?._sim_tick,
+    _sim_tick:
+      typeof patch._sim_tick === 'number'
+        ? Math.max(previous?._sim_tick ?? 0, patch._sim_tick)
+        : previous?._sim_tick,
     _host_published_at_ms: patch._host_published_at_ms ?? previous?._host_published_at_ms,
     board: [],
     players: [],
@@ -140,7 +143,9 @@ export function applyKeepalive(
     ...(patch.trophy_win_threshold !== undefined ? { trophy_win_threshold: patch.trophy_win_threshold } : {}),
     ...(patch.players_summary !== undefined ? { players_summary: patch.players_summary } : {}),
     ...(patch.sound_events !== undefined ? { sound_events: patch.sound_events } : {}),
-    ...(patch._sim_tick !== undefined ? { _sim_tick: patch._sim_tick } : {}),
+    ...(patch._sim_tick !== undefined
+      ? { _sim_tick: Math.max(state._sim_tick ?? 0, patch._sim_tick) }
+      : {}),
     ...(patch._host_published_at_ms !== undefined ? { _host_published_at_ms: patch._host_published_at_ms } : {})
   }
 }

@@ -39,7 +39,7 @@ MAX_INPUT_APPLY_LEAD_TICKS = 4
 
 # Hard 60 Hz server input freshness & watchdog defaults (milliseconds).
 DEFAULT_INPUT_TIMEOUT_MS = 150
-DEFAULT_INPUT_HOLD_TIMEOUT_MS = 450
+DEFAULT_INPUT_HOLD_TIMEOUT_MS = 3000
 CLOCK_OFFSET_WINDOW_SIZE = 32
 CLOCK_OFFSET_MAX_AGE_MS = 10_000
 
@@ -486,6 +486,8 @@ class SubTickInputLatch:
         key_pair = (int(client_id), int(player_id))
         norm = self._normalize_keys(keys)
         prev = self._latest.get(key_pair)
+        if prev is not None and norm == prev:
+            return
         latched = self._latched.get(key_pair)
         if latched is None:
             latched = {k: 0 for k in self._ALL_KEYS}

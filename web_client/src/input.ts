@@ -75,8 +75,12 @@ export function shouldSendInput(opts: {
   return true
 }
 
-export function resolveInputTickId(hostTick: number | undefined, localTick: number): number {
-  return typeof hostTick === 'number' ? hostTick : localTick
+export function resolveInputTickId(hostTick: number | undefined, localTick: number, minTickId?: number): number {
+  const candidate = typeof hostTick === 'number' ? hostTick : localTick
+  if (typeof minTickId === 'number' && minTickId >= 0) {
+    return Math.max(candidate, minTickId)
+  }
+  return candidate
 }
 
 export function buildGameInputPayload(opts: {

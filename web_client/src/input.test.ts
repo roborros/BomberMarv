@@ -103,9 +103,10 @@ describe('input', () => {
     })).toBe(false)
   })
 
-  it('prefers host tick ids', () => {
+  it('prefers host tick ids and never rewinds below minTickId', () => {
     expect(resolveInputTickId(42, 3)).toBe(42)
     expect(resolveInputTickId(undefined, 3)).toBe(3)
+    expect(resolveInputTickId(39, 3, 42)).toBe(42)
   })
 
   it('builds protocol v2 game_input payloads', () => {

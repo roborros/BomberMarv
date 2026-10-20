@@ -109,9 +109,7 @@ class Player:
                 print(f"[AI] {self.name} @({gx},{gy}) dir=({direction[0]:.0f},{direction[1]:.0f}) bomb={place_bomb}")
             if place_bomb:
                 self.drop_bomb(bombs, current_time, game=game)
-        else:
-            keys = get_pressed_keys()
-            # Remap all web_keys using browser_key_to_pygame
+        # Remap all web_keys using browser_key_to_pygame
         if web_keys:
             for k in web_keys:
                 mapped = browser_key_to_pygame(k)
@@ -304,7 +302,18 @@ class Player:
         return False
 
     def collides_with_bombs(self, bombs, original_pos):
+        if not bombs:
+            return False
+        px, py = float(self.pos[0]), float(self.pos[1])
+        center_x = int(px // CELL_SIZE)
+        center_y = int(py // CELL_SIZE)
+        orig_cell = (int(original_pos[0] // CELL_SIZE), int(original_pos[1] // CELL_SIZE))
+        margin = CELL_SIZE * 0.35  # tweak margin as needed
+        box_size = CELL_SIZE - 2 * margin
         for bomb in bombs:
+            # Skip bombs more than 1 cell away; player collision radius is < 0.5 cell.
+            if abs(bomb.x - center_x) > 1 or abs(bomb.y - center_y) > 1:
+                continue
             # Skip your own bomb that hasn't been left yet.
             if bomb.owner == self and not bomb.owner_left:
                 continue
@@ -314,24 +323,23 @@ class Player:
             bomb_cx = bomb.x * CELL_SIZE + CELL_SIZE / 2
             bomb_cy = bomb.y * CELL_SIZE + CELL_SIZE / 2
             # If the player originally was in the bomb's cell:
-            if (int(original_pos[0] // CELL_SIZE), int(original_pos[1] // CELL_SIZE)) == bomb_cell:
+            if orig_cell == bomb_cell:
                 # If the new position is further from the bomb center than the starting position, let the player exit:
                 orig_dx = original_pos[0] - bomb_cx
                 orig_dy = original_pos[1] - bomb_cy
-                new_dx = self.pos[0] - bomb_cx
-                new_dy = self.pos[1] - bomb_cy
+                new_dx = px - bomb_cx
+                new_dy = py - bomb_cy
                 if (new_dx * new_dx + new_dy * new_dy) ** 0.5 + int(CELL_SIZE / 10) > (orig_dx * orig_dx + orig_dy * orig_dy) ** 0.5:
                     continue  # allow the move out
 
             # Otherwise (or if not exiting), use a reduced bomb collision box.
-            margin = CELL_SIZE * 0.35  # tweak margin as needed
             bomb_rect = (
                 bomb.x * CELL_SIZE + margin,
                 bomb.y * CELL_SIZE + margin,
-                CELL_SIZE - 2 * margin,
-                CELL_SIZE - 2 * margin,
+                box_size,
+                box_size,
             )
-            if circle_rect_collision((self.pos[0], self.pos[1]), self.collision_radius, bomb_rect):
+            if circle_rect_collision((px, py), self.collision_radius, bomb_rect):
                 return True
         return False
     
@@ -340,16 +348,19 @@ class Player:
         """Primary keys, plus Player 1's arrow keys unless a prompt is using them."""
         if self.controls is None:
             return False
-        if is_key_pressed(self.controls[action]):
+        primary = self.controls[action]
+        if noted_key_down(primary) or is_key_pressed(primary):
             return True
         if getattr(game, "leave_prompt_open", False) or getattr(game, "quit_prompt_open", False):
             return False
         alt = (self.controls.get("also") or {}).get(action)
-        return alt is not None and is_key_pressed(alt)
+        return alt is not None and (noted_key_down(alt) or is_key_pressed(alt))
 
     def _bomb_button_down(self, mapped_web_keys):
-        if self.controls is not None and is_key_pressed(self.controls['bomb']):
-            return True
+        if self.controls is not None:
+            bomb_key = self.controls['bomb']
+            if noted_key_down(bomb_key) or is_key_pressed(bomb_key):
+                return True
         return bool(mapped_web_keys and 'space' in mapped_web_keys)
 
     def drop_bomb(self, bombs, current_time, game=None):
@@ -509,6 +520,7 @@ class PowerUp:
 class Game:
     def __init__(self):
         self.board = generate_maze()
+        self._board_version = 1
         self.grid_width = len(self.board[0])
         self.grid_height = len(self.board)
         self.bombs = []
@@ -626,6 +638,7 @@ class Game:
         """Copy saved rules onto this match. Called at startup and after each settings change."""
         self.players_block = bool(bm_settings.get("players_block"))
         self.friendly_fire = bool(bm_settings.get("friendly_fire"))
+        self.show_debug_hud = bool(bm_settings.get("show_debug_hud"))
         speed = bm_settings.player_speed()
         bombs = int(bm_settings.get("start_bombs"))
         fire = int(bm_settings.get("start_fire"))
@@ -980,6 +993,7 @@ class Game:
             player.bomb_capacity = int(bm_settings.get("start_bombs"))
             player.fire_power = int(bm_settings.get("start_fire"))
             player.speed = bm_settings.player_speed()
+        self._board_version = getattr(self, "_board_version", 0) + 1
         self.destructible_at_round_start = self.count_destroyable_cells()
         self.game_start_time = self.current_time + 2000  # Add a 2-second freeze time
 
@@ -1149,6 +1163,7 @@ class Game:
                 p.draw_scale = draw_scale
                 p.draw_radius = int(int(CELL_SIZE * PLAYER_DRAW_SCALE / 2) * draw_scale)
 
+        self._board_version = getattr(self, "_board_version", 0) + 1
         self.destructible_at_round_start = self.count_destroyable_cells()
         self.game_start_time = self.current_time + 2000
         self.crushing_walls_active = False
@@ -1603,6 +1618,7 @@ class Game:
 
                 # Replace whatever is in the cell with an indestructible wall
                 self.board[y][x] = INDESTRUCTIBLE
+                self._board_version = getattr(self, "_board_version", 0) + 1
 
                 # Remove any powerups in this cell
                 self.powerups = [pu for pu in self.powerups if not (pu.x == x and pu.y == y)]
@@ -1848,6 +1864,7 @@ class Game:
         if self.board[y][x] != DESTRUCTIBLE:
             return
         self.board[y][x] = EMPTY
+        self._board_version = getattr(self, "_board_version", 0) + 1
         blocked = getattr(self, "flame_blocked_cells", None)
         if blocked is None:
             self.flame_blocked_cells = set()
@@ -1911,7 +1928,12 @@ class Game:
             return
         clips = list(getattr(self, "kill_cam_clips", None) or [])
         still = []
+        changed = False
         for item in pending:
+            ready = force or self.current_time >= item["death_time"] + REPLAY_KILLCAM_POST_MS
+            if not ready:
+                still.append(item)
+                continue
             clip = freeze_kill_cam_clip(
                 self.replay_buffer,
                 item["name"],
@@ -1920,13 +1942,12 @@ class Game:
                 REPLAY_KILLCAM_PRE_MS,
                 REPLAY_KILLCAM_POST_MS,
             )
-            ready = force or self.current_time >= item["death_time"] + REPLAY_KILLCAM_POST_MS
-            if ready and clip:
+            if clip:
                 clips.append(clip)
-            elif not ready:
-                still.append(item)
-        clips.sort(key=lambda c: (c["death_time"], c["name"]))
-        self.kill_cam_clips = clips
+                changed = True
+        if changed:
+            clips.sort(key=lambda c: (c["death_time"], c["name"]))
+            self.kill_cam_clips = clips
         self._pending_kill_cams = still
 
     def simulate(self, dt_ms, now_ms=None):
@@ -2385,11 +2406,16 @@ class Game:
     def update(self):
         self._poll_kill_cheat()
         # update players
-        for player in self.players:
-            web_keys = set()
-            if hasattr(self, 'web_keys_by_player') and player in self.web_keys_by_player:
-                web_keys = self.web_keys_by_player[player]
-            player.update(self.dt, self.board, self.bombs, self.current_time, web_keys, game=self)
+        self._in_player_update_loop = True
+        try:
+            for player in self.players:
+                web_keys = set()
+                if hasattr(self, 'web_keys_by_player') and player in self.web_keys_by_player:
+                    web_keys = self.web_keys_by_player[player]
+                player.update(self.dt, self.board, self.bombs, self.current_time, web_keys, game=self)
+        finally:
+            self._in_player_update_loop = False
+            self._tick_danger_cache = None
         
         # update bombs & check for explosions
         expired = [bomb for bomb in self.bombs if bomb.update(self.current_time)]

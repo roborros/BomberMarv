@@ -117,17 +117,26 @@ def is_player_in_planned_blast(
     grid_height: int,
     max_range: int = 5,
 ) -> bool:
+    gx = int(grid_x)
+    gy = int(grid_y)
     for bomb in bombs or []:
+        bx = int(bomb.x)
+        by = int(bomb.y)
+        if bx != gx and by != gy:
+            continue
+        fp = min(max(0, int(getattr(bomb, "fire_power", 1) or 1)), int(max_range))
+        if abs(bx - gx) + abs(by - gy) > fp:
+            continue
         cells = planned_blast_cells(
-            int(bomb.x),
-            int(bomb.y),
-            int(getattr(bomb, "fire_power", 1) or 1),
+            bx,
+            by,
+            fp,
             board,
             grid_width,
             grid_height,
             max_range=max_range,
         )
-        if (int(grid_x), int(grid_y)) in cells:
+        if (gx, gy) in cells:
             return True
     return False
 

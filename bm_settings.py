@@ -46,6 +46,7 @@ RULES = (
     ("big_blast_window_ms", "Loud hit window (ms)", "int", BIG_EXPLOSION_WINDOW_MS, 100, 3000, 100),
     ("big_blast_delay_ms", "Loud hit delay (ms)", "int", BIG_EXPLOSION_SOUND_DELAY_MS, 0, 2000, 50),
     ("big_blast_volume", "Loud hit volume", "float", BIG_EXPLOSION_VOLUME, 0.0, 1.0, 0.05),
+    ("show_debug_hud", "Show debug FPS & latency", "bool", False, None, None, None),
 )
 
 RESET_ROW = len(RULES)
@@ -190,3 +191,7 @@ def explosion_duration_ms():
 
 def quad_speedup():
     return float(get("quad_speed"))
+
+
+def show_debug_hud() -> bool:
+    return bool(get("show_debug_hud"))

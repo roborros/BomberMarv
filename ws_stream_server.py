@@ -512,11 +512,15 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                     elif isinstance(entry, (int, float)):
                         values.append(float(entry))
                 avg_latency = (sum(values) / len(values)) if values else 0.0
+                min_latency = min(values) if values else 0.0
+                max_latency = max(values) if values else 0.0
                 status["clients"][client_id] = {
                     "players": client_data["players"],
                     "last_seen": client_data["last_seen"],
                     "avg_latency": round(avg_latency, 2),
                     "avg_latency_5s": round(avg_latency, 2),
+                    "min_latency": round(min_latency, 2),
+                    "max_latency": round(max_latency, 2),
                     "latency_samples": len(values),
                     "latency_samples_5s": len(values),
                     "registered": client_data.get("registered", False),
@@ -886,9 +890,11 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
             metrics["input_events_ws"] += 1
 
         server_timestamp = wall_clock_ms()
+        should_push_status = False
         if client_timestamp:
             with tracking_lock:
-                latency_ms = server_timestamp - int(client_timestamp)
+                raw_diff = server_timestamp - int(client_timestamp)
+                latency_ms = max(0, int(raw_diff))
                 samples = clients[client_id]["latency_samples"]
                 samples.append((server_timestamp, latency_ms))
                 cutoff = server_timestamp - 5000
@@ -896,11 +902,18 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                 if len(samples) > 300:
                     samples = samples[-300:]
                 clients[client_id]["latency_samples"] = samples
+                last_push = int(clients[client_id].get("_last_status_push_ms", 0) or 0)
+                if server_timestamp - last_push >= 500:
+                    clients[client_id]["_last_status_push_ms"] = server_timestamp
+                    should_push_status = True
+        if should_push_status:
+            enqueue_status_snapshot()
         with state_lock:
             snap_state = latest_game_state if isinstance(latest_game_state, dict) else {}
             current_game_state = snap_state.get("state")
             current_result_prompt = snap_state.get("result_prompt")
             current_leave_prompt = snap_state.get("leave_prompt")
+            current_sim_tick = snap_state.get("_sim_tick")
         ack_ws = websocket
         if ack_ws is None:
             with tracking_lock:
@@ -915,6 +928,7 @@ def run_server_with_queue(input_queue, state_queue=None, status_queue=None, log_
                     server_timestamp=server_timestamp,
                     tick_id=tick_id,
                     apply_tick_id=applied_tick_id,
+                    sim_tick=current_sim_tick,
                     game_state=current_game_state,
                     result_prompt=current_result_prompt,
                     leave_prompt=current_leave_prompt,

@@ -125,6 +125,38 @@ def percentile(values: Sequence[float], p: float) -> float:
     return float(ordered[idx])
 
 
+def compute_client_latency_min_max(
+    cached_status: Any = None,
+    fallback_samples_ms: Iterable[float] = (),
+) -> Tuple[float, float]:
+    """Return (min_ms, max_ms) latency across connected remote clients, or fallback samples."""
+    mins = []
+    maxs = []
+    if isinstance(cached_status, dict):
+        clients = cached_status.get("clients")
+        if isinstance(clients, dict):
+            for cdata in clients.values():
+                if not isinstance(cdata, dict):
+                    continue
+                sample_count = int(cdata.get("latency_samples_5s", cdata.get("latency_samples", 0)) or 0)
+                min_lat = cdata.get("min_latency")
+                max_lat = cdata.get("max_latency")
+                avg_lat = cdata.get("avg_latency_5s", cdata.get("avg_latency"))
+                if isinstance(min_lat, (int, float)) and isinstance(max_lat, (int, float)) and (sample_count > 0 or max_lat > 0):
+                    mins.append(max(0.0, float(min_lat)))
+                    maxs.append(max(0.0, float(max_lat)))
+                elif isinstance(avg_lat, (int, float)) and (sample_count > 0 or avg_lat > 0):
+                    val = max(0.0, float(avg_lat))
+                    mins.append(val)
+                    maxs.append(val)
+    if mins and maxs:
+        return round(min(mins), 1), round(max(maxs), 1)
+    fallback = [max(0.0, float(v)) for v in fallback_samples_ms if isinstance(v, (int, float))]
+    if fallback:
+        return round(min(fallback), 1), round(max(fallback), 1)
+    return 0.0, 0.0
+
+
 def build_hud_metrics(
     *,
     input_queue_delay_samples_ms: Iterable[float] = (),
@@ -139,12 +171,21 @@ def build_hud_metrics(
     sim_tick: int = 0,
     input_tick_reused: int = 0,
     input_tick_buffered: int = 0,
+    cached_status: Any = None,
+    client_latency_min_ms: Optional[float] = None,
+    client_latency_max_ms: Optional[float] = None,
 ) -> Dict[str, Any]:
     delay_samples = list(input_queue_delay_samples_ms)
     sim_samples = list(sim_step_samples_ms)
     lag_samples = list(tick_lag_samples)
     avg_delay = sum(delay_samples) / len(delay_samples) if delay_samples else 0.0
     avg_sim = sum(sim_samples) / len(sim_samples) if sim_samples else 0.0
+    if client_latency_min_ms is None or client_latency_max_ms is None:
+        c_min, c_max = compute_client_latency_min_max(cached_status, delay_samples)
+        if client_latency_min_ms is None:
+            client_latency_min_ms = c_min
+        if client_latency_max_ms is None:
+            client_latency_max_ms = c_max
     return {
         "clock": "unix_ms",
         "meaning": "input_apply is host queue delay, not client RTT",
@@ -161,6 +202,8 @@ def build_hud_metrics(
         "sim_step_p95_ms": round(percentile(sim_samples, 95), 2),
         "host_fps_5s": round(float(host_fps_5s), 1),
         "host_render_fps_5s": round(float(host_render_fps_5s), 1),
+        "client_latency_min_ms": round(float(client_latency_min_ms), 1),
+        "client_latency_max_ms": round(float(client_latency_max_ms), 1),
         "sim_tick": int(sim_tick),
         "input_tick_reused": int(input_tick_reused),
         "input_tick_buffered": int(input_tick_buffered),

@@ -118,6 +118,8 @@ def percentile(values, p):
 
 def draw_from_snapshot(game_surface, snapshot: RenderSnapshot, hud_metrics=None, ui_font=None):
     """Render one frame onto ``game_surface`` strictly from a detached ``RenderSnapshot``."""
+    if isinstance(hud_metrics, dict) and getattr(snapshot, "debug_hud_metrics", None) is None:
+        snapshot.debug_hud_metrics = hud_metrics
     if snapshot.game_state == "startup":
         from startup_load import startup_load_percent
 
@@ -370,26 +372,36 @@ if __name__ == "__main__":
         if isinstance(latest_status, dict):
             theGame._cached_status = latest_status
 
-    def build_state_payload():
+    last_hud_compute_ms = [-1]
+
+    def build_state_payload(force_hud=False):
         state_payload = theGame.to_dict()
-        hud = build_hud_metrics(
-            input_queue_delay_samples_ms=runtime_metrics["input_apply_samples_ms"],
-            sim_step_samples_ms=runtime_metrics["sim_step_samples_ms"],
-            tick_lag_samples=runtime_metrics["input_tick_apply_lag_samples"],
-            input_events_processed=runtime_metrics["input_events_processed"],
-            input_events_errors=runtime_metrics["input_events_errors"],
-            state_queue_sent=runtime_metrics["state_queue_sent"],
-            state_queue_dropped=runtime_metrics["state_queue_dropped"],
-            host_fps_5s=runtime_metrics["avg_sim_fps_5s"],
-            host_render_fps_5s=runtime_metrics["avg_render_fps_5s"],
-            sim_tick=int(runtime_metrics["sim_tick"]),
-            input_tick_reused=int(runtime_metrics["input_tick_reused"]),
-            input_tick_buffered=int(runtime_metrics["input_tick_buffered"]),
-        )
+        now_ms = wall_clock_ms()
+        if force_hud or latest_hud_metrics[0] is None or (now_ms - last_hud_compute_ms[0]) >= 250:
+            update_rate_metrics(theGame.current_time)
+            hud = build_hud_metrics(
+                input_queue_delay_samples_ms=runtime_metrics["input_apply_samples_ms"],
+                sim_step_samples_ms=runtime_metrics["sim_step_samples_ms"],
+                tick_lag_samples=runtime_metrics["input_tick_apply_lag_samples"],
+                input_events_processed=runtime_metrics["input_events_processed"],
+                input_events_errors=runtime_metrics["input_events_errors"],
+                state_queue_sent=runtime_metrics["state_queue_sent"],
+                state_queue_dropped=runtime_metrics["state_queue_dropped"],
+                host_fps_5s=runtime_metrics["avg_sim_fps_5s"],
+                host_render_fps_5s=runtime_metrics["avg_render_fps_5s"],
+                sim_tick=int(runtime_metrics["sim_tick"]),
+                input_tick_reused=int(runtime_metrics["input_tick_reused"]),
+                input_tick_buffered=int(runtime_metrics["input_tick_buffered"]),
+                cached_status=getattr(theGame, "_cached_status", None),
+            )
+            latest_hud_metrics[0] = hud
+            theGame.debug_hud_metrics = hud
+            last_hud_compute_ms[0] = now_ms
+        else:
+            hud = latest_hud_metrics[0]
         state_payload["_net_metrics"] = hud
-        state_payload["_host_published_at_ms"] = wall_clock_ms()
+        state_payload["_host_published_at_ms"] = now_ms
         state_payload["_sim_tick"] = int(runtime_metrics["sim_tick"])
-        latest_hud_metrics[0] = hud
         return state_payload
 
     last_countdown_second = [None]
@@ -420,7 +432,6 @@ if __name__ == "__main__":
         runtime_metrics["sim_step_samples_ms"].append(step_duration_ms)
         if len(runtime_metrics["sim_step_samples_ms"]) > 300:
             runtime_metrics["sim_step_samples_ms"] = runtime_metrics["sim_step_samples_ms"][-300:]
-        update_rate_metrics(theGame.current_time)
         state_payload = build_state_payload()
         now_ms = wall_clock_ms()
         game_state = state_payload.get("state")
@@ -456,7 +467,7 @@ if __name__ == "__main__":
             last_state_fingerprint[0] = fingerprint
 
         # Publish one-way detached render snapshot (including announced sound_events) for the renderer thread.
-        render_snap = build_render_snapshot(theGame, seq=current_tick)
+        render_snap = build_render_snapshot(theGame, seq=current_tick, hud_metrics=latest_hud_metrics[0])
         render_hub.publish(render_snap)
 
         if theGame.current_time - runtime_metrics["last_metrics_log_time"] > 5000:
@@ -501,7 +512,7 @@ if __name__ == "__main__":
         runtime_metrics["render_present_samples_ms"].append(present_duration_ms)
         if len(runtime_metrics["render_present_samples_ms"]) > 300:
             runtime_metrics["render_present_samples_ms"] = runtime_metrics["render_present_samples_ms"][-300:]
-        runtime_metrics["render_loop_timestamps_ms"].append(snapshot.current_time)
+        runtime_metrics["render_loop_timestamps_ms"].append(get_ticks())
 
     # Seed initial snapshot before starting the 60 Hz backend thread.
     build_state_payload()
@@ -535,24 +546,27 @@ if __name__ == "__main__":
     )
     sim_thread.start()
 
-    render_step_ms = 1000.0 / 60.0
-    next_render_due_ms = 0.0
+    render_step_ns = int(1_000_000_000 // 60)
+    next_render_deadline_ns = time.perf_counter_ns()
 
     try:
         while not frontend.should_quit:
             frontend.process_events()
-            now_ms = time.perf_counter() * 1000.0
-            if now_ms >= next_render_due_ms:
-                snap = render_hub.consume_latest()
-                if snap is not None:
-                    render_frame(snap)
-                    if snap.quit_requested:
-                        frontend.should_quit = True
-                next_render_due_ms = now_ms + render_step_ms
-            else:
-                wait_ms = max(0.0, min(render_step_ms, next_render_due_ms - now_ms))
-                if wait_ms > 1.0:
-                    time.sleep(wait_ms / 1000.0)
+            now_ns = time.perf_counter_ns()
+            if now_ns < next_render_deadline_ns:
+                rem_ns = next_render_deadline_ns - now_ns
+                if rem_ns > 1_500_000:
+                    time.sleep((rem_ns - 500_000) / 1_000_000_000.0)
+                continue
+            snap = render_hub.consume_latest()
+            if snap is not None:
+                render_frame(snap)
+                if snap.quit_requested:
+                    frontend.should_quit = True
+            next_render_deadline_ns += render_step_ns
+            after_ns = time.perf_counter_ns()
+            if after_ns - next_render_deadline_ns > render_step_ns * 2:
+                next_render_deadline_ns = after_ns + render_step_ns
     finally:
         stop_event.set()
         sim_thread.join(timeout=1.0)

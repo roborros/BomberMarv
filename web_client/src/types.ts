@@ -226,6 +226,7 @@ export interface InputAckMessage extends ProtocolEnvelope {
     server_timestamp: number;
     tick_id?: number;
     apply_tick_id?: number
+    sim_tick?: number
     game_state?: string
     result_prompt?: string
     leave_prompt?: GameState['leave_prompt']

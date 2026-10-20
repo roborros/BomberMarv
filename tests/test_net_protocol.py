@@ -349,6 +349,21 @@ class NetProtocolTests(unittest.TestCase):
         # Subsequent tick step without new input does not emit anything
         self.assertEqual(latch.consume_all(), [])
 
+        # Repeated held-key heartbeats with identical state are ignored so the previous
+        # frame state stays untouched until an actual key change arrives.
+        latch.record(1, 1, {"up": 1, "down": 0, "left": 0, "right": 0, "bomb": 0})
+        first_hold = latch.consume_all()
+        self.assertEqual(len(first_hold), 1)
+        self.assertEqual(first_hold[0][2]["up"], 1)
+        latch.record(1, 1, {"up": 1, "down": 0, "left": 0, "right": 0, "bomb": 0})
+        latch.record(1, 1, {"up": 1, "down": 0, "left": 0, "right": 0, "bomb": 0})
+        self.assertEqual(latch.consume_all(), [])
+        # When the key is finally released, the change is emitted once.
+        latch.record(1, 1, {"up": 0, "down": 0, "left": 0, "right": 0, "bomb": 0})
+        release = latch.consume_all()
+        self.assertEqual(len(release), 1)
+        self.assertEqual(release[0][2]["up"], 0)
+
     def test_held_key_watchdog_releases_silent_client(self):
         from net_protocol import HeldKeyWatchdog
 

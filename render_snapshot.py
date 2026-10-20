@@ -141,6 +141,8 @@ class RenderSnapshot:
     _cached_status: Optional[Dict[str, Any]]
     _all_players_info: Tuple[Dict[str, Any], ...]
     sound_events: Tuple[Dict[str, Any], ...] = field(default_factory=tuple)
+    show_debug_hud: bool = False
+    debug_hud_metrics: Optional[Dict[str, Any]] = None
 
     def crushing_wall_start_seconds(self) -> Tuple[int, int]:
         return self._crushing_wall_start_seconds
@@ -233,6 +235,7 @@ def build_render_snapshot(
     game: Any,
     seq: int = 0,
     sound_events: Optional[List[Dict[str, Any]]] = None,
+    hud_metrics: Optional[Dict[str, Any]] = None,
 ) -> RenderSnapshot:
     """Create a completely detached ``RenderSnapshot`` from the backend ``Game`` instance."""
     if isinstance(game, RenderSnapshot):
@@ -240,7 +243,17 @@ def build_render_snapshot(
 
     state = str(getattr(game, "game_state", "startup") or "startup")
     raw_board = getattr(game, "board", ()) or ()
-    board = tuple(tuple(int(cell) for cell in row) for row in raw_board)
+    board_ver = getattr(game, "_board_version", None)
+    if bool(getattr(game, "_detached_renderer", False)) and board_ver is not None:
+        cache_key = (id(raw_board), int(board_ver), len(raw_board))
+        cached_board = getattr(game, "_cached_board_snapshot", None)
+        if cached_board is not None and cached_board[0] == cache_key:
+            board = cached_board[1]
+        else:
+            board = tuple(tuple(int(cell) for cell in row) for row in raw_board)
+            game._cached_board_snapshot = (cache_key, board)
+    else:
+        board = tuple(tuple(int(cell) for cell in row) for row in raw_board)
     gw = int(getattr(game, "grid_width", len(board[0]) if board else 13) or 13)
     gh = int(getattr(game, "grid_height", len(board) if board else 13) or 13)
     raw_surf_size = getattr(game, "_desired_surface_size", None)
@@ -322,6 +335,11 @@ def build_render_snapshot(
     else:
         drained_sounds = tuple(dict(ev) for ev in sound_events)
 
+    import bm_settings
+    show_dbg = bool(getattr(game, "show_debug_hud", False) or bm_settings.get("show_debug_hud"))
+    raw_dbg_metrics = hud_metrics if hud_metrics is not None else getattr(game, "debug_hud_metrics", None)
+    dbg_metrics = dict(raw_dbg_metrics) if isinstance(raw_dbg_metrics, dict) else None
+
     return RenderSnapshot(
         seq=int(seq),
         game_state=state,
@@ -377,6 +395,8 @@ def build_render_snapshot(
         _cached_status=cached_status,
         _all_players_info=all_players_info,
         sound_events=drained_sounds,
+        show_debug_hud=show_dbg,
+        debug_hud_metrics=dbg_metrics,
     )
 
 
@@ -403,12 +423,14 @@ class RenderStateHub:
                 self._pending_sounds.extend(snapshot.sound_events)
                 if len(self._pending_sounds) > 64:
                     del self._pending_sounds[:-64]
-            self._latest = RenderSnapshot(
-                **{
-                    **snapshot.__dict__,
-                    "sound_events": (),
-                }
-            )
+                self._latest = RenderSnapshot(
+                    **{
+                        **snapshot.__dict__,
+                        "sound_events": (),
+                    }
+                )
+            else:
+                self._latest = snapshot
             return snapshot
 
     def consume_latest(self) -> Optional[RenderSnapshot]:
